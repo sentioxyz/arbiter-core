@@ -30,7 +30,7 @@ bazel build //...
 bazel test //...
 ```
 
-Bazel 8.5.1 with Bzlmod is the supported build and dependency contract.
+Bazel 9.1.0 with Bzlmod is the supported build and dependency contract.
 `arbiter-core` consumes Housegate as a first-class Bazel module, so downstream
 repositories must declare both modules and pin their source revisions:
 
@@ -45,7 +45,7 @@ git_override(
 )
 git_override(
     module_name = "housegate",
-    commit = "06936750928be7e487851d56fb6c862a19408c3f",
+    commit = "c25614143e19fe68ce160dd1c4e0e0517bc9f138",
     remote = "https://github.com/housegate/housegate",
 )
 ```

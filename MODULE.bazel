@@ -3,17 +3,17 @@ module(
     version = "0.0.0",
 )
 
-bazel_dep(name = "rules_go", version = "0.60.0")
-bazel_dep(name = "gazelle", version = "0.51.0")
+bazel_dep(name = "rules_go", version = "0.62.0")
+bazel_dep(name = "gazelle", version = "0.52.2")
 bazel_dep(name = "housegate", version = "1.0.0")
-bazel_dep(name = "hermetic_cc_toolchain", version = "4.1.0")
+bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
 
 # Housegate is not published in the Bazel Central Registry. Root consumers
 # must repeat this override because Bzlmod deliberately does not inherit
 # overrides from dependencies.
 git_override(
     module_name = "housegate",
-    commit = "06936750928be7e487851d56fb6c862a19408c3f",
+    commit = "c25614143e19fe68ce160dd1c4e0e0517bc9f138",
     remote = "https://github.com/housegate/housegate",
 )
 

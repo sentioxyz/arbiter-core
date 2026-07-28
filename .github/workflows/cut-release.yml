@@ -37,7 +37,7 @@ jobs:
         run: |
           bash scripts/check-public-boundary.sh
           bazel build //...
-          bazel test --@rules_go//go/config:race //... --test_output=errors
+          bazel test --build_tests_only --@rules_go//go/config:race //... --test_output=errors
 
       - name: start ClickHouse
         run: |

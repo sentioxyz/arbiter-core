@@ -23,7 +23,7 @@ jobs:
       - name: build
         run: bazel build //...
       - name: test
-        run: bazel test --@rules_go//go/config:race //... --test_output=errors
+        run: bazel test --build_tests_only --@rules_go//go/config:race //... --test_output=errors
 
   integration-clickhouse:
     runs-on: ubuntu-latest
