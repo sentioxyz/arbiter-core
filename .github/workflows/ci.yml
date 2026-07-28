@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./... -count=1
+
+  integration-clickhouse:
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8
+        ports:
+          - 9000:9000
+        env:
+          CLICKHOUSE_SKIP_USER_SETUP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: wait for ClickHouse
+        run: |
+          for _ in $(seq 1 30); do
+            timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' && exit 0
+            sleep 1
+          done
+          exit 1
+      - name: SNode integration
+        env:
+          ARBITER_CH_INTEGRATION: "1"
+          CH_ADDR: 127.0.0.1:9000
+        run: go test ./snode -count=1 -timeout=900s
