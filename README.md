@@ -43,6 +43,18 @@ ARBITER_CH_INTEGRATION=1 \
   go test ./snode -count=1 -timeout=900s
 ```
 
+## Releases
+
+Run the **Cut Release** workflow from `main`. It validates the Go module and
+ClickHouse-backed SNode path, then creates an annotated tag and GitHub Release.
+Versions follow the same UTC calendar scheme as Arbiter:
+
+- the first cut is `v0.0.0`;
+- another cut on the same UTC day increments patch;
+- the first cut on a later UTC day increments minor and resets patch to zero.
+
+Tags are the version ledger; no version file is maintained in the repository.
+
 Housegate currently declares the module path `housegate/housegate`. Go
 consumers of packages that reach Housegate replay types must carry the same
 replacement used here until Housegate publishes a canonical GitHub module
