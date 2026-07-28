@@ -1,0 +1,26 @@
+load("@gazelle//:def.bzl", "gazelle")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# gazelle:prefix github.com/sentioxyz/arbiter-core
+# gazelle:resolve go housegate/housegate/pkg/lthash @housegate//pkg/lthash
+# gazelle:resolve go housegate/housegate/pkg/replay @housegate//pkg/replay
+# gazelle:resolve go housegate/housegate/pkg/replay/chexec @housegate//pkg/replay/chexec
+# gazelle:resolve go housegate/housegate/pkg/replay/payloadexec @housegate//pkg/replay/payloadexec
+
+gazelle(name = "gazelle")
+
+go_library(
+    name = "arbiter-core",
+    srcs = [
+        "domains.go",
+        "types.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "arbiter-core_test",
+    srcs = ["types_test.go"],
+    embed = [":arbiter-core"],
+)

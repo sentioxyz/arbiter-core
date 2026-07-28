@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "wire",
+    srcs = [
+        "command.go",
+        "convert.go",
+        "dispatch.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/wire",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//:arbiter-core",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/replay",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "wire_test",
+    srcs = [
+        "dispatch_from_test.go",
+        "wire_test.go",
+    ],
+    embed = [":wire"],
+    deps = [
+        "//:arbiter-core",
+        "@housegate//pkg/replay",
+    ],
+)

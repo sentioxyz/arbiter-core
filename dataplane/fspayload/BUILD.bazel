@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fspayload",
+    srcs = ["store.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/fspayload",
+    visibility = ["//visibility:public"],
+    deps = ["@housegate//pkg/replay"],
+)
+
+go_test(
+    name = "fspayload_test",
+    srcs = ["store_test.go"],
+    embed = [":fspayload"],
+)

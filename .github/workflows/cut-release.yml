@@ -31,16 +31,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: bazelbuild/setup-bazelisk@v3
 
-      - name: validate Go module
+      - name: validate Bazel module
         run: |
-          go build ./...
-          go vet ./...
-          go test -race ./... -count=1
+          bash scripts/check-public-boundary.sh
+          bazel build //...
+          bazel test --@rules_go//go/config:race //... --test_output=errors
 
       - name: start ClickHouse
         run: |
@@ -63,7 +60,14 @@ jobs:
         env:
           ARBITER_CH_INTEGRATION: "1"
           CH_ADDR: 127.0.0.1:9000
-        run: go test ./snode -count=1 -timeout=900s
+        run: |
+          bazel test \
+            //snode:snode_test \
+            //verifier:verifier_test \
+            --test_env=ARBITER_CH_INTEGRATION \
+            --test_env=CH_ADDR \
+            --test_timeout=900 \
+            --test_output=errors
 
       - name: compute next version
         id: version

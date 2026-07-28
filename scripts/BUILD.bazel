@@ -1,0 +1,7 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "scripts_test",
+    srcs = ["next_version_test.go"],
+    data = ["next-version.sh"],
+)

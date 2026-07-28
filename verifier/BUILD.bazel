@@ -1,0 +1,45 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "verifier",
+    srcs = [
+        "backends.go",
+        "config.go",
+        "verifier.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/verifier",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)
+
+go_test(
+    name = "verifier_test",
+    srcs = [
+        "backends_test.go",
+        "scanner_test.go",
+        "verifier_fakes_test.go",
+        "verifier_test.go",
+    ],
+    embed = [":verifier"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/payloadexec",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)

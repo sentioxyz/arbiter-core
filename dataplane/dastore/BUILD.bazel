@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "dastore",
+    srcs = [
+        "client.go",
+        "fetch.go",
+        "lifecycle.go",
+        "put.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/dastore",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/replay",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials/insecure",
+    ],
+)
+
+go_test(
+    name = "dastore_test",
+    srcs = [
+        "client_test.go",
+        "fetch_test.go",
+        "hash_silent_test.go",
+        "lifecycle_test.go",
+        "put_test.go",
+    ],
+    embed = [":dastore"],
+    deps = [
+        "//dataplane/dastore/dastoretest",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/replay",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)

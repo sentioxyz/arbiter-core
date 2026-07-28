@@ -16,6 +16,7 @@ named `arbiter` so domain types retain concise names such as
 | `wire` | The canonical Go ↔ `arbiter-proto` conversion and Raft command encoding. |
 | `dataplane` | Leader-aware Arbiter clients, subscriptions, manifests, and payload stores. |
 | `snode` | Durable storage-node intake, crash convergence, promotion, and cleanup runtime. |
+| `verifier` | Replay and byte-side verification runtime shared by storage-node hosts. |
 | `conformance` | Field and enum compatibility gates against `arbiter-proto` and Housegate replay types. |
 
 The private `github.com/sentioxyz/arbiter` repository owns the Raft FSM,
@@ -25,10 +26,34 @@ this module; this module never imports the private control-plane repository.
 ## Build and test
 
 ```bash
-go build ./...
-go vet ./...
-go test ./...
+bazel build //...
+bazel test //...
 ```
+
+Bazel 8.5.1 with Bzlmod is the supported build and dependency contract.
+`arbiter-core` consumes Housegate as a first-class Bazel module, so downstream
+repositories must declare both modules and pin their source revisions:
+
+```starlark
+bazel_dep(name = "arbiter_core", version = "0.0.0")
+bazel_dep(name = "housegate", version = "1.0.0")
+
+git_override(
+    module_name = "arbiter_core",
+    commit = "<arbiter-core commit>",
+    remote = "https://github.com/sentioxyz/arbiter-core",
+)
+git_override(
+    module_name = "housegate",
+    commit = "06936750928be7e487851d56fb6c862a19408c3f",
+    remote = "https://github.com/housegate/housegate",
+)
+```
+
+The `go.mod` file is retained as Gazelle's dependency manifest and for editor
+metadata. Direct `go get github.com/sentioxyz/arbiter-core` is not a supported
+installation path while Housegate keeps the non-network-resolvable module path
+`housegate/housegate`.
 
 ClickHouse-backed SNode tests are opt-in:
 
@@ -40,13 +65,17 @@ docker run -d --rm --name arbiter-core-ch \
 
 ARBITER_CH_INTEGRATION=1 \
   CH_ADDR=127.0.0.1:9000 \
-  go test ./snode -count=1 -timeout=900s
+  bazel test //snode:snode_test //verifier:verifier_test \
+    --test_env=ARBITER_CH_INTEGRATION \
+    --test_env=CH_ADDR \
+    --test_timeout=900
 ```
 
 ## Releases
 
-Run the **Cut Release** workflow from `main`. It validates the Go module and
-ClickHouse-backed SNode path, then creates an annotated tag and GitHub Release.
+Run the **Cut Release** workflow from `main`. It validates the Bazel module and
+the ClickHouse-backed SNode and verifier paths, then creates an annotated tag
+and GitHub Release.
 Versions follow the same UTC calendar scheme as Arbiter:
 
 - the first cut is `v0.0.0`;
@@ -54,15 +83,6 @@ Versions follow the same UTC calendar scheme as Arbiter:
 - the first cut on a later UTC day increments minor and resets patch to zero.
 
 Tags are the version ledger; no version file is maintained in the repository.
-
-Housegate currently declares the module path `housegate/housegate`. Go
-consumers of packages that reach Housegate replay types must carry the same
-replacement used here until Housegate publishes a canonical GitHub module
-path:
-
-```go
-replace housegate/housegate => github.com/housegate/housegate <version>
-```
 
 ## Compatibility
 
