@@ -12,9 +12,9 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
-	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
 // PayloadSpool is the intake's payload-before-write seam.

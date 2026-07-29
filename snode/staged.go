@@ -129,7 +129,7 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		return PreparedLocalResult{}, fmt.Errorf("partition ids: %w", err)
 	}
 
-	table := chTableName(schema.TableID)
+	table := CHTableName(schema.TableID)
 	before, err := activeParts(ctx, r.d.Conn, r.cfg.UnsafeDatabase, table)
 	if err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("list active parts before write: %w", err)

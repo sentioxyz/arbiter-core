@@ -34,7 +34,7 @@ func TestHandlePromote_HappyPath(t *testing.T) {
 		t.Fatalf("handlePromote: %v", err)
 	}
 
-	qualifiedSafe := role.cfg.SafeDatabase + "." + chTableName(schema.TableID)
+	qualifiedSafe := role.cfg.SafeDatabase + "." + CHTableName(schema.TableID)
 	assertSourceRows(t, ctx, role.d.Conn, qualifiedSafe, role.cfg.NetworkID, schema.TableID, env.StatementID.Flat())
 	acks := claims.promotionAcks()
 	if len(acks) != 1 {
@@ -87,7 +87,7 @@ func TestHandlePromote_BadJWSRejected(t *testing.T) {
 	if got := len(claims.promotionAcks()); got != 0 {
 		t.Fatalf("acks after bad jws = %d", got)
 	}
-	if got := rowCount(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+chTableName(schema.TableID)); got != 0 {
+	if got := rowCount(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+CHTableName(schema.TableID)); got != 0 {
 		t.Fatalf("safe rows after bad jws = %d", got)
 	}
 }
@@ -107,7 +107,7 @@ func TestHandlePromote_StaleSeqResendsPersistedAck(t *testing.T) {
 	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err != nil {
 		t.Fatalf("first promote: %v", err)
 	}
-	table := chTableName(schema.TableID)
+	table := CHTableName(schema.TableID)
 	before := activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, table)
 
 	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err != nil {
@@ -148,7 +148,7 @@ func TestHandlePromote_BaseCASMismatchAcksNotApplied(t *testing.T) {
 	if len(acks) != 1 || acks[0].Applied || !strings.Contains(acks[0].Detail, "base") {
 		t.Fatalf("base-mismatch ack: %+v", acks)
 	}
-	if got := rowCount(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+chTableName(schema.TableID)); got != 0 {
+	if got := rowCount(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+CHTableName(schema.TableID)); got != 0 {
 		t.Fatalf("safe rows after base mismatch = %d", got)
 	}
 	pk := partitionKey{Table: schema.TableID, Partition: part.PartitionID}
@@ -187,7 +187,7 @@ func TestHandlePromote_ShadowClosureGateRejectsDivergentContent(t *testing.T) {
 	if got := len(claims.promotionAcks()); got != 0 {
 		t.Fatalf("divergent shadow produced %d acks", got)
 	}
-	if got := rowCount(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+chTableName(schema.TableID)); got != 0 {
+	if got := rowCount(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+CHTableName(schema.TableID)); got != 0 {
 		t.Fatalf("divergent shadow published %d safe rows", got)
 	}
 	assertNoPromotePartition(t, ctx, role, schema, part.PartitionID)

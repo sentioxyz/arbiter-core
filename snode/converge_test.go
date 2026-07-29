@@ -137,7 +137,7 @@ func TestConverge_ForeignRowIDFailsClosed(t *testing.T) {
 		t.Fatalf("prepare: %v", err)
 	}
 	rewindToPreparing(t, role, res.StatementID)
-	mustExecIntake(t, conn, "INSERT INTO "+role.cfg.UnsafeDatabase+"."+chTableName(schema.TableID)+
+	mustExecIntake(t, conn, "INSERT INTO "+role.cfg.UnsafeDatabase+"."+CHTableName(schema.TableID)+
 		" (_hg_row_id, p, v) VALUES ('"+strings.Repeat("A", 32)+"', 'p0', 9)")
 
 	_, _, err = role.LookupPreparedStatement(ctx, res.StatementID)
@@ -190,7 +190,7 @@ func dropPart(t *testing.T, conn interface {
 	Exec(context.Context, string, ...any) error
 }, role *Role, schema payloadexec.TableSchema, name string) {
 	t.Helper()
-	query := "ALTER TABLE " + role.cfg.UnsafeDatabase + "." + chTableName(schema.TableID) +
+	query := "ALTER TABLE " + role.cfg.UnsafeDatabase + "." + CHTableName(schema.TableID) +
 		" DROP PART '" + escapeSQLString(name) + "'"
 	if err := conn.Exec(context.Background(), query); err != nil {
 		t.Fatalf("drop part %s: %v", name, err)

@@ -19,7 +19,7 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 	if err != nil {
 		return "", nil, err
 	}
-	table := chTableName(cmd.TableID)
+	table := CHTableName(cmd.TableID)
 	safe := r.cfg.SafeDatabase + "." + table
 	promote := r.cfg.PromoteDatabase + "." + table
 	partition, err := quotePartition(sch, cmd.PartitionID)
