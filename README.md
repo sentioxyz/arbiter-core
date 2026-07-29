@@ -48,7 +48,7 @@ git_override(
 )
 git_override(
     module_name = "housegate",
-    # Dereferenced annotated v0.7.1 release tag.
+    # Resolved Housegate v0.7.1; source is pinned by the commit below.
     commit = "4dd088f4fe17d7bf13ba2c2e2311d72d0b97cd54",
     remote = "https://github.com/housegate/housegate",
 )
@@ -58,6 +58,16 @@ The `go.mod` file is retained as Gazelle's dependency manifest and for editor
 metadata. Housegate now uses the canonical
 `github.com/housegate/housegate` module path, so standard Go consumers no
 longer need a downstream `replace` directive to resolve it.
+
+Update both the Go and Bzlmod Housegate pins from a release tag or commit SHA:
+
+```bash
+bash scripts/update-housegate.sh v0.7.1
+bash scripts/update-housegate.sh 4dd088f4fe17d7bf13ba2c2e2311d72d0b97cd54
+```
+
+The script resolves the canonical Go version and full commit, updates
+`go.mod`, `go.sum`, `MODULE.bazel`, this example, and the Bzlmod lockfile.
 
 ClickHouse-backed SNode tests are opt-in:
 

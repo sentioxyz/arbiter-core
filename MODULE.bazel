@@ -16,7 +16,7 @@ bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
 # overrides from dependencies.
 git_override(
     module_name = "housegate",
-    # Dereferenced annotated v0.7.1 release tag.
+    # Resolved Housegate v0.7.1; source is pinned by the commit below.
     commit = "4dd088f4fe17d7bf13ba2c2e2311d72d0b97cd54",
     remote = "https://github.com/housegate/housegate",
 )
