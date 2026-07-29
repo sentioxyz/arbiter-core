@@ -61,7 +61,7 @@ func setUniqueDatabases(t *testing.T, cfg *Config) {
 
 func createSNodeTables(t *testing.T, conn clickhouse.Conn, cfg Config, schema payloadexec.TableSchema) {
 	t.Helper()
-	table := chTableName(schema.TableID)
+	table := CHTableName(schema.TableID)
 	for _, db := range []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase} {
 		mustExecIntake(t, conn, "CREATE DATABASE IF NOT EXISTS "+db)
 		qualified := db + "." + table
@@ -134,7 +134,7 @@ func assertExactSafePartMappings(t *testing.T, ctx context.Context, role *Role, 
 	if len(maps) != 1 || maps[0].PartRowLtHash != want.PartRowLtHash {
 		t.Fatalf("safe mappings: %+v want part hash %s", maps, want.PartRowLtHash)
 	}
-	info := activePartByName(t, ctx, role.d.Conn, role.cfg.SafeDatabase, chTableName(schema.TableID), maps[0].SafePartName)
+	info := activePartByName(t, ctx, role.d.Conn, role.cfg.SafeDatabase, CHTableName(schema.TableID), maps[0].SafePartName)
 	if maps[0].PartPhysHash != info.PhysHash {
 		t.Fatalf("safe mapping phys hash = %s want %s", maps[0].PartPhysHash, info.PhysHash)
 	}
@@ -142,7 +142,7 @@ func assertExactSafePartMappings(t *testing.T, ctx context.Context, role *Role, 
 
 func assertNoPromotePartition(t *testing.T, ctx context.Context, role *Role, schema payloadexec.TableSchema, partitionID string) {
 	t.Helper()
-	parts := activePartsMust(t, ctx, role.d.Conn, role.cfg.PromoteDatabase, chTableName(schema.TableID))
+	parts := activePartsMust(t, ctx, role.d.Conn, role.cfg.PromoteDatabase, CHTableName(schema.TableID))
 	for _, p := range parts {
 		if logicalPartitionID(schema, p) == partitionID {
 			t.Fatalf("promote partition still active: %+v", parts)

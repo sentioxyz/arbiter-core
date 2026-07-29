@@ -71,7 +71,7 @@ func newIntakeHarness(t *testing.T, conn clickhouse.Conn, cfg Config) (*Role, *s
 
 func createIntakeTable(t *testing.T, conn clickhouse.Conn, role *Role, schema payloadexec.TableSchema) {
 	t.Helper()
-	table := chTableName(schema.TableID)
+	table := CHTableName(schema.TableID)
 	db := role.cfg.UnsafeDatabase
 	qualified := db + "." + table
 	mustExecIntake(t, conn, "CREATE DATABASE IF NOT EXISTS "+db)
@@ -95,7 +95,7 @@ func countActiveParts(t *testing.T, conn clickhouse.Conn, role *Role, schema pay
 		SELECT count()
 		FROM system.parts
 		WHERE active AND database = ? AND table = ?`,
-		role.cfg.UnsafeDatabase, chTableName(schema.TableID)).Scan(&count)
+		role.cfg.UnsafeDatabase, CHTableName(schema.TableID)).Scan(&count)
 	if err != nil {
 		t.Fatalf("count active parts: %v", err)
 	}

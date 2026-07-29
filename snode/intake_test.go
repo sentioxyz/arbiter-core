@@ -18,7 +18,7 @@ func TestSubmitLocalStatement_WritesSourceAndRegistersRC(t *testing.T) {
 	cfg.Tables = []payloadexec.TableSchema{schema}
 	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
 	role, claims := newIntakeHarness(t, conn, cfg)
-	table := chTableName(schema.TableID)
+	table := CHTableName(schema.TableID)
 	db := role.cfg.UnsafeDatabase
 	qualified := db + "." + table
 

@@ -55,7 +55,7 @@ func (r *Role) convergeIntake(ctx context.Context, rec intakeRecord) (intakeReco
 	if err != nil {
 		return rec, fmt.Errorf("converge schema: %w", err)
 	}
-	table := chTableName(schema.TableID)
+	table := CHTableName(schema.TableID)
 	expected := make(map[string]bool, rec.ExpectedRowCount)
 	for ordinal := uint64(0); ordinal < rec.ExpectedRowCount; ordinal++ {
 		rowID := payloadexec.RowID(r.cfg.NetworkID, schema.TableID, rec.StatementID, ordinal)
@@ -161,7 +161,7 @@ func (r *Role) runAbort(ctx context.Context, rec intakeRecord) (intakeRecord, er
 	if err != nil {
 		return rec, fmt.Errorf("abort schema: %w", err)
 	}
-	table := chTableName(schema.TableID)
+	table := CHTableName(schema.TableID)
 	for _, name := range rec.Abort.PartNames {
 		if err := r.validateAbortPart(rec, name); err != nil {
 			return rec, err

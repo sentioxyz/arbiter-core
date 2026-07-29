@@ -20,7 +20,7 @@ func TestHandleCleanup_HappyPath(t *testing.T) {
 	}
 
 	assertUnsafePartGone(t, ctx, role, schema.TableID, part.PartName)
-	assertSourceRows(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+chTableName(schema.TableID), role.cfg.NetworkID, schema.TableID, env.StatementID.Flat())
+	assertSourceRows(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+CHTableName(schema.TableID), role.cfg.NetworkID, schema.TableID, env.StatementID.Flat())
 	acks := claims.cleanupAcks()
 	if len(acks) != 1 || acks[0].NodeID != role.cfg.NodeID || acks[0].PromotionSeq != 1 ||
 		acks[0].TableID != schema.TableID || acks[0].PartitionID != part.PartitionID {
@@ -81,7 +81,7 @@ func cleanupCommand(tableID string, part arbiter.CandidatePart) arbiter.UnsafeCl
 
 func assertUnsafePartPresent(t *testing.T, ctx context.Context, role *Role, tableID, partName string) {
 	t.Helper()
-	for _, p := range activePartsMust(t, ctx, role.d.Conn, role.cfg.UnsafeDatabase, chTableName(tableID)) {
+	for _, p := range activePartsMust(t, ctx, role.d.Conn, role.cfg.UnsafeDatabase, CHTableName(tableID)) {
 		if p.Name == partName {
 			return
 		}
@@ -91,7 +91,7 @@ func assertUnsafePartPresent(t *testing.T, ctx context.Context, role *Role, tabl
 
 func assertUnsafePartGone(t *testing.T, ctx context.Context, role *Role, tableID, partName string) {
 	t.Helper()
-	for _, p := range activePartsMust(t, ctx, role.d.Conn, role.cfg.UnsafeDatabase, chTableName(tableID)) {
+	for _, p := range activePartsMust(t, ctx, role.d.Conn, role.cfg.UnsafeDatabase, CHTableName(tableID)) {
 		if p.Name == partName {
 			t.Fatalf("unsafe part %s still active", partName)
 		}

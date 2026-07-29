@@ -76,6 +76,8 @@ func (r *Role) scanPartRowIDs(ctx context.Context, table, partName string) ([]st
 	return out, rows.Err()
 }
 
-func chTableName(tableID string) string {
+// CHTableName maps a logical storage-integrity table id to its physical
+// ClickHouse table name; consumers must use this instead of copying the rule.
+func CHTableName(tableID string) string {
 	return strings.ReplaceAll(tableID, ".", "__")
 }

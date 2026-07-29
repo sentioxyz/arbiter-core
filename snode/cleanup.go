@@ -17,7 +17,7 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	if _, err := r.authority.AuthorizeCleanup(cmd, jws); err != nil {
 		return fmt.Errorf("cleanup authority: %w", err)
 	}
-	table := chTableName(cmd.TableID)
+	table := CHTableName(cmd.TableID)
 	for _, p := range cmd.Parts {
 		if p.PartName == "" {
 			return fmt.Errorf("cleanup part for %s/%s has empty part_name", p.TableID, p.PartitionID)
