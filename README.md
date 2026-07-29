@@ -38,7 +38,7 @@ repositories must declare both modules and pin their source revisions:
 bazel_dep(name = "arbiter_core", version = "0.0.0")
 bazel_dep(
     name = "housegate",
-    version = "0.6.1-0.20260729032824-5c8dd9d710f4",
+    version = "1.0.0",
 )
 
 git_override(
@@ -48,7 +48,8 @@ git_override(
 )
 git_override(
     module_name = "housegate",
-    commit = "5c8dd9d710f49b2bf1fdcb384e825b820926c280",
+    # Dereferenced Go v0.7.0 release tag; Housegate's Bazel module version is 1.0.0.
+    commit = "bc99cda81be13b52fd7831752525de0a098f9018",
     remote = "https://github.com/housegate/housegate",
 )
 ```
