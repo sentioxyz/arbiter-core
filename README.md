@@ -35,7 +35,7 @@ Bazel 9.1.0 with Bzlmod is the supported build and dependency contract.
 repositories must declare both modules and pin their source revisions:
 
 ```starlark
-bazel_dep(name = "arbiter_core", version = "0.0.0")
+bazel_dep(name = "arbiter_core")
 bazel_dep(
     name = "housegate",
     version = "0.7.1",
@@ -58,6 +58,10 @@ The `go.mod` file is retained as Gazelle's dependency manifest and for editor
 metadata. Housegate now uses the canonical
 `github.com/housegate/housegate` module path, so standard Go consumers no
 longer need a downstream `replace` directive to resolve it.
+
+The source `MODULE.bazel` intentionally leaves the arbiter-core module version
+unset. Until arbiter-core is published in a Bazel registry, downstream
+repositories select its exact source revision through `git_override`.
 
 Update both the Go and Bzlmod Housegate pins from a release tag or commit SHA:
 

@@ -1,6 +1,7 @@
+# Keep the source archive version unset so git_override users do not inherit
+# stale release metadata. Git tags (or registry metadata) identify releases.
 module(
     name = "arbiter_core",
-    version = "0.0.0",
 )
 
 bazel_dep(name = "rules_go", version = "0.62.0")
