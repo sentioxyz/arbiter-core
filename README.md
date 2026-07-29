@@ -35,10 +35,10 @@ Bazel 9.1.0 with Bzlmod is the supported build and dependency contract.
 repositories must declare both modules and pin their source revisions:
 
 ```starlark
-bazel_dep(name = "arbiter_core", version = "0.0.0")
+bazel_dep(name = "arbiter_core")
 bazel_dep(
     name = "housegate",
-    version = "0.6.1-0.20260729032824-5c8dd9d710f4",
+    version = "0.7.1",
 )
 
 git_override(
@@ -48,7 +48,8 @@ git_override(
 )
 git_override(
     module_name = "housegate",
-    commit = "5c8dd9d710f49b2bf1fdcb384e825b820926c280",
+    # Resolved Housegate v0.7.1; source is pinned by the commit below.
+    commit = "4dd088f4fe17d7bf13ba2c2e2311d72d0b97cd54",
     remote = "https://github.com/housegate/housegate",
 )
 ```
@@ -57,6 +58,20 @@ The `go.mod` file is retained as Gazelle's dependency manifest and for editor
 metadata. Housegate now uses the canonical
 `github.com/housegate/housegate` module path, so standard Go consumers no
 longer need a downstream `replace` directive to resolve it.
+
+The source `MODULE.bazel` intentionally leaves the arbiter-core module version
+unset. Until arbiter-core is published in a Bazel registry, downstream
+repositories select its exact source revision through `git_override`.
+
+Update both the Go and Bzlmod Housegate pins from a release tag or commit SHA:
+
+```bash
+bash scripts/update-housegate.sh v0.7.1
+bash scripts/update-housegate.sh 4dd088f4fe17d7bf13ba2c2e2311d72d0b97cd54
+```
+
+The script resolves the canonical Go version and full commit, updates
+`go.mod`, `go.sum`, `MODULE.bazel`, this example, and the Bzlmod lockfile.
 
 ClickHouse-backed SNode tests are opt-in:
 
