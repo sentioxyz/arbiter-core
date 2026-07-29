@@ -16,7 +16,7 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/protobuf/proto"
 
-	"housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core"
 )

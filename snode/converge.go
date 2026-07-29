@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
 // LookupPreparedStatement returns a prepared result only after any durable

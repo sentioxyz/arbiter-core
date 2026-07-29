@@ -5,9 +5,9 @@ import (
 	"reflect"
 	"testing"
 
-	"housegate/housegate/pkg/replay"
-	"housegate/housegate/pkg/replay/chexec"
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay/chexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
 func TestSubmitLocalStatement_WritesSourceAndRegistersRC(t *testing.T) {

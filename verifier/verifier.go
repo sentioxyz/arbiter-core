@@ -10,7 +10,7 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
-	"housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/dataplane"

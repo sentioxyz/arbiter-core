@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"housegate/housegate/pkg/lthash"
+	"github.com/housegate/housegate/pkg/lthash"
 
 	"github.com/sentioxyz/arbiter-core"
 )

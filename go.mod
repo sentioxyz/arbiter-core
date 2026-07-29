@@ -14,7 +14,6 @@ require (
 	github.com/sentioxyz/arbiter-proto v0.4.0
 	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
-	housegate/housegate v1.0.0
 )
 
 require (
@@ -27,6 +26,7 @@ require (
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
+	github.com/housegate/housegate v0.6.1-0.20260729032824-5c8dd9d710f4
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect

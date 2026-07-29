@@ -5,7 +5,10 @@ module(
 
 bazel_dep(name = "rules_go", version = "0.62.0")
 bazel_dep(name = "gazelle", version = "0.52.2")
-bazel_dep(name = "housegate", version = "1.0.0")
+bazel_dep(
+    name = "housegate",
+    version = "0.6.1-0.20260729032824-5c8dd9d710f4",
+)
 bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
 
 # Housegate is not published in the Bazel Central Registry. Root consumers
@@ -13,7 +16,7 @@ bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
 # overrides from dependencies.
 git_override(
     module_name = "housegate",
-    commit = "c25614143e19fe68ce160dd1c4e0e0517bc9f138",
+    commit = "5c8dd9d710f49b2bf1fdcb384e825b820926c280",
     remote = "https://github.com/housegate/housegate",
 )
 

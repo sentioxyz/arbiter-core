@@ -12,9 +12,9 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
-	"housegate/housegate/pkg/lthash"
-	"housegate/housegate/pkg/replay"
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/lthash"
+	"github.com/housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/dataplane"
