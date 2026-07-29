@@ -7,7 +7,7 @@ import (
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 
-	"housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core/dataplane/dastore/dastoretest"
 )

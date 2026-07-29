@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
 )

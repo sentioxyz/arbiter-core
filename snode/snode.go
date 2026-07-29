@@ -14,7 +14,7 @@ import (
 
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
 // PayloadSpool is the intake's payload-before-write seam.

@@ -36,7 +36,10 @@ repositories must declare both modules and pin their source revisions:
 
 ```starlark
 bazel_dep(name = "arbiter_core", version = "0.0.0")
-bazel_dep(name = "housegate", version = "1.0.0")
+bazel_dep(
+    name = "housegate",
+    version = "0.6.1-0.20260729032824-5c8dd9d710f4",
+)
 
 git_override(
     module_name = "arbiter_core",
@@ -45,15 +48,15 @@ git_override(
 )
 git_override(
     module_name = "housegate",
-    commit = "c25614143e19fe68ce160dd1c4e0e0517bc9f138",
+    commit = "5c8dd9d710f49b2bf1fdcb384e825b820926c280",
     remote = "https://github.com/housegate/housegate",
 )
 ```
 
 The `go.mod` file is retained as Gazelle's dependency manifest and for editor
-metadata. Direct `go get github.com/sentioxyz/arbiter-core` is not a supported
-installation path while Housegate keeps the non-network-resolvable module path
-`housegate/housegate`.
+metadata. Housegate now uses the canonical
+`github.com/housegate/housegate` module path, so standard Go consumers no
+longer need a downstream `replace` directive to resolve it.
 
 ClickHouse-backed SNode tests are opt-in:
 

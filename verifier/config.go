@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
 const defaultUnsafeDatabase = "hg_unsafe"

@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"housegate/housegate/pkg/lthash"
-	"housegate/housegate/pkg/replay/chexec"
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/lthash"
+	"github.com/housegate/housegate/pkg/replay/chexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
 )

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
 const testEncoding = "csv-with-names-v1"

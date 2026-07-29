@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core/wire"
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"

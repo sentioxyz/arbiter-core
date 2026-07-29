@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay"
 )
 
 type Store struct {

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
 const (

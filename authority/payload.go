@@ -16,7 +16,7 @@ package authority
 import (
 	"fmt"
 
-	"housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core"
 )
