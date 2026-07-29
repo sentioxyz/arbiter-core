@@ -14,7 +14,12 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # arbiter-core is public, so untrusted fork PRs must never execute on a
+    # self-hosted runner with access to its persistent workspace and network.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted]
     steps:
       - uses: actions/checkout@v4
       - uses: bazelbuild/setup-bazelisk@v3
@@ -26,7 +31,11 @@ jobs:
         run: bazel test --build_tests_only --@rules_go//go/config:race //... --test_output=errors
 
   integration-clickhouse:
-    runs-on: ubuntu-latest
+    # Keep the same fork-safety boundary as the test job.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted]
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:25.8
