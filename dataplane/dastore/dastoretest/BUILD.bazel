@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "dastoretest",
+    srcs = ["store.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/dastore/dastoretest",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "dastoretest_test",
+    srcs = ["store_test.go"],
+    embed = [":dastoretest"],
+    deps = [
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//status",
+    ],
+)

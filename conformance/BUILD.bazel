@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "conformance_test",
+    srcs = [
+        "arbiter_wire_test.go",
+        "replay_wire_test.go",
+    ],
+    deps = [
+        "//:arbiter-core",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/replay",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

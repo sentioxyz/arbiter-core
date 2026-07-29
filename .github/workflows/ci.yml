@@ -17,13 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test -race ./... -count=1
+      - uses: bazelbuild/setup-bazelisk@v3
+      - name: enforce public repository boundary
+        run: bash scripts/check-public-boundary.sh
+      - name: build
+        run: bazel build //...
+      - name: test
+        run: bazel test --build_tests_only --@rules_go//go/config:race //... --test_output=errors
 
   integration-clickhouse:
     runs-on: ubuntu-latest
@@ -36,10 +36,7 @@ jobs:
           CLICKHOUSE_SKIP_USER_SETUP: "1"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: bazelbuild/setup-bazelisk@v3
       - name: wait for ClickHouse
         run: |
           for _ in $(seq 1 30); do
@@ -51,4 +48,11 @@ jobs:
         env:
           ARBITER_CH_INTEGRATION: "1"
           CH_ADDR: 127.0.0.1:9000
-        run: go test ./snode -count=1 -timeout=900s
+        run: |
+          bazel test \
+            //snode:snode_test \
+            //verifier:verifier_test \
+            --test_env=ARBITER_CH_INTEGRATION \
+            --test_env=CH_ADDR \
+            --test_timeout=900 \
+            --test_output=errors

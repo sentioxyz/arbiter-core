@@ -8,15 +8,13 @@ replace github.com/ClickHouse/ch-go => github.com/sentioxyz/ch-go v0.73.0-sentio
 
 replace github.com/ClickHouse/clickhouse-go/v2 => github.com/sentioxyz/clickhouse-go/v2 v2.47.0-sentioxyz-20260629
 
-replace housegate/housegate => github.com/housegate/housegate v0.6.1-0.20260728055327-dc0cbc92a4e2
-
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
-	github.com/ethereum/go-ethereum v1.17.4
+	github.com/ethereum/go-ethereum v1.17.2
 	github.com/sentioxyz/arbiter-proto v0.4.0
 	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
-	housegate/housegate v0.0.0-00010101000000-000000000000
+	housegate/housegate v1.0.0
 )
 
 require (

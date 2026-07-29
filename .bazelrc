@@ -1,0 +1,6 @@
+# hermetic_cc_toolchain 4.2.0 uses Zig 0.14.0, whose fastbuild C mode
+# instruments undefined behavior by default. rules_go's normal Go/cgo link
+# does not carry Zig's UBSan runtime, so keep target and exec C actions
+# uninstrumented unless a dedicated sanitizer build opts in explicitly.
+build --copt=-fno-sanitize=undefined
+build --host_copt=-fno-sanitize=undefined
