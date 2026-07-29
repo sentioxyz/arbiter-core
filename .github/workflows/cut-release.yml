@@ -12,7 +12,7 @@ concurrency:
 jobs:
   release:
     name: validate, tag, and release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     timeout-minutes: 20
     permissions:
       contents: write
@@ -41,16 +41,24 @@ jobs:
 
       - name: start ClickHouse
         run: |
+          docker rm -f arbiter-core-release-clickhouse >/dev/null 2>&1 || true
           docker run -d --rm \
             --name arbiter-core-release-clickhouse \
-            -p 9000:9000 \
+            -p 127.0.0.1::9000 \
             -e CLICKHOUSE_SKIP_USER_SETUP=1 \
             clickhouse/clickhouse-server:25.8
+          host_port="$(
+            docker inspect \
+              --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' \
+              arbiter-core-release-clickhouse
+          )"
+          echo "CH_ADDR=127.0.0.1:${host_port}" >> "$GITHUB_ENV"
+          echo "CH_PORT=${host_port}" >> "$GITHUB_ENV"
 
       - name: wait for ClickHouse
         run: |
           for _ in $(seq 1 30); do
-            timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' && exit 0
+            timeout 1 bash -c "</dev/tcp/127.0.0.1/${CH_PORT}" && exit 0
             sleep 1
           done
           docker logs arbiter-core-release-clickhouse
@@ -59,7 +67,6 @@ jobs:
       - name: validate SNode integration
         env:
           ARBITER_CH_INTEGRATION: "1"
-          CH_ADDR: 127.0.0.1:9000
         run: |
           bazel test \
             //snode:snode_test \
@@ -68,6 +75,10 @@ jobs:
             --test_env=CH_ADDR \
             --test_timeout=900 \
             --test_output=errors
+
+      - name: stop ClickHouse
+        if: always()
+        run: docker rm -f arbiter-core-release-clickhouse >/dev/null 2>&1 || true
 
       - name: compute next version
         id: version
