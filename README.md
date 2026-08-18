@@ -79,12 +79,15 @@ ClickHouse-backed SNode tests are opt-in:
 docker run -d --rm --name arbiter-core-ch \
   -p 9000:9000 \
   -e CLICKHOUSE_SKIP_USER_SETUP=1 \
+  -v "$PWD/scripts/ci/clickhouse-keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
   clickhouse/clickhouse-server:25.8
 
 ARBITER_CH_INTEGRATION=1 \
+  ARBITER_CH_KEEPER=1 \
   CH_ADDR=127.0.0.1:9000 \
-  bazel test //snode:snode_test //verifier:verifier_test \
+  bazel test //dataplane/ddl:ddl_test //snode:snode_test //verifier:verifier_test \
     --test_env=ARBITER_CH_INTEGRATION \
+    --test_env=ARBITER_CH_KEEPER \
     --test_env=CH_ADDR \
     --test_timeout=900
 ```

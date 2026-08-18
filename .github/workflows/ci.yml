@@ -36,32 +36,43 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted]
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:25.8
-        ports:
-          - 9000:9000
-        env:
-          CLICKHOUSE_SKIP_USER_SETUP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: bazelbuild/setup-bazelisk@v3
+      - name: start ClickHouse (embedded Keeper for ReplicatedMergeTree)
+        run: |
+          docker rm -f arbiter-core-ci-clickhouse >/dev/null 2>&1 || true
+          docker run -d --rm \
+            --name arbiter-core-ci-clickhouse \
+            -p 127.0.0.1::9000 \
+            -e CLICKHOUSE_SKIP_USER_SETUP=1 \
+            -v "$PWD/scripts/ci/clickhouse-keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
+            clickhouse/clickhouse-server:25.8
+          host_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' arbiter-core-ci-clickhouse)"
+          echo "CH_ADDR=127.0.0.1:${host_port}" >> "$GITHUB_ENV"
+          echo "CH_PORT=${host_port}" >> "$GITHUB_ENV"
       - name: wait for ClickHouse
         run: |
           for _ in $(seq 1 30); do
-            timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' && exit 0
+            timeout 1 bash -c "</dev/tcp/127.0.0.1/${CH_PORT}" && exit 0
             sleep 1
           done
+          docker logs arbiter-core-ci-clickhouse
           exit 1
-      - name: SNode integration
+      - name: data-plane integration
         env:
           ARBITER_CH_INTEGRATION: "1"
-          CH_ADDR: 127.0.0.1:9000
+          ARBITER_CH_KEEPER: "1"
         run: |
           bazel test \
+            //dataplane/ddl:ddl_test \
             //snode:snode_test \
             //verifier:verifier_test \
             --test_env=ARBITER_CH_INTEGRATION \
+            --test_env=ARBITER_CH_KEEPER \
             --test_env=CH_ADDR \
             --test_timeout=900 \
             --test_output=errors
+      - name: stop ClickHouse
+        if: always()
+        run: docker rm -f arbiter-core-ci-clickhouse >/dev/null 2>&1 || true
