@@ -4,8 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
+
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
 const (
@@ -26,6 +29,14 @@ type Config struct {
 	SafeDatabase       string
 	PromoteDatabase    string
 	AuthorityAddresses []string
+	// ProtocolTables selects whether Register creates/verifies the pinned
+	// hg_unsafe/hg_safe DDL. Production wiring resolves this from the schema
+	// source; ModeOff preserves hosts that own their test DDL.
+	ProtocolTables ddl.Mode
+	// ProtocolTablesReconcile is the periodic re-run cadence (0 = 60s).
+	ProtocolTablesReconcile time.Duration
+	// KeeperShardID feeds /sentio/<shard>/unsafe/<table>; v1 uses zero.
+	KeeperShardID uint32
 }
 
 func (c *Config) validate() error {
@@ -64,6 +75,9 @@ func (c *Config) validate() error {
 	}
 	if c.PromoteDatabase == "" {
 		c.PromoteDatabase = defaultPromoteDatabase
+	}
+	if c.ProtocolTablesReconcile == 0 {
+		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
 	}
 	if len(errs) == 0 {
 		if got := payloadexec.SchemaRoot(c.NetworkID, c.Tables); got != c.SchemaRoot {

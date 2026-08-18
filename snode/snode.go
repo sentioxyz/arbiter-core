@@ -2,6 +2,7 @@ package snode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
 // PayloadSpool is the intake's payload-before-write seam.
@@ -68,6 +70,9 @@ func New(cfg Config, d Deps) (*Role, error) {
 }
 
 func (r *Role) Register(ctx context.Context) error {
+	if err := r.ensureProtocolTables(ctx); err != nil {
+		return err
+	}
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, &pb.NodeRegistration{
 			NodeId: r.cfg.NodeID,
@@ -90,6 +95,9 @@ func (r *Role) Run(ctx context.Context) error {
 	if err := r.convergeStartup(ctx); err != nil {
 		return fmt.Errorf("converge staged intake: %w", err)
 	}
+	if r.cfg.ProtocolTables != ddl.ModeOff {
+		go r.reconcileProtocolTables(ctx)
+	}
 	return r.d.Client.RunPromotionSubscription(ctx, r.cfg.NodeID, func(cmd *pb.PromotionCommand) error {
 		if cmd == nil {
 			return nil
@@ -104,6 +112,41 @@ func (r *Role) Run(ctx context.Context) error {
 			return nil
 		}
 	})
+}
+
+func (r *Role) pinned() ddl.Pinned {
+	return ddl.Pinned{
+		UnsafeDB: r.cfg.UnsafeDatabase, SafeDB: r.cfg.SafeDatabase, PromoteDB: r.cfg.PromoteDatabase,
+		NodeID: r.cfg.NodeID, KeeperShardID: r.cfg.KeeperShardID,
+	}
+}
+
+func (r *Role) ensureProtocolTables(ctx context.Context) error {
+	if r.cfg.ProtocolTables == ddl.ModeOff {
+		return nil
+	}
+	if r.d.Conn == nil {
+		return errors.New("snode: clickhouse connection is required to ensure protocol tables")
+	}
+	if err := ddl.EnsureProtocolTables(ctx, r.d.Conn, r.pinned(), r.cfg.Tables, r.cfg.ProtocolTables, r.d.Logger); err != nil {
+		return fmt.Errorf("snode: ensure protocol tables: %w", err)
+	}
+	return nil
+}
+
+func (r *Role) reconcileProtocolTables(ctx context.Context) {
+	ticker := time.NewTicker(r.cfg.ProtocolTablesReconcile)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := r.ensureProtocolTables(ctx); err != nil {
+				r.d.Logger.Error("protocol table reconcile failed", "err", err)
+			}
+		}
+	}
 }
 
 func authorityValidator(addresses []string) *authority.Validator {
