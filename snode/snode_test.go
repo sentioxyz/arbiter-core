@@ -51,6 +51,18 @@ func TestNew_AssertsSchemaRoot(t *testing.T) {
 	}
 }
 
+func TestConfigRejectsPhysicalTableNameCollision(t *testing.T) {
+	cfg := testConfigS(t)
+	cfg.Tables = []payloadexec.TableSchema{
+		{TableID: "a.b__c", Columns: []lthash.Column{{Name: "v", Type: "UInt64"}}},
+		{TableID: "a__b.c", Columns: []lthash.Column{{Name: "v", Type: "UInt64"}}},
+	}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "physical table name collision") {
+		t.Fatalf("colliding schema set must fail, got %v", err)
+	}
+}
+
 func TestPayloadSpoolImplementations(t *testing.T) {
 	var _ PayloadSpool = (*fspayload.Store)(nil)
 	var _ PayloadSpool = (*dastore.Client)(nil)

@@ -53,6 +53,9 @@ func (c *Config) validate() error {
 	if len(c.Tables) == 0 {
 		errs = append(errs, errors.New("at least one table schema is required"))
 	}
+	if err := ddl.ValidatePhysicalTableNames(c.Tables); err != nil {
+		errs = append(errs, err)
+	}
 	if c.UnsafeDatabase == "" {
 		c.UnsafeDatabase = defaultUnsafeDatabase
 	}
