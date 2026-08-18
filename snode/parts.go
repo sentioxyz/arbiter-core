@@ -2,9 +2,10 @@ package snode
 
 import (
 	"context"
-	"strings"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
+
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
 type partInfo struct {
@@ -79,5 +80,5 @@ func (r *Role) scanPartRowIDs(ctx context.Context, table, partName string) ([]st
 // CHTableName maps a logical storage-integrity table id to its physical
 // ClickHouse table name; consumers must use this instead of copying the rule.
 func CHTableName(tableID string) string {
-	return strings.ReplaceAll(tableID, ".", "__")
+	return ddl.CHTableName(tableID)
 }

@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ddl",
+    srcs = [
+        "build.go",
+        "naming.go",
+        "pinned.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/ddl",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "ddl_test",
+    srcs = ["build_test.go"],
+    embed = [":ddl"],
+    deps = [
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
