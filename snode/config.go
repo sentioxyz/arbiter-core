@@ -15,6 +15,9 @@ const (
 	defaultUnsafeDatabase  = "hg_unsafe"
 	defaultSafeDatabase    = "hg_safe"
 	defaultPromoteDatabase = "hg_promote"
+	// DefaultHardPartsPerPartition stays below the pinned ClickHouse
+	// parts_to_throw_insert setting and mirrors ingress back-pressure.
+	DefaultHardPartsPerPartition = 2950
 )
 
 type Config struct {
@@ -37,6 +40,9 @@ type Config struct {
 	ProtocolTablesReconcile time.Duration
 	// KeeperShardID feeds /sentio/<shard>/unsafe/<table>; v1 uses zero.
 	KeeperShardID uint32
+	// HardPartsPerPartition refuses a prepare before journal or ClickHouse
+	// writes when any touched unsafe partition is already at this limit.
+	HardPartsPerPartition int
 }
 
 func (c *Config) validate() error {
@@ -78,6 +84,9 @@ func (c *Config) validate() error {
 	}
 	if c.ProtocolTablesReconcile == 0 {
 		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
+	}
+	if c.HardPartsPerPartition == 0 {
+		c.HardPartsPerPartition = DefaultHardPartsPerPartition
 	}
 	if len(errs) == 0 {
 		if got := payloadexec.SchemaRoot(c.NetworkID, c.Tables); got != c.SchemaRoot {

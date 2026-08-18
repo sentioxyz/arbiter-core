@@ -47,6 +47,9 @@ var (
 	ErrSchemaUnknown          = errors.New("snode: unknown target table")
 	ErrNotPrepared            = errors.New("snode: statement has no prepared unsafe write")
 	ErrConvergenceForeignRows = errors.New("snode: foreign row ids in candidate part; operator intervention required")
+	// ErrBackpressure means a touched unsafe partition is at the hard parts
+	// limit. The prepare has not journaled or written anything.
+	ErrBackpressure = errors.New("snode: back-pressure: hg_unsafe partition at hard parts limit")
 )
 
 type ClaimCategory string
@@ -137,6 +140,12 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	inventory := make(map[string][]string, len(touched))
 	for _, partitionID := range touched {
 		inventory[partitionID] = partNamesForPartition(schema, before, partitionID)
+	}
+	for _, partitionID := range touched {
+		if n := len(inventory[partitionID]); n >= r.cfg.HardPartsPerPartition {
+			return PreparedLocalResult{}, fmt.Errorf("%w: %s.%s partition %s has %d active parts (hard limit %d)",
+				ErrBackpressure, r.cfg.UnsafeDatabase, table, partitionID, n, r.cfg.HardPartsPerPartition)
+		}
 	}
 
 	rec = intakeRecord{

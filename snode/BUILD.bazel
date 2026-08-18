@@ -52,6 +52,7 @@ go_test(
         "promote_test.go",
         "protocol_tables_test.go",
         "snode_test.go",
+        "staged_backpressure_test.go",
         "staged_claim_test.go",
         "staged_prepare_test.go",
         "state_test.go",
