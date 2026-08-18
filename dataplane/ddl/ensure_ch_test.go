@@ -117,7 +117,7 @@ func TestEnsureProtocolTables_VerifiesQuotedPartitionIdentifier(t *testing.T) {
 	requireKeeper(t, conn)
 	p := testPinned(t)
 	dropDatabasesSync(t, conn, p)
-	partition := "part,`key"
+	partition := "part\n\t\r,`key"
 	sch := payloadexec.TableSchema{
 		TableID:     "db.quoted_" + uniqueSuffix(t),
 		PartitionBy: partition,

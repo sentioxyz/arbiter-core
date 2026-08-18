@@ -168,7 +168,43 @@ func parseMetadataIdentifiers(input string) ([]string, error) {
 					if pos+1 == len(input) {
 						return nil, fmt.Errorf("ddl: trailing escape in metadata key %q", input)
 					}
-					b.WriteByte(input[pos+1])
+					escaped := input[pos+1]
+					switch escaped {
+					case 'a':
+						b.WriteByte('\a')
+					case 'b':
+						b.WriteByte('\b')
+					case 'e':
+						b.WriteByte(0x1b)
+					case 'f':
+						b.WriteByte('\f')
+					case 'n':
+						b.WriteByte('\n')
+					case 'r':
+						b.WriteByte('\r')
+					case 't':
+						b.WriteByte('\t')
+					case 'v':
+						b.WriteByte('\v')
+					case '0':
+						b.WriteByte(0)
+					case '\\', '`':
+						b.WriteByte(escaped)
+					case 'x':
+						if pos+3 >= len(input) {
+							return nil, fmt.Errorf("ddl: truncated hex escape in metadata key %q", input)
+						}
+						hi, okHi := metadataHexNibble(input[pos+2])
+						lo, okLo := metadataHexNibble(input[pos+3])
+						if !okHi || !okLo {
+							return nil, fmt.Errorf("ddl: malformed hex escape in metadata key %q", input)
+						}
+						b.WriteByte(hi<<4 | lo)
+						pos += 4
+						continue
+					default:
+						return nil, fmt.Errorf("ddl: unsupported escape \\%c in metadata key %q", escaped, input)
+					}
 					pos += 2
 				case '`':
 					if pos+1 < len(input) && input[pos+1] == '`' {
@@ -224,6 +260,19 @@ func parseMetadataIdentifiers(input string) ([]string, error) {
 
 func isMetadataSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
+}
+
+func metadataHexNibble(b byte) (byte, bool) {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0', true
+	case b >= 'a' && b <= 'f':
+		return b - 'a' + 10, true
+	case b >= 'A' && b <= 'F':
+		return b - 'A' + 10, true
+	default:
+		return 0, false
+	}
 }
 
 func formatColumns(columns []lthash.Column) string {
