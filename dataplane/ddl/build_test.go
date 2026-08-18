@@ -150,6 +150,14 @@ func TestCHTableName(t *testing.T) {
 	}
 }
 
+func TestQuoteIdent_EscapesClickHouseCStyleSequences(t *testing.T) {
+	const input = "part\\n\\x41`tail"
+	const want = "`part\\\\n\\\\x41``tail`"
+	if got := quoteIdent(input); got != want {
+		t.Fatalf("quoteIdent(%q) = %q, want %q", input, got, want)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
 }

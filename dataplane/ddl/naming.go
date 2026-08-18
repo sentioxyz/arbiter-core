@@ -22,7 +22,9 @@ func ZooKeeperPath(p Pinned, tableID string) string {
 }
 
 func quoteIdent(id string) string {
-	return "`" + strings.ReplaceAll(id, "`", "``") + "`"
+	id = strings.ReplaceAll(id, `\`, `\\`)
+	id = strings.ReplaceAll(id, "`", "``")
+	return "`" + id + "`"
 }
 
 func quoteLiteral(s string) string {

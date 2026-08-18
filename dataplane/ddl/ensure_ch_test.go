@@ -135,6 +135,38 @@ func TestEnsureProtocolTables_VerifiesQuotedPartitionIdentifier(t *testing.T) {
 	}
 }
 
+func TestEnsureProtocolTables_VerifiesLiteralBackslashesInPartitionIdentifier(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+
+	for name, partition := range map[string]string{
+		"backslash-n":             "part\\nkey",
+		"backslash-hex":           "part\\x41key",
+		"backslash-with-backtick": "part\\n`key\\x41",
+	} {
+		t.Run(name, func(t *testing.T) {
+			sch := payloadexec.TableSchema{
+				TableID:     "db.literal_backslash_" + uniqueSuffix(t),
+				PartitionBy: partition,
+				Columns: []lthash.Column{
+					{Name: partition, Type: "String"},
+					{Name: "value", Type: "UInt64"},
+				},
+			}
+
+			if err := EnsureProtocolTables(ctx, conn, p, []payloadexec.TableSchema{sch}, ModeCreateAndVerify, slog.Default()); err != nil {
+				t.Fatalf("create and verify literal-backslash identifier %q: %v", partition, err)
+			}
+			if err := EnsureProtocolTables(ctx, conn, p, []payloadexec.TableSchema{sch}, ModeVerifyOnly, slog.Default()); err != nil {
+				t.Fatalf("verify-only literal-backslash identifier %q: %v", partition, err)
+			}
+		})
+	}
+}
+
 func TestVerifyProtocolTable_RequiresExplicitPinnedSettingOverride(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
