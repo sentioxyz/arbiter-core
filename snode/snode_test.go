@@ -133,20 +133,39 @@ type snodeFakeServer struct {
 	active              []string
 	subscriptionStarts  int
 	activeSubscriptions int
+	subscriptionRelease <-chan struct{}
+	subscriptionErr     error
 }
 
 func (s *snodeFakeServer) SubscribePromotions(_ *pb.SNodeHello, stream grpc.ServerStreamingServer[pb.PromotionCommand]) error {
 	s.mu.Lock()
 	s.subscriptionStarts++
 	s.activeSubscriptions++
+	release := s.subscriptionRelease
+	subscriptionErr := s.subscriptionErr
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		s.activeSubscriptions--
 		s.mu.Unlock()
 	}()
+	if release != nil {
+		select {
+		case <-release:
+			return subscriptionErr
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
 	<-stream.Context().Done()
 	return stream.Context().Err()
+}
+
+func (s *snodeFakeServer) failSubscriptionWhen(release <-chan struct{}, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscriptionRelease = release
+	s.subscriptionErr = err
 }
 
 func (s *snodeFakeServer) RegisterNode(_ context.Context, reg *pb.NodeRegistration) (*pb.Ack, error) {

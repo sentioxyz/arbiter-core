@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
@@ -173,6 +177,32 @@ func waitSNodeSubscriptions(t *testing.T, server *snodeFakeServer, wantStarts, w
 	t.Fatalf("subscriptions starts=%d active=%d, want starts>=%d active=%d", starts, active, wantStarts, wantActive)
 }
 
+type countingProtocolConnS struct {
+	clickhouse.Conn
+	reads atomic.Int64
+}
+
+func (c *countingProtocolConnS) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
+	c.reads.Add(1)
+	return c.Conn.Query(ctx, query, args...)
+}
+
+func (c *countingProtocolConnS) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
+	c.reads.Add(1)
+	return c.Conn.QueryRow(ctx, query, args...)
+}
+
+func waitForProtocolReadsS(t *testing.T, conn *countingProtocolConnS) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for conn.reads.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if conn.reads.Load() == 0 {
+		t.Fatal("periodic reconcile did not read protocol table metadata")
+	}
+}
+
 func TestRun_ReconcileIsVerifyOnlyAndDroppedTableFailsClosed(t *testing.T) {
 	conn := requireCH(t)
 	role, server, schema := newProtocolTableRunHarnessS(t, conn)
@@ -219,5 +249,38 @@ func TestRun_CancellationDoesNotLeakReconcileOrSubscriptionAcrossRuns(t *testing
 			t.Fatalf("run %d exit = %v, want context canceled", run, err)
 		}
 		waitSNodeSubscriptions(t, server, run, 0)
+	}
+}
+
+func TestRun_SubscriptionFailureStopsReconcileBeforeReturn(t *testing.T) {
+	conn := requireCH(t)
+	role, server, _ := newProtocolTableRunHarnessS(t, conn)
+	counting := &countingProtocolConnS{Conn: conn}
+	role.d.Conn = counting
+	release := make(chan struct{})
+	server.failSubscriptionWhen(release, status.Error(codes.InvalidArgument, "subscription rejected"))
+
+	parent := context.Background()
+	done := make(chan error, 1)
+	go func() { done <- role.Run(parent) }()
+	waitSNodeSubscriptions(t, server, 1, 1)
+	waitForProtocolReadsS(t, counting)
+	close(release)
+	select {
+	case err := <-done:
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("Run err = %v, want InvalidArgument", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after non-retryable subscription failure")
+	}
+	if parent.Err() != nil {
+		t.Fatalf("parent context unexpectedly ended: %v", parent.Err())
+	}
+	waitSNodeSubscriptions(t, server, 1, 0)
+	readsAtReturn := counting.reads.Load()
+	time.Sleep(4 * role.cfg.ProtocolTablesReconcile)
+	if got := counting.reads.Load(); got != readsAtReturn {
+		t.Fatalf("reconcile worker still read metadata after Run returned: got %d reads, want %d", got, readsAtReturn)
 	}
 }

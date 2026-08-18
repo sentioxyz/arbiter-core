@@ -61,6 +61,8 @@ type verifierFakeServer struct {
 	scans               []*pb.ByteSideScanMsg
 	subscriptionStarts  int
 	activeSubscriptions int
+	subscriptionRelease <-chan struct{}
+	subscriptionErr     error
 }
 
 func newVerifierFakeServer() *verifierFakeServer {
@@ -71,12 +73,22 @@ func (s *verifierFakeServer) SubscribeVerifierDispatch(_ *pb.VerifierHello, stre
 	s.mu.Lock()
 	s.subscriptionStarts++
 	s.activeSubscriptions++
+	release := s.subscriptionRelease
+	subscriptionErr := s.subscriptionErr
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		s.activeSubscriptions--
 		s.mu.Unlock()
 	}()
+	if release != nil {
+		select {
+		case <-release:
+			return subscriptionErr
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
 	for {
 		select {
 		case <-stream.Context().Done():
@@ -90,6 +102,13 @@ func (s *verifierFakeServer) SubscribeVerifierDispatch(_ *pb.VerifierHello, stre
 			}
 		}
 	}
+}
+
+func (s *verifierFakeServer) failSubscriptionWhen(release <-chan struct{}, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscriptionRelease = release
+	s.subscriptionErr = err
 }
 
 func (s *verifierFakeServer) subscriptionSnapshot() (starts, active int) {

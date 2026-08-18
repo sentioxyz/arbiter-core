@@ -67,6 +67,7 @@ go_test(
         "//dataplane/fspayload",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/lthash",
         "@housegate//pkg/replay",
