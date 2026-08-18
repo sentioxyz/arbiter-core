@@ -42,10 +42,17 @@ func VerifyProtocolTable(ctx context.Context, conn clickhouse.Conn, want TableIn
 	if engine != want.Engine {
 		drift("engine", engine, want.Engine)
 	}
-	if wantSortingKey := strings.Join(want.SortingKey, ", "); sortingKey != wantSortingKey {
+	wantSortingKey := strings.Join(want.SortingKey, ", ")
+	gotSortingKey, sortingErr := parseMetadataIdentifiers(sortingKey)
+	if sortingErr != nil || !equalIdentifiers(gotSortingKey, want.SortingKey) {
 		drift("sorting_key", sortingKey, wantSortingKey)
 	}
-	if partitionKey != want.PartitionKey {
+	wantPartitionKey := []string(nil)
+	if want.PartitionKey != "" {
+		wantPartitionKey = []string{want.PartitionKey}
+	}
+	gotPartitionKey, partitionErr := parseMetadataIdentifiers(partitionKey)
+	if partitionErr != nil || !equalIdentifiers(gotPartitionKey, wantPartitionKey) {
 		drift("partition_key", partitionKey, want.PartitionKey)
 	}
 
@@ -61,14 +68,11 @@ func VerifyProtocolTable(ctx context.Context, conn clickhouse.Conn, want TableIn
 	if err != nil {
 		return fmt.Errorf("ddl: %s: %w", qualified, err)
 	}
-	globals, err := readGlobalMergeTreeSettings(ctx, conn, want.Settings)
-	if err != nil {
-		return err
-	}
 	for _, setting := range want.Settings {
 		got, ok := overrides[setting.Name]
 		if !ok {
-			got = globals[setting.Name]
+			drift("setting "+setting.Name, "<missing explicit override>", setting.Value)
+			continue
 		}
 		if got != setting.Value {
 			drift("setting "+setting.Name, got, setting.Value)
@@ -111,30 +115,6 @@ func readColumns(ctx context.Context, conn clickhouse.Conn, database, table stri
 	return columns, nil
 }
 
-func readGlobalMergeTreeSettings(ctx context.Context, conn clickhouse.Conn, pinned []PinnedSetting) (map[string]string, error) {
-	names := make([]string, 0, len(pinned))
-	for _, setting := range pinned {
-		names = append(names, setting.Name)
-	}
-	rows, err := conn.Query(ctx, `SELECT name, value FROM system.merge_tree_settings WHERE name IN (?)`, names)
-	if err != nil {
-		return nil, fmt.Errorf("ddl: read system.merge_tree_settings: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var name, value string
-		if err := rows.Scan(&name, &value); err != nil {
-			return nil, fmt.Errorf("ddl: scan system.merge_tree_settings: %w", err)
-		}
-		out[name] = value
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ddl: read system.merge_tree_settings rows: %w", err)
-	}
-	return out, nil
-}
-
 func equalColumns(a, b []lthash.Column) bool {
 	if len(a) != len(b) {
 		return false
@@ -145,6 +125,105 @@ func equalColumns(a, b []lthash.Column) bool {
 		}
 	}
 	return true
+}
+
+func equalIdentifiers(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// parseMetadataIdentifiers canonicalizes the identifier lists ClickHouse
+// renders in system.tables.sorting_key and partition_key. Simple identifiers
+// are emitted bare; identifiers needing quoting use backticks, with either a
+// backslash escape (ClickHouse's metadata rendering) or doubled backticks.
+func parseMetadataIdentifiers(input string) ([]string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil, nil
+	}
+	var identifiers []string
+	for pos := 0; pos < len(input); {
+		for pos < len(input) && isMetadataSpace(input[pos]) {
+			pos++
+		}
+		if pos == len(input) || input[pos] == ',' {
+			return nil, fmt.Errorf("ddl: empty identifier in metadata key %q", input)
+		}
+
+		var identifier string
+		if input[pos] == '`' {
+			pos++
+			var b strings.Builder
+			closed := false
+			for pos < len(input) {
+				switch input[pos] {
+				case '\\':
+					if pos+1 == len(input) {
+						return nil, fmt.Errorf("ddl: trailing escape in metadata key %q", input)
+					}
+					b.WriteByte(input[pos+1])
+					pos += 2
+				case '`':
+					if pos+1 < len(input) && input[pos+1] == '`' {
+						b.WriteByte('`')
+						pos += 2
+						continue
+					}
+					pos++
+					closed = true
+				default:
+					b.WriteByte(input[pos])
+					pos++
+				}
+				if closed {
+					break
+				}
+			}
+			if !closed {
+				return nil, fmt.Errorf("ddl: unterminated quoted identifier in metadata key %q", input)
+			}
+			identifier = b.String()
+			for pos < len(input) && isMetadataSpace(input[pos]) {
+				pos++
+			}
+			if pos < len(input) && input[pos] != ',' {
+				return nil, fmt.Errorf("ddl: trailing text after quoted identifier in metadata key %q", input)
+			}
+		} else {
+			start := pos
+			for pos < len(input) && input[pos] != ',' {
+				pos++
+			}
+			identifier = strings.TrimSpace(input[start:pos])
+			if identifier == "" || strings.ContainsAny(identifier, "` \t\r\n") {
+				return nil, fmt.Errorf("ddl: malformed bare identifier %q in metadata key %q", identifier, input)
+			}
+		}
+		identifiers = append(identifiers, identifier)
+
+		if pos == len(input) {
+			break
+		}
+		pos++
+		for pos < len(input) && isMetadataSpace(input[pos]) {
+			pos++
+		}
+		if pos == len(input) {
+			return nil, fmt.Errorf("ddl: trailing comma in metadata key %q", input)
+		}
+	}
+	return identifiers, nil
+}
+
+func isMetadataSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
 }
 
 func formatColumns(columns []lthash.Column) string {

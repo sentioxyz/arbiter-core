@@ -26,6 +26,7 @@ go_test(
         "ch_test.go",
         "engine_full_test.go",
         "ensure_ch_test.go",
+        "verify_test.go",
     ],
     embed = [":ddl"],
     deps = [

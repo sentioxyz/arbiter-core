@@ -111,6 +111,67 @@ func TestEnsureProtocolTables_DetectsEngineAndColumnDrift(t *testing.T) {
 	}
 }
 
+func TestEnsureProtocolTables_VerifiesQuotedPartitionIdentifier(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	partition := "part,`key"
+	sch := payloadexec.TableSchema{
+		TableID:     "db.quoted_" + uniqueSuffix(t),
+		PartitionBy: partition,
+		Columns: []lthash.Column{
+			{Name: partition, Type: "String"},
+			{Name: "value with space", Type: "UInt64"},
+		},
+	}
+
+	if err := EnsureProtocolTables(ctx, conn, p, []payloadexec.TableSchema{sch}, ModeCreateAndVerify, slog.Default()); err != nil {
+		t.Fatalf("create and verify quoted identifier: %v", err)
+	}
+	if err := EnsureProtocolTables(ctx, conn, p, []payloadexec.TableSchema{sch}, ModeVerifyOnly, slog.Default()); err != nil {
+		t.Fatalf("verify-only quoted identifier: %v", err)
+	}
+}
+
+func TestVerifyProtocolTable_RequiresExplicitPinnedSettingOverride(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	if err := conn.Exec(ctx, "CREATE DATABASE "+p.SafeDB); err != nil {
+		t.Fatalf("create database: %v", err)
+	}
+	table := "missing_pin_" + uniqueSuffix(t)
+	if err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s.%s (_hg_row_id FixedString(32), v UInt64) ENGINE = MergeTree ORDER BY (_hg_row_id)", p.SafeDB, table)); err != nil {
+		t.Fatalf("create table without per-table pin: %v", err)
+	}
+	var global string
+	if err := conn.QueryRow(ctx, "SELECT value FROM system.merge_tree_settings WHERE name = 'parts_to_throw_insert'").Scan(&global); err != nil {
+		t.Fatalf("read matching global: %v", err)
+	}
+	want := TableIntent{
+		Database: p.SafeDB,
+		Table:    table,
+		Engine:   EngineMergeTree,
+		Columns: []lthash.Column{
+			{Name: RowIDColumn, Type: RowIDType},
+			{Name: "v", Type: "UInt64"},
+		},
+		SortingKey: []string{RowIDColumn},
+		Settings:   []PinnedSetting{{Name: "parts_to_throw_insert", Value: global}},
+	}
+
+	err := VerifyProtocolTable(ctx, conn, want)
+	if !errors.Is(err, ErrProtocolTableDrift) {
+		t.Fatalf("missing explicit setting override = %v, want ErrProtocolTableDrift", err)
+	}
+	if !strings.Contains(err.Error(), "parts_to_throw_insert") || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing override drift must name setting and absence: %v", err)
+	}
+}
+
 func TestEnsureProtocolTables_SkipsFreezeViolationWithWarning(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
