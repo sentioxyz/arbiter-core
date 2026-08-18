@@ -238,7 +238,7 @@ func parseMetadataIdentifiers(input string) ([]string, error) {
 				pos++
 			}
 			identifier = strings.TrimSpace(input[start:pos])
-			if identifier == "" || strings.ContainsAny(identifier, "` \t\r\n") {
+			if !isBareMetadataIdentifier(identifier) {
 				return nil, fmt.Errorf("ddl: malformed bare identifier %q in metadata key %q", identifier, input)
 			}
 		}
@@ -260,6 +260,25 @@ func parseMetadataIdentifiers(input string) ([]string, error) {
 
 func isMetadataSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
+}
+
+// ClickHouse's unquoted identifier grammar is
+// ^[a-zA-Z_][0-9a-zA-Z_]*$. Anything else in key metadata is an expression,
+// not a bare column identifier, even if its text matches a quoted column name.
+func isBareMetadataIdentifier(identifier string) bool {
+	if identifier == "" || !isMetadataIdentifierStart(identifier[0]) {
+		return false
+	}
+	for i := 1; i < len(identifier); i++ {
+		if !isMetadataIdentifierStart(identifier[i]) && (identifier[i] < '0' || identifier[i] > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func isMetadataIdentifierStart(b byte) bool {
+	return b == '_' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
 func metadataHexNibble(b byte) (byte, bool) {

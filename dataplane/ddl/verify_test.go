@@ -35,7 +35,17 @@ func TestParseMetadataIdentifiers_ClickHouseQuoting(t *testing.T) {
 }
 
 func TestParseMetadataIdentifiers_RejectsMalformedLists(t *testing.T) {
-	for _, input := range []string{"`unterminated", "`p` trailing", "`bad\\q`", "p,,q", ",p"} {
+	for _, input := range []string{
+		"`unterminated",
+		"`p` trailing",
+		"`bad\\q`",
+		"p,,q",
+		",p",
+		"arr[1]",
+		"toString(p)",
+		"1st",
+		"part-key",
+	} {
 		t.Run(input, func(t *testing.T) {
 			if _, err := parseMetadataIdentifiers(input); err == nil {
 				t.Fatalf("parseMetadataIdentifiers(%q) must fail", input)

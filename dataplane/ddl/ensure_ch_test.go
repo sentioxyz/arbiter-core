@@ -167,6 +167,46 @@ func TestEnsureProtocolTables_VerifiesLiteralBackslashesInPartitionIdentifier(t 
 	}
 }
 
+func TestVerifyProtocolTable_RejectsArrayExpressionMatchingQuotedColumnName(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	sch := payloadexec.TableSchema{
+		TableID:     "db.expression_" + uniqueSuffix(t),
+		PartitionBy: "arr[1]",
+		Columns: []lthash.Column{
+			{Name: "arr[1]", Type: "String"},
+			{Name: "arr", Type: "Array(String)"},
+		},
+	}
+	_, want, err := Intents(p, sch)
+	if err != nil {
+		t.Fatalf("build intent: %v", err)
+	}
+	if err := conn.Exec(ctx, "CREATE DATABASE "+p.SafeDB); err != nil {
+		t.Fatalf("create database: %v", err)
+	}
+	query := fmt.Sprintf(
+		"CREATE TABLE %s.%s (`_hg_row_id` FixedString(32), `arr[1]` String, `arr` Array(String)) ENGINE = MergeTree PARTITION BY arr[1] ORDER BY (arr[1], `_hg_row_id`) SETTINGS max_bytes_to_merge_at_max_space_in_pool = 0",
+		p.SafeDB,
+		want.Table,
+	)
+	if err := conn.Exec(ctx, query); err != nil {
+		t.Fatalf("create expression-drifted table: %v", err)
+	}
+
+	err = VerifyProtocolTable(ctx, conn, want)
+	if !errors.Is(err, ErrProtocolTableDrift) {
+		t.Fatalf("array expression must drift from quoted column intent: %v", err)
+	}
+	for _, field := range []string{"partition_key", "sorting_key"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Fatalf("expression drift must name %s: %v", field, err)
+		}
+	}
+}
+
 func TestVerifyProtocolTable_RequiresExplicitPinnedSettingOverride(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
