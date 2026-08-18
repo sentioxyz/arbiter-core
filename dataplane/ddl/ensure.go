@@ -59,6 +59,9 @@ func ParseMode(value string) (Mode, error) {
 // hg_safe for every startup schema. Partition-freeze violations are skipped
 // with a warning; missing or drifted protocol tables fail closed.
 func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinned, tables []payloadexec.TableSchema, mode Mode, logger *slog.Logger) error {
+	if err := ValidatePhysicalTableNames(tables); err != nil {
+		return err
+	}
 	if mode == ModeOff {
 		return nil
 	}

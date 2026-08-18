@@ -54,6 +54,18 @@ func TestNew_AssertsSchemaRoot(t *testing.T) {
 	}
 }
 
+func TestConfigRejectsPhysicalTableNameCollision(t *testing.T) {
+	cfg := testConfigV()
+	cfg.Tables = []payloadexec.TableSchema{
+		{TableID: "a.b__c"},
+		{TableID: "a__b.c"},
+	}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "physical table name collision") {
+		t.Fatalf("colliding schema set must fail, got %v", err)
+	}
+}
+
 func TestRegister_SendsVerifierRegistration(t *testing.T) {
 	// Given
 	role, server := newRoleHarnessV(t, &fakeReplayCore{}, &fakeScanner{})

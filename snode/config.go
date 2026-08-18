@@ -62,6 +62,9 @@ func (c *Config) validate() error {
 	if len(c.Tables) == 0 {
 		errs = append(errs, errors.New("at least one table schema is required"))
 	}
+	if err := ddl.ValidatePhysicalTableNames(c.Tables); err != nil {
+		errs = append(errs, err)
+	}
 	for i, tbl := range c.Tables {
 		if err := validatePartitionBy(tbl); err != nil {
 			errs = append(errs, fmt.Errorf("tables[%d] (%s): %w", i, tbl.TableID, err))
