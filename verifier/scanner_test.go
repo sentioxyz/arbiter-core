@@ -15,6 +15,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
 func requireCH(t *testing.T) clickhouse.Conn {
@@ -40,7 +41,7 @@ func requireCH(t *testing.T) clickhouse.Conn {
 func TestCHScanner_MatchesSourceHashing(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
-	table := chTableName("db.t")
+	table := ddl.CHTableName("db.t")
 	qualified := "hg_unsafe." + table
 	schema := scanTableSchema()
 
