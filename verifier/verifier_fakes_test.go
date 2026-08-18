@@ -53,12 +53,16 @@ type verifierFakeServer struct {
 	pb.UnimplementedVerifierGatewayServer
 	pb.UnimplementedMembershipServer
 
-	mu            sync.Mutex
-	dispatches    chan *pb.VerifierDispatch
-	registrations []*pb.NodeRegistration
-	active        []string
-	attestations  []*pb.ReplayAttestation
-	scans         []*pb.ByteSideScanMsg
+	mu                  sync.Mutex
+	dispatches          chan *pb.VerifierDispatch
+	registrations       []*pb.NodeRegistration
+	active              []string
+	attestations        []*pb.ReplayAttestation
+	scans               []*pb.ByteSideScanMsg
+	subscriptionStarts  int
+	activeSubscriptions int
+	subscriptionRelease <-chan struct{}
+	subscriptionErr     error
 }
 
 func newVerifierFakeServer() *verifierFakeServer {
@@ -66,6 +70,25 @@ func newVerifierFakeServer() *verifierFakeServer {
 }
 
 func (s *verifierFakeServer) SubscribeVerifierDispatch(_ *pb.VerifierHello, stream grpc.ServerStreamingServer[pb.VerifierDispatch]) error {
+	s.mu.Lock()
+	s.subscriptionStarts++
+	s.activeSubscriptions++
+	release := s.subscriptionRelease
+	subscriptionErr := s.subscriptionErr
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.activeSubscriptions--
+		s.mu.Unlock()
+	}()
+	if release != nil {
+		select {
+		case <-release:
+			return subscriptionErr
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
 	for {
 		select {
 		case <-stream.Context().Done():
@@ -79,6 +102,19 @@ func (s *verifierFakeServer) SubscribeVerifierDispatch(_ *pb.VerifierHello, stre
 			}
 		}
 	}
+}
+
+func (s *verifierFakeServer) failSubscriptionWhen(release <-chan struct{}, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscriptionRelease = release
+	s.subscriptionErr = err
+}
+
+func (s *verifierFakeServer) subscriptionSnapshot() (starts, active int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subscriptionStarts, s.activeSubscriptions
 }
 
 func (s *verifierFakeServer) SubmitAttestation(_ context.Context, att *pb.ReplayAttestation) (*pb.Ack, error) {

@@ -4,21 +4,33 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
+
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
-const defaultUnsafeDatabase = "hg_unsafe"
+const (
+	defaultUnsafeDatabase  = "hg_unsafe"
+	defaultSafeDatabase    = "hg_safe"
+	defaultPromoteDatabase = "hg_promote"
+)
 
 type Config struct {
-	ReplicaID         string
-	Ed25519Seed       []byte
-	NetworkID         string
-	SchemaSnapshotID  string
-	ExecutorProfileID string
-	SchemaRoot        string
-	Tables            []payloadexec.TableSchema
-	UnsafeDatabase    string
+	ReplicaID               string
+	Ed25519Seed             []byte
+	NetworkID               string
+	SchemaSnapshotID        string
+	ExecutorProfileID       string
+	SchemaRoot              string
+	Tables                  []payloadexec.TableSchema
+	UnsafeDatabase          string
+	SafeDatabase            string
+	PromoteDatabase         string
+	ProtocolTables          ddl.Mode
+	ProtocolTablesReconcile time.Duration
+	KeeperShardID           uint32
 }
 
 func (c *Config) validate() error {
@@ -43,6 +55,17 @@ func (c *Config) validate() error {
 	}
 	if c.UnsafeDatabase == "" {
 		c.UnsafeDatabase = defaultUnsafeDatabase
+	}
+	if c.SafeDatabase == "" {
+		c.SafeDatabase = defaultSafeDatabase
+	}
+	if c.PromoteDatabase == "" {
+		c.PromoteDatabase = defaultPromoteDatabase
+	}
+	if c.ProtocolTablesReconcile < 0 {
+		errs = append(errs, errors.New("protocol tables reconcile interval must not be negative"))
+	} else if c.ProtocolTablesReconcile == 0 {
+		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
 	}
 	if len(errs) == 0 {
 		if got := payloadexec.SchemaRoot(c.NetworkID, c.Tables); got != c.SchemaRoot {

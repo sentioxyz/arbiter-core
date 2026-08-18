@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
+
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
 func TestNewReplayCore_AssemblesVerifier(t *testing.T) {
@@ -39,7 +41,7 @@ func TestNewScanner_DefaultsUnsafeDatabaseAndMapsTableName(t *testing.T) {
 	if scanner.cfg.UnsafeDatabase != "hg_unsafe" {
 		t.Fatalf("unsafe db default: %q", scanner.cfg.UnsafeDatabase)
 	}
-	if got := chTableName("db.table.with.dots"); got != "db__table__with__dots" {
+	if got := ddl.CHTableName("db.table.with.dots"); got != "db__table__with__dots" {
 		t.Fatalf("physical table name: %q", got)
 	}
 }

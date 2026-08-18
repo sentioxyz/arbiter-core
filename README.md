@@ -73,19 +73,35 @@ bash scripts/update-housegate.sh 4dd088f4fe17d7bf13ba2c2e2311d72d0b97cd54
 The script resolves the canonical Go version and full commit, updates
 `go.mod`, `go.sum`, `MODULE.bazel`, this example, and the Bzlmod lockfile.
 
-ClickHouse-backed SNode tests are opt-in:
+ClickHouse-backed SNode tests are opt-in. The full DDL acceptance uses two
+ClickHouse 25.8 nodes sharing one Keeper:
 
 ```bash
-docker run -d --rm --name arbiter-core-ch \
+docker network create arbiter-core-ch
+docker run -d --rm --name arbiter-core-ch-a --hostname arbiter-core-ch-a \
+  --network arbiter-core-ch --network-alias arbiter-core-clickhouse-a \
   -p 9000:9000 \
   -e CLICKHOUSE_SKIP_USER_SETUP=1 \
+  -v "$PWD/scripts/ci/clickhouse-shared-keeper-server.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
+  clickhouse/clickhouse-server:25.8
+docker run -d --rm --name arbiter-core-ch-b --hostname arbiter-core-ch-b \
+  --network arbiter-core-ch \
+  -p 9001:9000 \
+  -e CLICKHOUSE_SKIP_USER_SETUP=1 \
+  -v "$PWD/scripts/ci/clickhouse-shared-keeper-client.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
   clickhouse/clickhouse-server:25.8
 
 ARBITER_CH_INTEGRATION=1 \
+  ARBITER_CH_KEEPER=1 \
+  ARBITER_CH_REPLICA=1 \
   CH_ADDR=127.0.0.1:9000 \
-  bazel test //snode:snode_test //verifier:verifier_test \
+  CH_REPLICA_ADDR=127.0.0.1:9001 \
+  bazel test //dataplane/ddl:ddl_test //snode:snode_test //verifier:verifier_test \
     --test_env=ARBITER_CH_INTEGRATION \
+    --test_env=ARBITER_CH_KEEPER \
+    --test_env=ARBITER_CH_REPLICA \
     --test_env=CH_ADDR \
+    --test_env=CH_REPLICA_ADDR \
     --test_timeout=900
 ```
 

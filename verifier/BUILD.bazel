@@ -12,6 +12,7 @@ go_library(
     deps = [
         "//:arbiter-core",
         "//dataplane",
+        "//dataplane/ddl",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
@@ -26,6 +27,7 @@ go_test(
     name = "verifier_test",
     srcs = [
         "backends_test.go",
+        "protocol_tables_test.go",
         "scanner_test.go",
         "verifier_fakes_test.go",
         "verifier_test.go",
@@ -34,12 +36,16 @@ go_test(
     deps = [
         "//:arbiter-core",
         "//dataplane",
+        "//dataplane/ddl",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/lthash",
         "@housegate//pkg/replay",
         "@housegate//pkg/replay/payloadexec",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
     ],
 )

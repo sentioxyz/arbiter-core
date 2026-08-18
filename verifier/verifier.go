@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
+	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
@@ -14,6 +17,7 @@ import (
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/dataplane"
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -29,6 +33,7 @@ type Deps struct {
 	Client  *dataplane.Client
 	Replay  replayCore
 	Scanner scanner
+	Conn    clickhouse.Conn
 	Logger  *slog.Logger
 }
 
@@ -45,6 +50,9 @@ func New(cfg Config, d Deps) (*Role, error) {
 	if d.Client == nil || d.Replay == nil || d.Scanner == nil {
 		return nil, fmt.Errorf("verifier: client, replay core, and scanner are required")
 	}
+	if cfg.ProtocolTables != ddl.ModeOff && d.Conn == nil {
+		return nil, fmt.Errorf("verifier: clickhouse connection is required when protocol tables are ensured")
+	}
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
@@ -52,6 +60,9 @@ func New(cfg Config, d Deps) (*Role, error) {
 }
 
 func (r *Role) Register(ctx context.Context) error {
+	if err := r.ensureProtocolTables(ctx); err != nil {
+		return err
+	}
 	pub := r.priv.Public().(ed25519.PublicKey)
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, &pb.NodeRegistration{
@@ -73,20 +84,89 @@ func (r *Role) Register(ctx context.Context) error {
 }
 
 func (r *Role) Run(ctx context.Context) error {
-	return r.d.Client.RunVerifierSubscription(ctx, r.cfg.ReplicaID, func(d *pb.VerifierDispatch) error {
-		if d == nil {
-			return nil
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	runSubscription := func(ctx context.Context) error {
+		return r.d.Client.RunVerifierSubscription(ctx, r.cfg.ReplicaID, func(d *pb.VerifierDispatch) error {
+			if d == nil {
+				return nil
+			}
+			switch msg := d.GetDispatch().(type) {
+			case *pb.VerifierDispatch_ReplayJob:
+				return r.handleReplayJob(ctx, msg.ReplayJob)
+			case *pb.VerifierDispatch_ByteSideScan:
+				return r.handleScanRequest(ctx, msg.ByteSideScan)
+			default:
+				r.d.Logger.Warn("unknown verifier dispatch", "type", fmt.Sprintf("%T", d.GetDispatch()))
+				return nil
+			}
+		})
+	}
+	if r.cfg.ProtocolTables == ddl.ModeOff {
+		return runSubscription(runCtx)
+	}
+	return r.runWithProtocolTableReconcile(runCtx, cancel, runSubscription)
+}
+
+func (r *Role) ensureProtocolTables(ctx context.Context) error {
+	return r.ensureProtocolTablesMode(ctx, r.cfg.ProtocolTables)
+}
+
+func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {
+	if mode == ddl.ModeOff {
+		return nil
+	}
+	pinned := ddl.Pinned{
+		UnsafeDB: r.cfg.UnsafeDatabase, SafeDB: r.cfg.SafeDatabase, PromoteDB: r.cfg.PromoteDatabase,
+		NodeID: r.cfg.ReplicaID, KeeperShardID: r.cfg.KeeperShardID,
+	}
+	if err := ddl.EnsureProtocolTables(ctx, r.d.Conn, pinned, r.cfg.Tables, mode, r.d.Logger); err != nil {
+		return fmt.Errorf("verifier: ensure protocol tables: %w", err)
+	}
+	return nil
+}
+
+func (r *Role) runWithProtocolTableReconcile(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	runSubscription func(context.Context) error,
+) error {
+	subscriptionDone := make(chan error, 1)
+	reconcileDone := make(chan error, 1)
+	go func() { subscriptionDone <- runSubscription(ctx) }()
+	go func() { reconcileDone <- r.reconcileProtocolTables(ctx) }()
+
+	select {
+	case subscriptionErr := <-subscriptionDone:
+		cancel()
+		reconcileErr := <-reconcileDone
+		if reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+			return reconcileErr
 		}
-		switch msg := d.GetDispatch().(type) {
-		case *pb.VerifierDispatch_ReplayJob:
-			return r.handleReplayJob(ctx, msg.ReplayJob)
-		case *pb.VerifierDispatch_ByteSideScan:
-			return r.handleScanRequest(ctx, msg.ByteSideScan)
-		default:
-			r.d.Logger.Warn("unknown verifier dispatch", "type", fmt.Sprintf("%T", d.GetDispatch()))
-			return nil
+		return subscriptionErr
+	case reconcileErr := <-reconcileDone:
+		cancel()
+		subscriptionErr := <-subscriptionDone
+		if reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+			return reconcileErr
 		}
-	})
+		return subscriptionErr
+	}
+}
+
+func (r *Role) reconcileProtocolTables(ctx context.Context) error {
+	ticker := time.NewTicker(r.cfg.ProtocolTablesReconcile)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := r.ensureProtocolTablesMode(ctx, ddl.ModeVerifyOnly); err != nil {
+				return fmt.Errorf("verifier: reconcile protocol tables: %w", err)
+			}
+		}
+	}
 }
 
 func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {

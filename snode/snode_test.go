@@ -126,10 +126,46 @@ func TestRegister_SendsSNodeRegistration(t *testing.T) {
 
 type snodeFakeServer struct {
 	pb.UnimplementedMembershipServer
+	pb.UnimplementedPromotionGatewayServer
 
-	mu            sync.Mutex
-	registrations []*pb.NodeRegistration
-	active        []string
+	mu                  sync.Mutex
+	registrations       []*pb.NodeRegistration
+	active              []string
+	subscriptionStarts  int
+	activeSubscriptions int
+	subscriptionRelease <-chan struct{}
+	subscriptionErr     error
+}
+
+func (s *snodeFakeServer) SubscribePromotions(_ *pb.SNodeHello, stream grpc.ServerStreamingServer[pb.PromotionCommand]) error {
+	s.mu.Lock()
+	s.subscriptionStarts++
+	s.activeSubscriptions++
+	release := s.subscriptionRelease
+	subscriptionErr := s.subscriptionErr
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.activeSubscriptions--
+		s.mu.Unlock()
+	}()
+	if release != nil {
+		select {
+		case <-release:
+			return subscriptionErr
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
+	<-stream.Context().Done()
+	return stream.Context().Err()
+}
+
+func (s *snodeFakeServer) failSubscriptionWhen(release <-chan struct{}, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscriptionRelease = release
+	s.subscriptionErr = err
 }
 
 func (s *snodeFakeServer) RegisterNode(_ context.Context, reg *pb.NodeRegistration) (*pb.Ack, error) {
@@ -152,6 +188,12 @@ func (s *snodeFakeServer) snapshot() ([]*pb.NodeRegistration, []string) {
 	return append([]*pb.NodeRegistration(nil), s.registrations...), append([]string(nil), s.active...)
 }
 
+func (s *snodeFakeServer) subscriptionSnapshot() (starts, active int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subscriptionStarts, s.activeSubscriptions
+}
+
 func startSNodeFakeServer(t *testing.T, fake *snodeFakeServer) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -160,6 +202,7 @@ func startSNodeFakeServer(t *testing.T, fake *snodeFakeServer) string {
 	}
 	srv := grpc.NewServer()
 	pb.RegisterMembershipServer(srv, fake)
+	pb.RegisterPromotionGatewayServer(srv, fake)
 	done := make(chan struct{})
 	go func() {
 		_ = srv.Serve(ln)

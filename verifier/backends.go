@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
 // NewReplayCore assembles the real replay verifier for this verifier role.
@@ -69,7 +69,7 @@ func (s *CHScanner) Scan(ctx context.Context, parts []arbiter.PartRef) ([]arbite
 		for _, p := range refs {
 			names = append(names, p.PartName)
 		}
-		qualified := s.cfg.UnsafeDatabase + "." + chTableName(tableID)
+		qualified := s.cfg.UnsafeDatabase + "." + ddl.CHTableName(tableID)
 		results, err := chexec.ScanParts(ctx, s.conn, qualified, sch, names)
 		if err != nil {
 			return nil, fmt.Errorf("scan table %s: %w", tableID, err)
@@ -102,8 +102,4 @@ func (s *CHScanner) schemaFor(tableID string) (payloadexec.TableSchema, error) {
 		}
 	}
 	return payloadexec.TableSchema{}, fmt.Errorf("no schema configured for table %s", tableID)
-}
-
-func chTableName(tableID string) string {
-	return strings.ReplaceAll(tableID, ".", "__")
 }
