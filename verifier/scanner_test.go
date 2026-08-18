@@ -4,9 +4,12 @@ package verifier
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -17,6 +20,8 @@ import (
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
+
+var scannerFixtureSequence atomic.Uint64
 
 func requireCH(t *testing.T) clickhouse.Conn {
 	t.Helper()
@@ -41,27 +46,26 @@ func requireCH(t *testing.T) clickhouse.Conn {
 func TestCHScanner_MatchesSourceHashing(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
-	table := ddl.CHTableName("db.t")
-	qualified := "hg_unsafe." + table
+	database, tableID := scannerFixtureNames(t)
+	table := ddl.CHTableName(tableID)
+	qualified := database + "." + table
 	schema := scanTableSchema()
+	schema.TableID = tableID
 
-	mustExecScan(t, conn, "CREATE DATABASE IF NOT EXISTS hg_unsafe")
-	mustExecScan(t, conn, "DROP TABLE IF EXISTS "+qualified)
-	mustExecScan(t, conn, fmt.Sprintf(`
-		CREATE TABLE %s (
-			_hg_row_id FixedString(32),
-			p String,
-			v UInt64
-		) ENGINE = MergeTree
-		PARTITION BY p
-		ORDER BY tuple()`, qualified))
-	mustExecScan(t, conn, "SYSTEM STOP MERGES "+qualified)
-	t.Cleanup(func() { _ = conn.Exec(context.Background(), "DROP TABLE IF EXISTS "+qualified) })
+	if err := runScannerFixtureSetup(
+		t.Cleanup,
+		func() { dropScannerFixtureSync(t, conn, database, qualified) },
+		func(query string) error { return conn.Exec(context.Background(), query) },
+		database,
+		qualified,
+	); err != nil {
+		t.Fatalf("setup scanner fixture: %v", err)
+	}
 
-	rid0 := payloadexec.RowID("testnet", "db.t", "acct:1:n", 0)
-	rid1 := payloadexec.RowID("testnet", "db.t", "acct:1:n", 1)
+	rid0 := payloadexec.RowID("testnet", tableID, "acct:1:n", 0)
+	rid1 := payloadexec.RowID("testnet", tableID, "acct:1:n", 1)
 	insertScanRows(t, conn, qualified, scanRow{rid: rid0, p: "p0", v: 1}, scanRow{rid: rid1, p: "p0", v: 2})
-	partNames := activeScanPartNames(t, ctx, conn, "hg_unsafe", table)
+	partNames := activeScanPartNames(t, ctx, conn, database, table)
 	if len(partNames) != 1 {
 		t.Fatalf("active parts = %d, want 1 (%v)", len(partNames), partNames)
 	}
@@ -69,9 +73,10 @@ func TestCHScanner_MatchesSourceHashing(t *testing.T) {
 	cfg := testConfigV()
 	cfg.Tables = []payloadexec.TableSchema{schema}
 	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	cfg.UnsafeDatabase = database
 	scanner := NewScanner(cfg, conn)
 	got, err := scanner.Scan(ctx, []arbiter.PartRef{{
-		TableID: "db.t", PartitionID: "p0", PartRowLtHash: "0xLIE", PartName: partNames[0],
+		TableID: tableID, PartitionID: "p0", PartRowLtHash: "0xLIE", PartName: partNames[0],
 	}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -83,9 +88,91 @@ func TestCHScanner_MatchesSourceHashing(t *testing.T) {
 		t.Fatalf("scan result: %+v want hash %s part %s", got, want, partNames[0])
 	}
 	if _, err := scanner.Scan(ctx, []arbiter.PartRef{{
-		TableID: "db.t", PartitionID: "p0", PartRowLtHash: "0xLIE", PartName: "absent_0_0_0",
+		TableID: tableID, PartitionID: "p0", PartRowLtHash: "0xLIE", PartName: "absent_0_0_0",
 	}}); err == nil {
 		t.Fatal("missing part must make scanner refuse to attest")
+	}
+}
+
+func scannerFixtureNames(t *testing.T) (database, tableID string) {
+	t.Helper()
+	seed := fmt.Sprintf("verifier/%s/%d/%d", t.Name(), os.Getpid(), scannerFixtureSequence.Add(1))
+	sum := sha1.Sum([]byte(seed))
+	suffix := hex.EncodeToString(sum[:])[:12]
+	return "hg_unsafe_scan_" + suffix, "db.t_" + suffix
+}
+
+func runScannerFixtureSetup(registerCleanup func(func()), cleanup func(), exec func(string) error, database, qualified string) error {
+	registerCleanup(cleanup)
+	queries := []string{
+		"DROP DATABASE IF EXISTS " + database + " SYNC",
+		"CREATE DATABASE IF NOT EXISTS " + database,
+		"DROP TABLE IF EXISTS " + qualified + " SYNC",
+		fmt.Sprintf(`
+			CREATE TABLE %s (
+				_hg_row_id FixedString(32),
+				p String,
+				v UInt64
+			) ENGINE = MergeTree
+			PARTITION BY p
+			ORDER BY tuple()`, qualified),
+		"SYSTEM STOP MERGES " + qualified,
+	}
+	for _, query := range queries {
+		if err := exec(query); err != nil {
+			return fmt.Errorf("exec %q: %w", query, err)
+		}
+	}
+	return nil
+}
+
+func dropScannerFixtureSync(t *testing.T, conn clickhouse.Conn, database, qualified string) {
+	t.Helper()
+	for _, query := range []string{
+		"DROP TABLE IF EXISTS " + qualified + " SYNC",
+		"DROP DATABASE IF EXISTS " + database + " SYNC",
+	} {
+		if err := conn.Exec(context.Background(), query); err != nil {
+			t.Errorf("cleanup %q: %v", query, err)
+		}
+	}
+}
+
+func TestScannerFixtureNamesAreUniquePerInvocation(t *testing.T) {
+	databaseA, tableA := scannerFixtureNames(t)
+	databaseB, tableB := scannerFixtureNames(t)
+	if databaseA == databaseB || tableA == tableB {
+		t.Fatalf("fixture names reused: %s/%s and %s/%s", databaseA, tableA, databaseB, tableB)
+	}
+}
+
+func TestScannerFixtureRegistersCleanupBeforeSetupFailure(t *testing.T) {
+	var events []string
+	var cleanup func()
+	errInjected := errors.New("injected setup failure")
+
+	err := runScannerFixtureSetup(
+		func(fn func()) {
+			events = append(events, "register-cleanup")
+			cleanup = fn
+		},
+		func() { events = append(events, "cleanup") },
+		func(query string) error {
+			events = append(events, "setup:"+query)
+			return errInjected
+		},
+		"hg_unsafe_scan_test",
+		"hg_unsafe_scan_test.db__t_test",
+	)
+	if !errors.Is(err, errInjected) {
+		t.Fatalf("setup error = %v, want injected failure", err)
+	}
+	if cleanup == nil {
+		t.Fatal("cleanup was not registered before setup")
+	}
+	cleanup()
+	if len(events) != 3 || events[0] != "register-cleanup" || events[2] != "cleanup" {
+		t.Fatalf("lifecycle events = %v, want cleanup registration before setup and cleanup after failure", events)
 	}
 }
 
@@ -158,11 +245,4 @@ func activeScanPartNames(t *testing.T, ctx context.Context, conn clickhouse.Conn
 		t.Fatalf("active part rows: %v", err)
 	}
 	return names
-}
-
-func mustExecScan(t *testing.T, conn clickhouse.Conn, query string) {
-	t.Helper()
-	if err := conn.Exec(context.Background(), query); err != nil {
-		t.Fatalf("exec %q: %v", query, err)
-	}
 }
