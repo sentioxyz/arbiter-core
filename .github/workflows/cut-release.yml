@@ -39,36 +39,62 @@ jobs:
           bazel build //...
           bazel test --build_tests_only --@rules_go//go/config:race //... --test_output=errors
 
-      - name: start ClickHouse
+      - name: start two ClickHouse nodes with shared Keeper
         run: |
-          docker rm -f arbiter-core-release-clickhouse >/dev/null 2>&1 || true
+          set -euo pipefail
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          network="arbiter-core-release-${suffix}"
+          ch_a="arbiter-core-release-clickhouse-a-${suffix}"
+          ch_b="arbiter-core-release-clickhouse-b-${suffix}"
+          docker rm -f "${ch_a}" "${ch_b}" >/dev/null 2>&1 || true
+          docker network rm "${network}" >/dev/null 2>&1 || true
+          docker network create "${network}"
           docker run -d --rm \
-            --name arbiter-core-release-clickhouse \
+            --name "${ch_a}" \
+            --hostname "${ch_a}" \
+            --network "${network}" \
+            --network-alias arbiter-core-clickhouse-a \
             -p 127.0.0.1::9000 \
             -e CLICKHOUSE_SKIP_USER_SETUP=1 \
-            -v "$PWD/scripts/ci/clickhouse-keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
+            -v "$PWD/scripts/ci/clickhouse-shared-keeper-server.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
             clickhouse/clickhouse-server:25.8
-          host_port="$(
-            docker inspect \
-              --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' \
-              arbiter-core-release-clickhouse
-          )"
-          echo "CH_ADDR=127.0.0.1:${host_port}" >> "$GITHUB_ENV"
-          echo "CH_PORT=${host_port}" >> "$GITHUB_ENV"
+          docker run -d --rm \
+            --name "${ch_b}" \
+            --hostname "${ch_b}" \
+            --network "${network}" \
+            -p 127.0.0.1::9000 \
+            -e CLICKHOUSE_SKIP_USER_SETUP=1 \
+            -v "$PWD/scripts/ci/clickhouse-shared-keeper-client.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
+            clickhouse/clickhouse-server:25.8
+          port_a="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' "${ch_a}")"
+          port_b="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' "${ch_b}")"
+          {
+            echo "CH_ADDR=127.0.0.1:${port_a}"
+            echo "CH_REPLICA_ADDR=127.0.0.1:${port_b}"
+            echo "CH_A_CONTAINER=${ch_a}"
+            echo "CH_B_CONTAINER=${ch_b}"
+            echo "CH_NETWORK=${network}"
+          } >> "$GITHUB_ENV"
 
-      - name: wait for ClickHouse
+      - name: wait for ClickHouse and shared Keeper
         run: |
           for _ in $(seq 1 30); do
-            timeout 1 bash -c "</dev/tcp/127.0.0.1/${CH_PORT}" && exit 0
+            if docker exec "${CH_A_CONTAINER}" clickhouse-client --query "SELECT 1" >/dev/null 2>&1 && \
+               docker exec "${CH_B_CONTAINER}" clickhouse-client --query "SELECT 1" >/dev/null 2>&1 && \
+               docker exec "${CH_B_CONTAINER}" clickhouse-client --query "SELECT count() FROM system.zookeeper WHERE path = '/'" >/dev/null 2>&1; then
+              exit 0
+            fi
             sleep 1
           done
-          docker logs arbiter-core-release-clickhouse
+          docker logs "${CH_A_CONTAINER}"
+          docker logs "${CH_B_CONTAINER}"
           exit 1
 
       - name: validate SNode integration
         env:
           ARBITER_CH_INTEGRATION: "1"
           ARBITER_CH_KEEPER: "1"
+          ARBITER_CH_REPLICA: "1"
         run: |
           bazel test \
             //dataplane/ddl:ddl_test \
@@ -76,13 +102,21 @@ jobs:
             //verifier:verifier_test \
             --test_env=ARBITER_CH_INTEGRATION \
             --test_env=ARBITER_CH_KEEPER \
+            --test_env=ARBITER_CH_REPLICA \
             --test_env=CH_ADDR \
+            --test_env=CH_REPLICA_ADDR \
             --test_timeout=900 \
             --test_output=errors
 
-      - name: stop ClickHouse
+      - name: stop ClickHouse and remove its network
         if: always()
-        run: docker rm -f arbiter-core-release-clickhouse >/dev/null 2>&1 || true
+        run: |
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ch_a="${CH_A_CONTAINER:-arbiter-core-release-clickhouse-a-${suffix}}"
+          ch_b="${CH_B_CONTAINER:-arbiter-core-release-clickhouse-b-${suffix}}"
+          network="${CH_NETWORK:-arbiter-core-release-${suffix}}"
+          docker rm -f "${ch_a}" "${ch_b}" >/dev/null 2>&1 || true
+          docker network rm "${network}" >/dev/null 2>&1 || true
 
       - name: compute next version
         id: version

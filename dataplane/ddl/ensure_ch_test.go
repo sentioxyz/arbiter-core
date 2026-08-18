@@ -195,28 +195,32 @@ func TestEnsureProtocolTables_SkipsFreezeViolationWithWarning(t *testing.T) {
 
 func TestEnsureProtocolTables_TwoReplicasSameZKPathReplicate(t *testing.T) {
 	ctx := context.Background()
-	conn := requireCH(t)
-	requireKeeper(t, conn)
+	connA := requireCH(t)
+	connB := requireReplicaCH(t)
+	requireKeeper(t, connA)
+	requireKeeper(t, connB)
 	a := testPinned(t)
-	dropDatabasesSync(t, conn, a)
-	b := Pinned{UnsafeDB: a.UnsafeDB + "_b", SafeDB: a.SafeDB + "_b", PromoteDB: a.PromoteDB + "_b", NodeID: a.NodeID + "-b"}
-	dropDatabasesSync(t, conn, b)
+	dropDatabasesSync(t, connA, a)
+	b := a
+	b.NodeID += "-b"
+	dropDatabasesSync(t, connB, b)
 	sch := ensureSchema(t)
 	tables := []payloadexec.TableSchema{sch}
-	for _, p := range []Pinned{a, b} {
-		if err := EnsureProtocolTables(ctx, conn, p, tables, ModeCreateAndVerify, slog.Default()); err != nil {
-			t.Fatalf("ensure %s: %v", p.NodeID, err)
-		}
+	if err := EnsureProtocolTables(ctx, connA, a, tables, ModeCreateAndVerify, slog.Default()); err != nil {
+		t.Fatalf("ensure node A %s: %v", a.NodeID, err)
+	}
+	if err := EnsureProtocolTables(ctx, connB, b, tables, ModeCreateAndVerify, slog.Default()); err != nil {
+		t.Fatalf("ensure node B %s: %v", b.NodeID, err)
 	}
 	table := CHTableName(sch.TableID)
-	if err := conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s.%s VALUES (unhex('%064x'), 'p0', 1)", a.UnsafeDB, table, 1)); err != nil {
+	if err := connA.Exec(ctx, fmt.Sprintf("INSERT INTO %s.%s VALUES (unhex('%064x'), 'p0', 1)", a.UnsafeDB, table, 1)); err != nil {
 		t.Fatalf("insert into replica a: %v", err)
 	}
-	if err := conn.Exec(ctx, fmt.Sprintf("SYSTEM SYNC REPLICA %s.%s", b.UnsafeDB, table)); err != nil {
+	if err := connB.Exec(ctx, fmt.Sprintf("SYSTEM SYNC REPLICA %s.%s", b.UnsafeDB, table)); err != nil {
 		t.Fatalf("sync replica b: %v", err)
 	}
 	var rows uint64
-	if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s.%s", b.UnsafeDB, table)).Scan(&rows); err != nil || rows != 1 {
+	if err := connB.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s.%s", b.UnsafeDB, table)).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("replica b rows = %d err=%v, want 1 (same zk path %s)", rows, err, ZooKeeperPath(a, sch.TableID))
 	}
 }

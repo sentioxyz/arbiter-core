@@ -20,6 +20,23 @@ func requireCH(t *testing.T) clickhouse.Conn {
 	if addr == "" {
 		addr = "127.0.0.1:9000"
 	}
+	return openCH(t, addr)
+}
+
+func requireReplicaCH(t *testing.T) clickhouse.Conn {
+	t.Helper()
+	if os.Getenv("ARBITER_CH_REPLICA") != "1" {
+		t.Skip("set ARBITER_CH_REPLICA=1 and CH_REPLICA_ADDR to run the two-node replication acceptance")
+	}
+	addr := os.Getenv("CH_REPLICA_ADDR")
+	if addr == "" {
+		t.Fatal("ARBITER_CH_REPLICA=1 requires CH_REPLICA_ADDR")
+	}
+	return openCH(t, addr)
+}
+
+func openCH(t *testing.T, addr string) clickhouse.Conn {
+	t.Helper()
 	conn, err := clickhouse.Open(&clickhouse.Options{Addr: []string{addr}})
 	if err != nil {
 		t.Fatalf("clickhouse: %v", err)
