@@ -82,10 +82,14 @@ func (c *Config) validate() error {
 	if c.PromoteDatabase == "" {
 		c.PromoteDatabase = defaultPromoteDatabase
 	}
-	if c.ProtocolTablesReconcile == 0 {
+	if c.ProtocolTablesReconcile < 0 {
+		errs = append(errs, errors.New("protocol tables reconcile interval must not be negative"))
+	} else if c.ProtocolTablesReconcile == 0 {
 		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
 	}
-	if c.HardPartsPerPartition == 0 {
+	if c.HardPartsPerPartition < 0 {
+		errs = append(errs, errors.New("hard parts per partition must not be negative"))
+	} else if c.HardPartsPerPartition == 0 {
 		c.HardPartsPerPartition = DefaultHardPartsPerPartition
 	}
 	if len(errs) == 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -83,49 +84,86 @@ func (r *Role) Register(ctx context.Context) error {
 }
 
 func (r *Role) Run(ctx context.Context) error {
-	if r.cfg.ProtocolTables != ddl.ModeOff {
-		go r.reconcileProtocolTables(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	runSubscription := func(ctx context.Context) error {
+		return r.d.Client.RunVerifierSubscription(ctx, r.cfg.ReplicaID, func(d *pb.VerifierDispatch) error {
+			if d == nil {
+				return nil
+			}
+			switch msg := d.GetDispatch().(type) {
+			case *pb.VerifierDispatch_ReplayJob:
+				return r.handleReplayJob(ctx, msg.ReplayJob)
+			case *pb.VerifierDispatch_ByteSideScan:
+				return r.handleScanRequest(ctx, msg.ByteSideScan)
+			default:
+				r.d.Logger.Warn("unknown verifier dispatch", "type", fmt.Sprintf("%T", d.GetDispatch()))
+				return nil
+			}
+		})
 	}
-	return r.d.Client.RunVerifierSubscription(ctx, r.cfg.ReplicaID, func(d *pb.VerifierDispatch) error {
-		if d == nil {
-			return nil
-		}
-		switch msg := d.GetDispatch().(type) {
-		case *pb.VerifierDispatch_ReplayJob:
-			return r.handleReplayJob(ctx, msg.ReplayJob)
-		case *pb.VerifierDispatch_ByteSideScan:
-			return r.handleScanRequest(ctx, msg.ByteSideScan)
-		default:
-			r.d.Logger.Warn("unknown verifier dispatch", "type", fmt.Sprintf("%T", d.GetDispatch()))
-			return nil
-		}
-	})
+	if r.cfg.ProtocolTables == ddl.ModeOff {
+		return runSubscription(runCtx)
+	}
+	return r.runWithProtocolTableReconcile(runCtx, cancel, runSubscription)
 }
 
 func (r *Role) ensureProtocolTables(ctx context.Context) error {
-	if r.cfg.ProtocolTables == ddl.ModeOff {
+	return r.ensureProtocolTablesMode(ctx, r.cfg.ProtocolTables)
+}
+
+func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {
+	if mode == ddl.ModeOff {
 		return nil
 	}
 	pinned := ddl.Pinned{
 		UnsafeDB: r.cfg.UnsafeDatabase, SafeDB: r.cfg.SafeDatabase, PromoteDB: r.cfg.PromoteDatabase,
 		NodeID: r.cfg.ReplicaID, KeeperShardID: r.cfg.KeeperShardID,
 	}
-	if err := ddl.EnsureProtocolTables(ctx, r.d.Conn, pinned, r.cfg.Tables, r.cfg.ProtocolTables, r.d.Logger); err != nil {
+	if err := ddl.EnsureProtocolTables(ctx, r.d.Conn, pinned, r.cfg.Tables, mode, r.d.Logger); err != nil {
 		return fmt.Errorf("verifier: ensure protocol tables: %w", err)
 	}
 	return nil
 }
 
-func (r *Role) reconcileProtocolTables(ctx context.Context) {
+func (r *Role) runWithProtocolTableReconcile(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	runSubscription func(context.Context) error,
+) error {
+	subscriptionDone := make(chan error, 1)
+	reconcileDone := make(chan error, 1)
+	go func() { subscriptionDone <- runSubscription(ctx) }()
+	go func() { reconcileDone <- r.reconcileProtocolTables(ctx) }()
+
+	select {
+	case subscriptionErr := <-subscriptionDone:
+		cancel()
+		reconcileErr := <-reconcileDone
+		if reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+			return reconcileErr
+		}
+		return subscriptionErr
+	case reconcileErr := <-reconcileDone:
+		cancel()
+		subscriptionErr := <-subscriptionDone
+		if reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+			return reconcileErr
+		}
+		return subscriptionErr
+	}
+}
+
+func (r *Role) reconcileProtocolTables(ctx context.Context) error {
 	ticker := time.NewTicker(r.cfg.ProtocolTablesReconcile)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case <-ticker.C:
-			if err := r.ensureProtocolTables(ctx); err != nil {
-				r.d.Logger.Error("protocol table reconcile failed", "err", err)
+			if err := r.ensureProtocolTablesMode(ctx, ddl.ModeVerifyOnly); err != nil {
+				return fmt.Errorf("verifier: reconcile protocol tables: %w", err)
 			}
 		}
 	}
