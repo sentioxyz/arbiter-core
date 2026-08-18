@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,30 +149,41 @@ func waitVerifierSubscriptions(t *testing.T, server *verifierFakeServer, wantSta
 	t.Fatalf("subscriptions starts=%d active=%d, want starts>=%d active=%d", starts, active, wantStarts, wantActive)
 }
 
-type countingProtocolConnV struct {
+type blockingProtocolConnV struct {
 	clickhouse.Conn
-	reads atomic.Int64
+	blockOnce   sync.Once
+	releaseOnce sync.Once
+	entered     chan struct{}
+	cancelSeen  chan struct{}
+	allowExit   chan struct{}
+	exited      chan struct{}
 }
 
-func (c *countingProtocolConnV) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
-	c.reads.Add(1)
-	return c.Conn.Query(ctx, query, args...)
+func newBlockingProtocolConnV(conn clickhouse.Conn) *blockingProtocolConnV {
+	return &blockingProtocolConnV{
+		Conn:       conn,
+		entered:    make(chan struct{}),
+		cancelSeen: make(chan struct{}),
+		allowExit:  make(chan struct{}),
+		exited:     make(chan struct{}),
+	}
 }
 
-func (c *countingProtocolConnV) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
-	c.reads.Add(1)
+func (c *blockingProtocolConnV) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
+	blocked := false
+	c.blockOnce.Do(func() { blocked = true })
+	if blocked {
+		close(c.entered)
+		<-ctx.Done()
+		close(c.cancelSeen)
+		<-c.allowExit
+		close(c.exited)
+	}
 	return c.Conn.QueryRow(ctx, query, args...)
 }
 
-func waitForProtocolReadsV(t *testing.T, conn *countingProtocolConnV) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for conn.reads.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if conn.reads.Load() == 0 {
-		t.Fatal("periodic reconcile did not read protocol table metadata")
-	}
+func (c *blockingProtocolConnV) release() {
+	c.releaseOnce.Do(func() { close(c.allowExit) })
 }
 
 func TestRun_ReconcileDriftFailsClosedAndCancelsSubscription(t *testing.T) {
@@ -217,35 +228,51 @@ func TestRun_CancellationDoesNotLeakVerifierSubscriptionAcrossRuns(t *testing.T)
 	}
 }
 
-func TestRun_SubscriptionFailureStopsReconcileBeforeReturn(t *testing.T) {
+func TestRun_SubscriptionFailureJoinsReconcileBeforeReturn(t *testing.T) {
 	conn := requireCH(t)
 	role, server, _ := newProtocolTableRunHarnessV(t, conn)
-	counting := &countingProtocolConnV{Conn: conn}
-	role.d.Conn = counting
-	release := make(chan struct{})
-	server.failSubscriptionWhen(release, status.Error(codes.InvalidArgument, "subscription rejected"))
+	probe := newBlockingProtocolConnV(conn)
+	t.Cleanup(probe.release)
+	role.d.Conn = probe
+	subscriptionRelease := make(chan struct{})
+	server.failSubscriptionWhen(subscriptionRelease, status.Error(codes.InvalidArgument, "subscription rejected"))
 
 	parent := context.Background()
 	done := make(chan error, 1)
 	go func() { done <- role.Run(parent) }()
 	waitVerifierSubscriptions(t, server, 1, 1)
-	waitForProtocolReadsV(t, counting)
-	close(release)
+	select {
+	case <-probe.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("periodic reconcile did not enter the blocking metadata probe")
+	}
+	close(subscriptionRelease)
+	select {
+	case <-probe.cancelSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription failure did not cancel the in-flight reconcile probe")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned before the reconcile probe exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	probe.release()
+	select {
+	case <-probe.exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile probe did not exit after release")
+	}
 	select {
 	case err := <-done:
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("Run err = %v, want InvalidArgument", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after non-retryable subscription failure")
+		t.Fatal("Run did not return after the reconcile probe exited")
 	}
 	if parent.Err() != nil {
 		t.Fatalf("parent context unexpectedly ended: %v", parent.Err())
 	}
 	waitVerifierSubscriptions(t, server, 1, 0)
-	readsAtReturn := counting.reads.Load()
-	time.Sleep(4 * role.cfg.ProtocolTablesReconcile)
-	if got := counting.reads.Load(); got != readsAtReturn {
-		t.Fatalf("reconcile worker still read metadata after Run returned: got %d reads, want %d", got, readsAtReturn)
-	}
 }

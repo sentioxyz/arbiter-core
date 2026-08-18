@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,30 +177,41 @@ func waitSNodeSubscriptions(t *testing.T, server *snodeFakeServer, wantStarts, w
 	t.Fatalf("subscriptions starts=%d active=%d, want starts>=%d active=%d", starts, active, wantStarts, wantActive)
 }
 
-type countingProtocolConnS struct {
+type blockingProtocolConnS struct {
 	clickhouse.Conn
-	reads atomic.Int64
+	blockOnce   sync.Once
+	releaseOnce sync.Once
+	entered     chan struct{}
+	cancelSeen  chan struct{}
+	allowExit   chan struct{}
+	exited      chan struct{}
 }
 
-func (c *countingProtocolConnS) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
-	c.reads.Add(1)
-	return c.Conn.Query(ctx, query, args...)
+func newBlockingProtocolConnS(conn clickhouse.Conn) *blockingProtocolConnS {
+	return &blockingProtocolConnS{
+		Conn:       conn,
+		entered:    make(chan struct{}),
+		cancelSeen: make(chan struct{}),
+		allowExit:  make(chan struct{}),
+		exited:     make(chan struct{}),
+	}
 }
 
-func (c *countingProtocolConnS) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
-	c.reads.Add(1)
+func (c *blockingProtocolConnS) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
+	blocked := false
+	c.blockOnce.Do(func() { blocked = true })
+	if blocked {
+		close(c.entered)
+		<-ctx.Done()
+		close(c.cancelSeen)
+		<-c.allowExit
+		close(c.exited)
+	}
 	return c.Conn.QueryRow(ctx, query, args...)
 }
 
-func waitForProtocolReadsS(t *testing.T, conn *countingProtocolConnS) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for conn.reads.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if conn.reads.Load() == 0 {
-		t.Fatal("periodic reconcile did not read protocol table metadata")
-	}
+func (c *blockingProtocolConnS) release() {
+	c.releaseOnce.Do(func() { close(c.allowExit) })
 }
 
 func TestRun_ReconcileIsVerifyOnlyAndDroppedTableFailsClosed(t *testing.T) {
@@ -252,35 +263,51 @@ func TestRun_CancellationDoesNotLeakReconcileOrSubscriptionAcrossRuns(t *testing
 	}
 }
 
-func TestRun_SubscriptionFailureStopsReconcileBeforeReturn(t *testing.T) {
+func TestRun_SubscriptionFailureJoinsReconcileBeforeReturn(t *testing.T) {
 	conn := requireCH(t)
 	role, server, _ := newProtocolTableRunHarnessS(t, conn)
-	counting := &countingProtocolConnS{Conn: conn}
-	role.d.Conn = counting
-	release := make(chan struct{})
-	server.failSubscriptionWhen(release, status.Error(codes.InvalidArgument, "subscription rejected"))
+	probe := newBlockingProtocolConnS(conn)
+	t.Cleanup(probe.release)
+	role.d.Conn = probe
+	subscriptionRelease := make(chan struct{})
+	server.failSubscriptionWhen(subscriptionRelease, status.Error(codes.InvalidArgument, "subscription rejected"))
 
 	parent := context.Background()
 	done := make(chan error, 1)
 	go func() { done <- role.Run(parent) }()
 	waitSNodeSubscriptions(t, server, 1, 1)
-	waitForProtocolReadsS(t, counting)
-	close(release)
+	select {
+	case <-probe.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("periodic reconcile did not enter the blocking metadata probe")
+	}
+	close(subscriptionRelease)
+	select {
+	case <-probe.cancelSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription failure did not cancel the in-flight reconcile probe")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned before the reconcile probe exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	probe.release()
+	select {
+	case <-probe.exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile probe did not exit after release")
+	}
 	select {
 	case err := <-done:
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("Run err = %v, want InvalidArgument", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after non-retryable subscription failure")
+		t.Fatal("Run did not return after the reconcile probe exited")
 	}
 	if parent.Err() != nil {
 		t.Fatalf("parent context unexpectedly ended: %v", parent.Err())
 	}
 	waitSNodeSubscriptions(t, server, 1, 0)
-	readsAtReturn := counting.reads.Load()
-	time.Sleep(4 * role.cfg.ProtocolTablesReconcile)
-	if got := counting.reads.Load(); got != readsAtReturn {
-		t.Fatalf("reconcile worker still read metadata after Run returned: got %d reads, want %d", got, readsAtReturn)
-	}
 }
