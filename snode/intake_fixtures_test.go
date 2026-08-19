@@ -14,6 +14,7 @@ import (
 
 	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay/nativepayload"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
@@ -34,18 +35,26 @@ func intakeSchema() payloadexec.TableSchema {
 }
 
 func intakeEnvelope(payload []byte) arbiter.StatementEnvelope {
-	sql := "INSERT INTO db.t FORMAT CSVWithNames"
+	sql := "INSERT INTO db.t FORMAT Native"
+	schema := intakeSchema()
 	return arbiter.StatementEnvelope{
-		StatementID:   arbiter.StatementID{ClientAccount: "0xacct", ClientSeq: 1, ClientNonce: "n"},
-		StatementKind: arbiter.StatementKindInsert,
-		SQL:           sql,
-		SQLHash:       replay.DigestString(sql),
-		SettingsHash:  replay.DigestString("settings"),
-		PayloadRef:    "payload-1.csv",
-		PayloadHash:   replay.DigestBytes(payload),
-		PayloadLength: uint64(len(payload)),
-		TargetTableID: "db.t",
-		UserJWS:       "x.y.z",
+		StatementID:     arbiter.StatementID{ClientAccount: "0xacct", ClientSeq: 1, ClientNonce: "n"},
+		StatementKind:   arbiter.StatementKindInsert,
+		SQL:             sql,
+		SQLHash:         replay.DigestString(sql),
+		SettingsHash:    "0x213f12b28bb47c05d226c4b86dad5b91e11d61040568a87dffe2ee87113ec006",
+		PayloadRef:      "payload-1.native",
+		PayloadHash:     replay.DigestBytes(payload),
+		PayloadLength:   uint64(len(payload)),
+		TargetTableID:   "db.t",
+		UserJWS:         "x.y.z",
+		EnvelopeVersion: 2,
+		NetworkID:       "testnet",
+		KeeperShardID:   0,
+		PayloadFormat:   "clickhouse-native-data-v1",
+		ClientRevision:  testRevision,
+		SchemaHash:      payloadexec.TableSchemaHash("testnet", schema),
+		RowIDProfileID:  payloadexec.RowIDProfileID,
 	}
 }
 
@@ -131,22 +140,28 @@ func assertSourceRows(t *testing.T, ctx context.Context, conn clickhouse.Conn, t
 
 func referenceSourceRoot(t *testing.T, ctx context.Context, cfg Config, schema payloadexec.TableSchema, env arbiter.StatementEnvelope, payload []byte) string {
 	t.Helper()
-	exec := payloadexec.New(cfg.NetworkID, schema)
+	exec := payloadexec.NewWithMaterializer(cfg.NetworkID, nativepayload.Materializer{
+		NetworkID: cfg.NetworkID,
+		Revision:  testRevision,
+	}, schema)
 	genesis, err := exec.GenesisSnapshot(0, cfg.SchemaSnapshotID, cfg.ExecutorProfileID)
 	if err != nil {
 		t.Fatalf("genesis: %v", err)
 	}
 	st := replay.Statement{
-		StatementID:   env.StatementID.Flat(),
-		StatementSeq:  env.StatementID.ClientSeq,
-		SQL:           env.SQL,
-		SQLHash:       env.SQLHash,
-		SettingsHash:  env.SettingsHash,
-		PayloadRef:    env.PayloadRef,
-		PayloadHash:   env.PayloadHash,
-		PayloadLength: env.PayloadLength,
-		TargetTableID: env.TargetTableID,
-		UserJWS:       env.UserJWS,
+		StatementID:    env.StatementID.Flat(),
+		StatementSeq:   env.StatementID.ClientSeq,
+		SQL:            env.SQL,
+		SQLHash:        env.SQLHash,
+		SettingsHash:   env.SettingsHash,
+		PayloadRef:     env.PayloadRef,
+		PayloadHash:    env.PayloadHash,
+		PayloadLength:  env.PayloadLength,
+		TargetTableID:  env.TargetTableID,
+		UserJWS:        env.UserJWS,
+		PayloadFormat:  env.PayloadFormat,
+		ClientRevision: env.ClientRevision,
+		SchemaHash:     env.SchemaHash,
 	}
 	job := replay.ReplayJob{
 		BlockSeq:           1,

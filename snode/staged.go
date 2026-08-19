@@ -13,13 +13,16 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/housegate/housegate/pkg/replay/chexec"
+	"github.com/housegate/housegate/pkg/replay/nativepayload"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
-const stagedCSVEncoding = "csv-with-names-v1"
+// stagedNativeEncoding is the only payload format the SI lane admits
+// (envelope v2 D1): the exact ClickHouse Native ClientData wire bytes.
+const stagedNativeEncoding = nativepayload.PayloadFormat
 
 type PrepareRequest struct {
 	Envelope        arbiter.StatementEnvelope
@@ -44,6 +47,7 @@ type PreparedLocalResult struct {
 var (
 	ErrEncodingNotSupported   = errors.New("snode: payload encoding not supported")
 	ErrPayloadMismatch        = errors.New("snode: payload does not match envelope")
+	ErrSchemaHashMismatch     = errors.New("snode: envelope schema_hash does not match this source's declared schema")
 	ErrSchemaUnknown          = errors.New("snode: unknown target table")
 	ErrNotPrepared            = errors.New("snode: statement has no prepared unsafe write")
 	ErrConvergenceForeignRows = errors.New("snode: foreign row ids in candidate part; operator intervention required")
@@ -103,7 +107,7 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		}
 	}
 
-	if req.PayloadEncoding != stagedCSVEncoding {
+	if req.PayloadEncoding != stagedNativeEncoding {
 		return PreparedLocalResult{}, fmt.Errorf("encoding %q: %w", req.PayloadEncoding, ErrEncodingNotSupported)
 	}
 	if req.Revision == 0 {
@@ -116,11 +120,17 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	if err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("%v: %w", err, ErrSchemaUnknown)
 	}
+	// Envelope v2: the agent signed the schema hash it encoded against; a
+	// disagreement with this source's declared schema is a terminal reject,
+	// checked BEFORE any decode or unsafe write.
+	if want := payloadexec.TableSchemaHash(r.cfg.NetworkID, schema); req.Envelope.SchemaHash != want {
+		return PreparedLocalResult{}, fmt.Errorf("statement %s schema_hash %q, source has %q: %w", flat, req.Envelope.SchemaHash, want, ErrSchemaHashMismatch)
+	}
 	if r.d.Payloads == nil || r.d.Conn == nil {
 		return PreparedLocalResult{}, errors.New("snode: payload store and clickhouse connection are required")
 	}
 
-	rows, err := payloadexec.DecodeCSV(payload, schema)
+	rows, err := nativepayload.Decode(schema, req.Revision, payload)
 	if err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("decode payload: %v: %w", err, ErrPayloadMismatch)
 	}

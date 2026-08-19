@@ -13,15 +13,13 @@ import (
 	"github.com/sentioxyz/arbiter-core"
 )
 
-const wrapperRevision = 1
-
 // SubmitLocalStatement is the P1c one-shot compatibility wrapper. New callers
 // use PrepareLocalStatement followed by RegisterPreparedClaim explicitly.
 func (r *Role) SubmitLocalStatement(ctx context.Context, env arbiter.StatementEnvelope, payload []byte) error {
 	if _, err := r.PrepareLocalStatement(ctx, PrepareRequest{
 		Envelope:        env,
-		PayloadEncoding: stagedCSVEncoding,
-		Revision:        wrapperRevision,
+		PayloadEncoding: env.PayloadFormat,
+		Revision:        int(env.ClientRevision),
 	}, payload); err != nil {
 		return err
 	}

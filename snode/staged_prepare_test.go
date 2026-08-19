@@ -10,7 +10,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
-const testEncoding = "csv-with-names-v1"
+const testEncoding = "clickhouse-native-data-v1"
 
 func stagedRequest(payload []byte) PrepareRequest {
 	return PrepareRequest{
@@ -30,7 +30,7 @@ func TestPrepareLocalStatement_CleanPath(t *testing.T) {
 	role, claims := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\np0,2\n")
+	payload := nativePayload(t, pv{"p0", 1}, pv{"p0", 2})
 	req := stagedRequest(payload)
 	res, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -68,7 +68,7 @@ func TestPrepareLocalStatement_IdempotentReplayAtUnsafeWritten(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
 	first, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -97,7 +97,7 @@ func TestPrepareLocalStatement_IdempotentReplayAtRCBound(t *testing.T) {
 	role, claims := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
 	prepared, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -134,7 +134,7 @@ func TestPrepareLocalStatement_ReplayAtPreparingConverges(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
 	first, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -165,7 +165,7 @@ func TestPrepareLocalStatement_ReplayAtAbortPendingCleansThenRetries(t *testing.
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
 	first, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -198,9 +198,9 @@ func TestPrepareLocalStatement_TerminalValidation(t *testing.T) {
 	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
 	role, _ := newIntakeHarness(t, conn, cfg)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
-	req.PayloadEncoding = "clickhouse-native-data-v1"
+	req.PayloadEncoding = "csv-with-names-v1"
 	if _, err := role.PrepareLocalStatement(ctx, req, payload); !errors.Is(err, ErrEncodingNotSupported) {
 		t.Fatalf("want ErrEncodingNotSupported, got %v", err)
 	}
@@ -212,11 +212,49 @@ func TestPrepareLocalStatement_TerminalValidation(t *testing.T) {
 	}
 
 	req = stagedRequest(payload)
-	if _, err := role.PrepareLocalStatement(ctx, req, []byte("p,v\np0,999\n")); !errors.Is(err, ErrPayloadMismatch) {
+	if _, err := role.PrepareLocalStatement(ctx, req, nativePayload(t, pv{"p0", 999})); !errors.Is(err, ErrPayloadMismatch) {
 		t.Fatalf("want ErrPayloadMismatch, got %v", err)
 	}
 
 	if _, ok, _ := role.journal.load(req.Envelope.StatementID.Flat()); ok {
 		t.Fatal("terminal validation must not create a journal record")
+	}
+}
+
+func TestPrepareLocalStatement_RejectsCSVEncoding(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	cfg := testConfigS(t)
+	cfg.Tables = []payloadexec.TableSchema{intakeSchema()}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	role, _ := newIntakeHarness(t, conn, cfg)
+	payload := nativePayload(t, pv{"p0", 1})
+	req := stagedRequest(payload)
+	req.PayloadEncoding = "csv-with-names-v1"
+	_, err := role.PrepareLocalStatement(ctx, req, payload)
+	if !errors.Is(err, ErrEncodingNotSupported) {
+		t.Fatalf("csv must be rejected with ErrEncodingNotSupported, got %v", err)
+	}
+}
+
+func TestPrepareLocalStatement_RejectsSchemaHashMismatchBeforeDecode(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	schema := intakeSchema()
+	cfg := testConfigS(t)
+	cfg.Tables = []payloadexec.TableSchema{schema}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	role, _ := newIntakeHarness(t, conn, cfg)
+	createIntakeTable(t, conn, role, schema)
+	payload := nativePayload(t, pv{"p0", 1})
+	req := stagedRequest(payload)
+	req.Envelope.SchemaHash = "0x" + strings.Repeat("ee", 32)
+	before := countActiveParts(t, conn, role, schema)
+	_, err := role.PrepareLocalStatement(ctx, req, payload)
+	if !errors.Is(err, ErrSchemaHashMismatch) {
+		t.Fatalf("schema hash mismatch must be terminal, got %v", err)
+	}
+	if after := countActiveParts(t, conn, role, schema); after != before {
+		t.Fatalf("schema hash mismatch must not write unsafe parts: before=%d after=%d", before, after)
 	}
 }

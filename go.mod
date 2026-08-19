@@ -17,7 +17,7 @@ require (
 )
 
 require (
-	github.com/ClickHouse/ch-go v0.73.0 // indirect
+	github.com/ClickHouse/ch-go v0.73.0
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
