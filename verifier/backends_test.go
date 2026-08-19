@@ -33,6 +33,24 @@ func TestNewReplayCore_RejectsBadSignerSeed(t *testing.T) {
 	}
 }
 
+func TestNewReplayCore_WiresSchemaHashSourceFromTables(t *testing.T) {
+	cfg := testConfigV()
+	core, err := NewReplayCore(cfg, nil, payloadexec.NewMemSnapshotStore(), payloadexec.NewMemPayloadStore())
+	if err != nil {
+		t.Fatalf("NewReplayCore: %v", err)
+	}
+	if core.SchemaHashes == nil {
+		t.Fatal("verifier must verify signed schema_hash against its own tables")
+	}
+	got, ok := core.SchemaHashes.TableSchemaHash("db.t")
+	if !ok || got != payloadexec.TableSchemaHash(cfg.NetworkID, cfg.Tables[0]) {
+		t.Fatalf("schema hash for db.t = %q ok=%v", got, ok)
+	}
+	if _, ok := core.SchemaHashes.TableSchemaHash("db.unknown"); ok {
+		t.Fatal("unknown table must not resolve")
+	}
+}
+
 func TestNewScanner_DefaultsUnsafeDatabaseAndMapsTableName(t *testing.T) {
 	cfg := testConfigV()
 
