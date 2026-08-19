@@ -155,6 +155,120 @@ func TestStateStore_PromotionIntentFailsReadsClosedUntilDurableFinalize(t *testi
 	}
 }
 
+func TestStateStore_BeginPromotionRefreshesSameCommandInventory(t *testing.T) {
+	dir := t.TempDir()
+	st, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	k := partitionKey{Table: "db.t", Partition: "p0"}
+	intent := promotionIntent{
+		PromotionSeq:        2,
+		BasePartitionRoot:   "0xbase",
+		PostPartitionRoot:   "0xpost",
+		BaseSafeSnapshotID:  "snap-1",
+		CandidatePartHashes: []string{"0xpart"},
+		UnsafePartNames:     []string{"all_2_2_0"},
+		SafePartsBefore:     []promotionSafePart{{Name: "all_1_1_0", PhysHash: "hash-1"}},
+	}
+	if err := st.BeginPromotion(k, intent); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	refreshed := clonePromotionIntent(intent)
+	refreshed.SafePartsBefore = []promotionSafePart{{Name: "all_1_1_1", PhysHash: "hash-2"}}
+	if err := st.BeginPromotion(k, refreshed); err != nil {
+		t.Fatalf("refresh same command after content-neutral safe rewrite: %v", err)
+	}
+
+	reopened, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got, ok := reopened.PendingPromotion(k); !ok || !reflect.DeepEqual(got, refreshed) {
+		t.Fatalf("refreshed intent after reopen = %+v ok=%v, want %+v", got, ok, refreshed)
+	}
+}
+
+func TestStateStore_RecordAckPersistFailureDoesNotAdvanceMemoryOrDisk(t *testing.T) {
+	dir := t.TempDir()
+	st, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	k := partitionKey{Table: "db.t", Partition: "p0"}
+	ack := arbiter.PromotionAck{NodeID: "s1", PromotionSeq: 7, TableID: "db.t", PartitionID: "p0"}
+	statePath := st.path
+	st.path = dir // os.Rename(temp, existing directory) must fail.
+	if err := st.RecordAck(k, 7, ack, "0xbase", "snap-7"); err == nil {
+		t.Fatal("RecordAck with an unwritable state target unexpectedly succeeded")
+	}
+	if got := st.Watermark(k); got != 0 {
+		t.Fatalf("in-memory watermark after failed persist = %d, want 0", got)
+	}
+	if _, ok := st.LastAck(k); ok {
+		t.Fatal("in-memory ack advanced after failed persist")
+	}
+
+	st.path = statePath
+	reopened, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("reopen after failed persist: %v", err)
+	}
+	if got := reopened.Watermark(k); got != 0 {
+		t.Fatalf("disk watermark after failed persist = %d, want 0", got)
+	}
+	if err := st.RecordAck(k, 7, ack, "0xbase", "snap-7"); err != nil {
+		t.Fatalf("same-process retry: %v", err)
+	}
+	reopened, err = openStateStore(dir)
+	if err != nil {
+		t.Fatalf("reopen after retry: %v", err)
+	}
+	if got := reopened.Watermark(k); got != 7 {
+		t.Fatalf("disk watermark after retry = %d, want 7", got)
+	}
+}
+
+func TestStateStore_RecordCleanupPersistFailureRetainsExclusion(t *testing.T) {
+	dir := t.TempDir()
+	st, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	k := partitionKey{Table: "db.t", Partition: "p0"}
+	ack := arbiter.PromotionAck{NodeID: "s1", PromotionSeq: 1, TableID: "db.t", PartitionID: "p0", Applied: true}
+	if err := st.RecordAppliedPromotion(k, 1, ack, "0xpost", "snap-1", nil, []string{"all_1_1_0"}); err != nil {
+		t.Fatalf("seed exclusion: %v", err)
+	}
+	statePath := st.path
+	st.path = dir // os.Rename(temp, existing directory) must fail.
+	if err := st.RecordCleanup(k, []string{"all_1_1_0"}); err == nil {
+		t.Fatal("RecordCleanup with an unwritable state target unexpectedly succeeded")
+	}
+	if got, err := st.PromotedUnsafeParts("db.t"); err != nil || !reflect.DeepEqual(got, []string{"all_1_1_0"}) {
+		t.Fatalf("in-memory exclusions after failed cleanup = %v %v", got, err)
+	}
+
+	st.path = statePath
+	reopened, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("reopen after failed cleanup: %v", err)
+	}
+	if got, err := reopened.PromotedUnsafeParts("db.t"); err != nil || !reflect.DeepEqual(got, []string{"all_1_1_0"}) {
+		t.Fatalf("disk exclusions after failed cleanup = %v %v", got, err)
+	}
+	if err := st.RecordCleanup(k, []string{"all_1_1_0"}); err != nil {
+		t.Fatalf("same-process cleanup retry: %v", err)
+	}
+	reopened, err = openStateStore(dir)
+	if err != nil {
+		t.Fatalf("reopen after cleanup retry: %v", err)
+	}
+	if got, err := reopened.PromotedUnsafeParts("db.t"); err != nil || got != nil {
+		t.Fatalf("disk exclusions after cleanup retry = %v %v, want empty", got, err)
+	}
+}
+
 func TestStateStore_UnpromotedLtHashMath(t *testing.T) {
 	st, err := openStateStore(t.TempDir())
 	if err != nil {

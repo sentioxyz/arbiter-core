@@ -2,8 +2,11 @@ package snode
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
+
+	chproto "github.com/ClickHouse/ch-go/proto"
+	clickhouseproto "github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
@@ -50,9 +53,6 @@ func (r *Role) sendCleanupAck(ctx context.Context, ack arbiter.CleanupAck) error
 }
 
 func isMissingPartErr(err error) bool {
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "no part") ||
-		strings.Contains(s, "not found") ||
-		strings.Contains(s, "doesn't exist") ||
-		strings.Contains(s, "does not exist")
+	var exception *clickhouseproto.Exception
+	return errors.As(err, &exception) && exception.Code == int32(chproto.ErrNoSuchDataPart)
 }

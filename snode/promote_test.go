@@ -3,6 +3,7 @@ package snode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -212,6 +213,84 @@ func TestHandlePromote_PostReplaceFailureRestartRetryConverges(t *testing.T) {
 		t.Fatalf("promotion acks after recovery = %+v", acks)
 	}
 	assertExactSafePartMappings(t, ctx, restarted, schema, second, acks[1].Parts)
+}
+
+func TestHandlePromote_PreReplaceIntentRecoversAfterContentNeutralSafeRewrite(t *testing.T) {
+	ctx := context.Background()
+	role, claims, signer, schema, _ := seedPromotableStatement(t, ctx)
+	first := promoteSeededPart(t, ctx, role, claims, signer, schema)
+	cleanup := cleanupCommand(schema.TableID, first)
+	if err := role.handleCleanup(ctx, wire.CleanupToPB(cleanup), mustSignCleanup(t, signer, cleanup)); err != nil {
+		t.Fatalf("first cleanup: %v", err)
+	}
+
+	secondPayload := nativePayload(t, pv{"p0", 3}, pv{"p0", 4})
+	secondEnv := intakeEnvelope(secondPayload)
+	secondEnv.StatementID.ClientSeq = 2
+	secondEnv.StatementID.ClientNonce = "n2"
+	secondEnv.PayloadRef = "payload-2.native"
+	if err := role.SubmitLocalStatement(ctx, secondEnv, secondPayload); err != nil {
+		t.Fatalf("second SubmitLocalStatement: %v", err)
+	}
+	second := claims.snapshot()[1].CandidateParts[0]
+	pk := partitionKey{Table: schema.TableID, Partition: second.PartitionID}
+	baseRoot, _ := role.state.BaseRoot(pk)
+	cmd := arbiter.PromoteSafePartition{
+		TableID: schema.TableID, PartitionID: second.PartitionID, PromotionSeq: 2,
+		BaseSafeSnapshotID: "safe-1", BasePartitionRoot: baseRoot,
+		CandidateParts: []arbiter.PartRef{{
+			TableID: schema.TableID, PartitionID: second.PartitionID,
+			PartRowLtHash: second.PartRowLtHash, PartName: second.PartName,
+		}},
+	}
+	post, err := lthashCombineHexAll(baseRoot, candidateHashes(cmd))
+	if err != nil {
+		t.Fatalf("post root: %v", err)
+	}
+	table := CHTableName(schema.TableID)
+	safeBefore := partsInLogicalPartition(activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, table), schema, second.PartitionID)
+	intent := promotionIntentFor(cmd, post, safeBefore)
+	if err := role.state.BeginPromotion(pk, intent); err != nil {
+		t.Fatalf("begin pre-REPLACE intent: %v", err)
+	}
+	partition, err := quotePartition(schema, second.PartitionID)
+	if err != nil {
+		t.Fatalf("quote partition: %v", err)
+	}
+	safeQualified := role.cfg.SafeDatabase + "." + table
+	if err := role.d.Conn.Exec(ctx, "SYSTEM START MERGES "+safeQualified); err != nil {
+		t.Fatalf("start safe merges for fixture rewrite: %v", err)
+	}
+	t.Cleanup(func() { _ = role.d.Conn.Exec(context.Background(), "SYSTEM STOP MERGES "+safeQualified) })
+	if err := role.d.Conn.Exec(ctx, fmt.Sprintf(
+		"OPTIMIZE TABLE %s.%s PARTITION %s FINAL SETTINGS optimize_skip_merged_partitions = 0",
+		role.cfg.SafeDatabase, table, partition)); err != nil {
+		t.Fatalf("content-neutral safe rewrite: %v", err)
+	}
+	if err := role.d.Conn.Exec(ctx, "SYSTEM STOP MERGES "+safeQualified); err != nil {
+		t.Fatalf("restore safe merge guard: %v", err)
+	}
+	safeAfter := partsInLogicalPartition(activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, table), schema, second.PartitionID)
+	if samePromotionSafeParts(intent.SafePartsBefore, safeAfter) {
+		t.Fatalf("OPTIMIZE did not change safe part inventory: before=%+v after=%+v", intent.SafePartsBefore, safeAfter)
+	}
+	if got, err := role.partitionContentRoot(ctx, role.cfg.SafeDatabase, table, schema, second.PartitionID); err != nil || got != baseRoot {
+		t.Fatalf("safe root after content-neutral rewrite = %s %v, want %s", got, err, baseRoot)
+	}
+
+	restarted, err := New(role.cfg, role.d)
+	if err != nil {
+		t.Fatalf("restart role: %v", err)
+	}
+	if err := restarted.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(t, signer, cmd)); err != nil {
+		t.Fatalf("retry after content-neutral safe rewrite: %v", err)
+	}
+	if got := rowCount(t, ctx, role.d.Conn, restarted.cfg.SafeDatabase+"."+table); got != 4 {
+		t.Fatalf("safe rows after retry = %d, want 4", got)
+	}
+	if got, err := restarted.PromotedUnsafeParts(schema.TableID); err != nil || !reflect.DeepEqual(got, []string{second.PartName}) {
+		t.Fatalf("PromotedUnsafeParts after retry = %v %v, want [%s]", got, err, second.PartName)
+	}
 }
 
 type failAfterReplaceConn struct {

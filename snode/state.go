@@ -151,7 +151,9 @@ func (st *stateStore) UnpromotedSum(k partitionKey) string {
 }
 
 // BeginPromotion durably records the publication intent. Repeating the exact
-// intent is idempotent; a different command cannot replace an unresolved one.
+// intent is idempotent. The same command may refresh its pre-publication safe
+// inventory after reconciliation proves the content root is still the base;
+// a different command cannot replace an unresolved one.
 func (st *stateStore) BeginPromotion(k partitionKey, intent promotionIntent) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -159,6 +161,11 @@ func (st *stateStore) BeginPromotion(k partitionKey, intent promotionIntent) err
 	if existing, ok := st.s.PromotionIntents[ks]; ok {
 		if promotionIntentsEqual(existing, intent) {
 			return nil
+		}
+		if promotionIntentCommandEqual(existing, intent) {
+			next := cloneLocalState(st.s)
+			next.PromotionIntents[ks] = clonePromotionIntent(intent)
+			return st.persistStateLocked(next)
 		}
 		return fmt.Errorf("promotion intent already exists for %s/%s at seq %d", k.Table, k.Partition, existing.PromotionSeq)
 	}
@@ -178,11 +185,12 @@ func (st *stateStore) RecordAck(k partitionKey, seq uint64, ack arbiter.Promotio
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	ks := key(k.Table, k.Partition)
-	st.s.Watermarks[ks] = seq
-	st.s.LastAcks[ks] = ack
-	st.s.BaseRoots[ks] = newBaseRoot
-	st.s.BaseSnapshotIDs[ks] = newBaseSnapshotID
-	return st.persistLocked()
+	next := cloneLocalState(st.s)
+	next.Watermarks[ks] = seq
+	next.LastAcks[ks] = ack
+	next.BaseRoots[ks] = newBaseRoot
+	next.BaseSnapshotIDs[ks] = newBaseSnapshotID
+	return st.persistStateLocked(next)
 }
 
 func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arbiter.PromotionAck, newBaseRoot, newBaseSnapshotID string, partLtHashHexes, unsafePartNames []string) error {
@@ -234,7 +242,8 @@ func (st *stateStore) RecordCleanup(k partitionKey, partNames []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	ks := key(k.Table, k.Partition)
-	existing := st.s.PromotedUnsafeParts[ks]
+	next := cloneLocalState(st.s)
+	existing := next.PromotedUnsafeParts[ks]
 	if len(existing) == 0 {
 		return nil
 	}
@@ -242,18 +251,18 @@ func (st *stateStore) RecordCleanup(k partitionKey, partNames []string) error {
 	for _, p := range partNames {
 		drop[p] = true
 	}
-	kept := existing[:0]
+	kept := make([]string, 0, len(existing))
 	for _, p := range existing {
 		if !drop[p] {
 			kept = append(kept, p)
 		}
 	}
 	if len(kept) == 0 {
-		delete(st.s.PromotedUnsafeParts, ks)
+		delete(next.PromotedUnsafeParts, ks)
 	} else {
-		st.s.PromotedUnsafeParts[ks] = kept
+		next.PromotedUnsafeParts[ks] = kept
 	}
-	return st.persistLocked()
+	return st.persistStateLocked(next)
 }
 
 // PromotedUnsafeParts returns the sorted union, over every partition of
@@ -448,13 +457,16 @@ func clonePromotionIntent(intent promotionIntent) promotionIntent {
 }
 
 func promotionIntentsEqual(a, b promotionIntent) bool {
+	return promotionIntentCommandEqual(a, b) && slices.Equal(a.SafePartsBefore, b.SafePartsBefore)
+}
+
+func promotionIntentCommandEqual(a, b promotionIntent) bool {
 	return a.PromotionSeq == b.PromotionSeq &&
 		a.BasePartitionRoot == b.BasePartitionRoot &&
 		a.PostPartitionRoot == b.PostPartitionRoot &&
 		a.BaseSafeSnapshotID == b.BaseSafeSnapshotID &&
 		slices.Equal(a.CandidatePartHashes, b.CandidatePartHashes) &&
-		slices.Equal(a.UnsafePartNames, b.UnsafePartNames) &&
-		slices.Equal(a.SafePartsBefore, b.SafePartsBefore)
+		slices.Equal(a.UnsafePartNames, b.UnsafePartNames)
 }
 
 func key(table, partition string) string {

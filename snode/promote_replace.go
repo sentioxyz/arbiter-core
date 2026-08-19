@@ -79,10 +79,10 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 }
 
 // reconcilePromotionIntent resolves the crash boundary around REPLACE. The
-// pre-publication safe inventory distinguishes "intent persisted, REPLACE not
-// run" from "REPLACE visible, final ACK state not persisted". In the latter
-// case it derives the mappings from the already-published parts instead of
-// publishing the candidates twice.
+// current content root distinguishes "intent persisted, REPLACE not run" from
+// "REPLACE visible, final ACK state not persisted" even when a content-neutral
+// part rewrite changed the base inventory. In the latter case the persisted
+// pre-publication inventory derives mappings without publishing candidates twice.
 func (r *Role) reconcilePromotionIntent(ctx context.Context, cmd arbiter.PromoteSafePartition, intent promotionIntent) (string, []arbiter.SafePartMapping, bool, error) {
 	post, err := lthashCombineHexAll(cmd.BasePartitionRoot, candidateHashes(cmd))
 	if err != nil {
@@ -101,11 +101,6 @@ func (r *Role) reconcilePromotionIntent(ctx context.Context, cmd arbiter.Promote
 	if err != nil {
 		return "", nil, false, err
 	}
-	current, err := activeParts(ctx, r.d.Conn, r.cfg.SafeDatabase, table)
-	if err != nil {
-		return "", nil, false, err
-	}
-	current = partsInLogicalPartition(current, sch, cmd.PartitionID)
 	currentRoot, err := r.partitionContentRoot(ctx, r.cfg.SafeDatabase, table, sch, cmd.PartitionID)
 	if err != nil {
 		return "", nil, false, err
@@ -114,10 +109,7 @@ func (r *Role) reconcilePromotionIntent(ctx context.Context, cmd arbiter.Promote
 	if err != nil {
 		return "", nil, false, err
 	}
-	if samePromotionSafeParts(intent.SafePartsBefore, current) {
-		if currentRoot != baseRoot {
-			return "", nil, false, fmt.Errorf("safe partition changed without a visible part-inventory change: root %s, expected base %s", currentRoot, baseRoot)
-		}
+	if currentRoot == baseRoot {
 		return "", nil, false, nil
 	}
 	if currentRoot != post {
