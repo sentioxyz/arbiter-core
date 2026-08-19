@@ -20,6 +20,7 @@ go_library(
 go_test(
     name = "wire_test",
     srcs = [
+        "convert_test.go",
         "dispatch_from_test.go",
         "wire_test.go",
     ],

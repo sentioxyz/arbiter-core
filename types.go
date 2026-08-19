@@ -126,16 +126,23 @@ func (id StatementID) Coord() StatementCoord {
 // StatementEnvelope is the canonical Go form of pb.StatementEnvelopeV2 (the
 // V2 suffix is frozen on the wire only; the Go world drops it).
 type StatementEnvelope struct {
-	StatementID   StatementID   `json:"statement_id"`
-	StatementKind StatementKind `json:"statement_kind"`
-	SQL           string        `json:"sql"`
-	SQLHash       string        `json:"sql_hash"`
-	SettingsHash  string        `json:"settings_hash,omitempty"`
-	PayloadRef    string        `json:"payload_ref,omitempty"`
-	PayloadHash   string        `json:"payload_hash,omitempty"`
-	PayloadLength uint64        `json:"payload_length,omitempty"`
-	TargetTableID string        `json:"target_table_id,omitempty"`
-	UserJWS       string        `json:"user_jws"`
+	StatementID     StatementID   `json:"statement_id"`
+	StatementKind   StatementKind `json:"statement_kind"`
+	SQL             string        `json:"sql"`
+	SQLHash         string        `json:"sql_hash"`
+	SettingsHash    string        `json:"settings_hash,omitempty"`
+	PayloadRef      string        `json:"payload_ref,omitempty"`
+	PayloadHash     string        `json:"payload_hash,omitempty"`
+	PayloadLength   uint64        `json:"payload_length,omitempty"`
+	TargetTableID   string        `json:"target_table_id,omitempty"`
+	UserJWS         string        `json:"user_jws"`
+	EnvelopeVersion uint32        `json:"envelope_version"`
+	NetworkID       string        `json:"network_id"`
+	KeeperShardID   uint32        `json:"keeper_shard_id"`
+	PayloadFormat   string        `json:"payload_format"`
+	ClientRevision  uint32        `json:"client_revision"`
+	SchemaHash      string        `json:"schema_hash"`
+	RowIDProfileID  string        `json:"row_id_profile_id"`
 }
 
 // CandidatePart is one hg_unsafe part the source claims a statement
