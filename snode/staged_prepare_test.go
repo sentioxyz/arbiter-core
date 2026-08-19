@@ -201,8 +201,8 @@ func TestPrepareLocalStatement_TerminalValidation(t *testing.T) {
 	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
 	req.PayloadEncoding = "csv-with-names-v1"
-	if _, err := role.PrepareLocalStatement(ctx, req, payload); !errors.Is(err, ErrEncodingNotSupported) {
-		t.Fatalf("want ErrEncodingNotSupported, got %v", err)
+	if _, err := role.PrepareLocalStatement(ctx, req, payload); !errors.Is(err, ErrPayloadMismatch) {
+		t.Fatalf("want ErrPayloadMismatch, got %v", err)
 	}
 
 	req = stagedRequest(payload)
@@ -221,6 +221,65 @@ func TestPrepareLocalStatement_TerminalValidation(t *testing.T) {
 	}
 }
 
+func TestPrepareLocalStatement_RejectsRequestEnvelopeBindingMismatchBeforeWrite(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	schema := intakeSchema()
+	cfg := testConfigS(t)
+	cfg.Tables = []payloadexec.TableSchema{schema}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	payload := nativePayload(t, pv{"p0", 1})
+	tests := []struct {
+		name   string
+		mutate func(*PrepareRequest)
+	}{
+		{
+			name: "payload format",
+			mutate: func(req *PrepareRequest) {
+				req.Envelope.PayloadFormat = "csv-with-names-v1"
+			},
+		},
+		{
+			name: "request encoding",
+			mutate: func(req *PrepareRequest) {
+				req.PayloadEncoding = "csv-with-names-v1"
+			},
+		},
+		{
+			name: "client revision",
+			mutate: func(req *PrepareRequest) {
+				req.Envelope.ClientRevision++
+			},
+		},
+		{
+			name: "negative request revision",
+			mutate: func(req *PrepareRequest) {
+				req.Revision = -1
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			role, _ := newIntakeHarness(t, conn, cfg)
+			createIntakeTable(t, conn, role, schema)
+			req := stagedRequest(payload)
+			tc.mutate(&req)
+			before := countActiveParts(t, conn, role, schema)
+			_, err := role.PrepareLocalStatement(ctx, req, payload)
+			if err == nil || (!errors.Is(err, ErrPayloadMismatch) && !errors.Is(err, ErrEncodingNotSupported)) {
+				t.Fatalf("binding mismatch must be rejected, got %v", err)
+			}
+			if after := countActiveParts(t, conn, role, schema); after != before {
+				t.Fatalf("binding mismatch must not write unsafe parts: before=%d after=%d", before, after)
+			}
+			if _, ok, loadErr := role.journal.load(req.Envelope.StatementID.Flat()); loadErr != nil || ok {
+				t.Fatalf("binding mismatch must not create a journal record: ok=%v err=%v", ok, loadErr)
+			}
+		})
+	}
+}
+
 func TestPrepareLocalStatement_RejectsCSVEncoding(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
@@ -230,10 +289,11 @@ func TestPrepareLocalStatement_RejectsCSVEncoding(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
+	req.Envelope.PayloadFormat = "csv-with-names-v1"
 	req.PayloadEncoding = "csv-with-names-v1"
 	_, err := role.PrepareLocalStatement(ctx, req, payload)
 	if !errors.Is(err, ErrEncodingNotSupported) {
-		t.Fatalf("csv must be rejected with ErrEncodingNotSupported, got %v", err)
+		t.Fatalf("signed CSV encoding must be rejected with ErrEncodingNotSupported, got %v", err)
 	}
 }
 

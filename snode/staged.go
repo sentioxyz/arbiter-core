@@ -74,6 +74,11 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	r.intakeMu.Lock()
 	defer r.intakeMu.Unlock()
 
+	payloadEncoding, revision, err := validatePrepareBindings(req)
+	if err != nil {
+		return PreparedLocalResult{}, err
+	}
+
 	flat := req.Envelope.StatementID.Flat()
 	rec, ok, err := r.journal.load(flat)
 	if err != nil {
@@ -107,12 +112,6 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		}
 	}
 
-	if req.PayloadEncoding != stagedNativeEncoding {
-		return PreparedLocalResult{}, fmt.Errorf("encoding %q: %w", req.PayloadEncoding, ErrEncodingNotSupported)
-	}
-	if req.Revision == 0 {
-		return PreparedLocalResult{}, fmt.Errorf("revision must be non-zero: %w", ErrPayloadMismatch)
-	}
 	if err := validatePayloadBinding(req.Envelope, payload); err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("%v: %w", err, ErrPayloadMismatch)
 	}
@@ -130,7 +129,7 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		return PreparedLocalResult{}, errors.New("snode: payload store and clickhouse connection are required")
 	}
 
-	rows, err := nativepayload.Decode(schema, req.Revision, payload)
+	rows, err := nativepayload.Decode(schema, revision, payload)
 	if err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("decode payload: %v: %w", err, ErrPayloadMismatch)
 	}
@@ -162,8 +161,8 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		StatementID:       flat,
 		Lifecycle:         LifecyclePreparing,
 		Envelope:          req.Envelope,
-		PayloadEncoding:   req.PayloadEncoding,
-		Revision:          req.Revision,
+		PayloadEncoding:   payloadEncoding,
+		Revision:          revision,
 		TouchedPartitions: touched,
 		PreWriteInventory: inventory,
 		ExpectedRowCount:  uint64(len(rows)),
@@ -189,6 +188,24 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		return PreparedLocalResult{}, fmt.Errorf("persist unsafe written: %w", err)
 	}
 	return result, nil
+}
+
+func validatePrepareBindings(req PrepareRequest) (string, int, error) {
+	if req.Envelope.PayloadFormat != stagedNativeEncoding {
+		return "", 0, fmt.Errorf("signed payload format %q: %w", req.Envelope.PayloadFormat, ErrEncodingNotSupported)
+	}
+	if req.Envelope.ClientRevision == 0 {
+		return "", 0, fmt.Errorf("signed client revision must be non-zero: %w", ErrPayloadMismatch)
+	}
+	if req.PayloadEncoding != req.Envelope.PayloadFormat {
+		return "", 0, fmt.Errorf("request payload encoding %q does not match signed payload format %q: %w",
+			req.PayloadEncoding, req.Envelope.PayloadFormat, ErrPayloadMismatch)
+	}
+	if req.Revision <= 0 || uint64(req.Revision) != uint64(req.Envelope.ClientRevision) {
+		return "", 0, fmt.Errorf("request revision %d does not match signed client revision %d: %w",
+			req.Revision, req.Envelope.ClientRevision, ErrPayloadMismatch)
+	}
+	return req.Envelope.PayloadFormat, int(req.Envelope.ClientRevision), nil
 }
 
 func validateReplayRequest(rec intakeRecord, req PrepareRequest, payload []byte) error {
