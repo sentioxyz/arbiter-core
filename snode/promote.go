@@ -52,7 +52,11 @@ func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jw
 		PostPartitionCommitment: post, Applied: true, Parts: mappings,
 	}
 	hashes := candidateHashes(cmd)
-	if err := r.state.RecordAppliedPromotion(k, cmd.PromotionSeq, ack, post, cmd.BaseSafeSnapshotID, hashes); err != nil {
+	unsafeParts := make([]string, 0, len(cmd.CandidateParts))
+	for _, cp := range cmd.CandidateParts {
+		unsafeParts = append(unsafeParts, cp.PartName)
+	}
+	if err := r.state.RecordAppliedPromotion(k, cmd.PromotionSeq, ack, post, cmd.BaseSafeSnapshotID, hashes, unsafeParts); err != nil {
 		return err
 	}
 	return r.sendAck(ctx, ack)

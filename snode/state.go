@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -26,6 +27,12 @@ type localState struct {
 	BaseSnapshotIDs map[string]string               `json:"base_snapshot_ids"`
 	UnpromotedSums  map[string]string               `json:"unpromoted_sums"`
 	IntakeParts     map[string]string               `json:"intake_parts,omitempty"`
+	// PromotedUnsafeParts records, per partition key, the hg_unsafe part
+	// names an applied promotion copied into hg_safe and whose cleanup we
+	// have not journaled yet. HouseGate's unsafe_latest read surface
+	// excludes exactly these (`_part NOT IN (...)`) so promoted rows are
+	// not counted twice between REPLACE PARTITION and cleanup (Spec G D2).
+	PromotedUnsafeParts map[string][]string `json:"promoted_unsafe_parts,omitempty"`
 }
 
 type stateStore struct {
@@ -78,6 +85,9 @@ func (s *localState) ensureMaps() {
 	if s.IntakeParts == nil {
 		s.IntakeParts = map[string]string{}
 	}
+	if s.PromotedUnsafeParts == nil {
+		s.PromotedUnsafeParts = map[string][]string{}
+	}
 }
 
 func (st *stateStore) Watermark(k partitionKey) uint64 {
@@ -117,7 +127,7 @@ func (st *stateStore) RecordAck(k partitionKey, seq uint64, ack arbiter.Promotio
 	return st.persistLocked()
 }
 
-func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arbiter.PromotionAck, newBaseRoot, newBaseSnapshotID string, partLtHashHexes []string) error {
+func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arbiter.PromotionAck, newBaseRoot, newBaseSnapshotID string, partLtHashHexes, unsafePartNames []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	ks := key(k.Table, k.Partition)
@@ -137,7 +147,73 @@ func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arb
 	st.s.LastAcks[ks] = ack
 	st.s.BaseRoots[ks] = newBaseRoot
 	st.s.BaseSnapshotIDs[ks] = newBaseSnapshotID
+	if len(unsafePartNames) > 0 {
+		existing := st.s.PromotedUnsafeParts[ks]
+		seen := make(map[string]bool, len(existing)+len(unsafePartNames))
+		for _, p := range existing {
+			seen[p] = true
+		}
+		for _, p := range unsafePartNames {
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			existing = append(existing, p)
+		}
+		st.s.PromotedUnsafeParts[ks] = existing
+	}
 	return st.persistLocked()
+}
+
+// RecordCleanup forgets promoted unsafe parts once their cleanup ran. It is
+// journaled before the cleanup ack is sent: the parts are already dropped
+// from ClickHouse, so even if the ack send fails the exclusion list must not
+// keep naming parts that no longer exist. The important direction is never to
+// drop a name before the part is gone.
+func (st *stateStore) RecordCleanup(k partitionKey, partNames []string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	ks := key(k.Table, k.Partition)
+	existing := st.s.PromotedUnsafeParts[ks]
+	if len(existing) == 0 {
+		return nil
+	}
+	drop := make(map[string]bool, len(partNames))
+	for _, p := range partNames {
+		drop[p] = true
+	}
+	kept := existing[:0]
+	for _, p := range existing {
+		if !drop[p] {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		delete(st.s.PromotedUnsafeParts, ks)
+	} else {
+		st.s.PromotedUnsafeParts[ks] = kept
+	}
+	return st.persistLocked()
+}
+
+// PromotedUnsafeParts returns the sorted union, over every partition of
+// table, of promoted-not-yet-cleaned unsafe part names; nil when none.
+func (st *stateStore) PromotedUnsafeParts(table string) []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	prefix := table + "\x00"
+	var out []string
+	for ks, parts := range st.s.PromotedUnsafeParts {
+		if !strings.HasPrefix(ks, prefix) {
+			continue
+		}
+		out = append(out, parts...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (st *stateStore) AddUnpromoted(k partitionKey, partLtHashHex string) error {

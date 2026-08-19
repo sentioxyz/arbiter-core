@@ -54,6 +54,9 @@ func TestHandlePromote_HappyPath(t *testing.T) {
 	if got := role.state.Watermark(pk); got != 1 {
 		t.Fatalf("watermark = %d", got)
 	}
+	if got, err := role.PromotedUnsafeParts(schema.TableID); err != nil || !reflect.DeepEqual(got, []string{part.PartName}) {
+		t.Fatalf("PromotedUnsafeParts = %v %v, want [%s]", got, err, part.PartName)
+	}
 	base, snap := role.state.BaseRoot(pk)
 	if base != wantPost || snap != "genesis" {
 		t.Fatalf("base = (%s,%s), want (%s,genesis)", base, snap, wantPost)

@@ -20,6 +20,9 @@ func TestHandleCleanup_HappyPath(t *testing.T) {
 	}
 
 	assertUnsafePartGone(t, ctx, role, schema.TableID, part.PartName)
+	if got, err := role.PromotedUnsafeParts(schema.TableID); err != nil || len(got) != 0 {
+		t.Fatalf("PromotedUnsafeParts after cleanup = %v %v, want empty", got, err)
+	}
 	assertSourceRows(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+CHTableName(schema.TableID), role.cfg.NetworkID, schema.TableID, env.StatementID.Flat())
 	acks := claims.cleanupAcks()
 	if len(acks) != 1 || acks[0].NodeID != role.cfg.NodeID || acks[0].PromotionSeq != 1 ||

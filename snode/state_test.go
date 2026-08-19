@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/housegate/housegate/pkg/lthash"
@@ -45,6 +46,58 @@ func TestStateStore_RoundTripsDurableState(t *testing.T) {
 	}
 	if got := reopened.UnpromotedSum(k); got != part {
 		t.Fatalf("unpromoted sum: got %s want %s", got, part)
+	}
+}
+
+func TestStateStore_PromotedUnsafePartsLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	st, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	k0 := partitionKey{Table: "db.t", Partition: "p0"}
+	k1 := partitionKey{Table: "db.t", Partition: "p1"}
+	other := partitionKey{Table: "db.u", Partition: "p0"}
+	ack := arbiter.PromotionAck{NodeID: "s1", PromotionSeq: 1, TableID: "db.t", PartitionID: "p0", Applied: true}
+	if err := st.RecordAppliedPromotion(k0, 1, ack, "0xpost", "snap", nil, []string{"all_2_2_0", "all_1_1_0"}); err != nil {
+		t.Fatalf("record p0: %v", err)
+	}
+	if err := st.RecordAppliedPromotion(k1, 1, ack, "0xpost", "snap", nil, []string{"all_9_9_0"}); err != nil {
+		t.Fatalf("record p1: %v", err)
+	}
+	if err := st.RecordAppliedPromotion(other, 1, ack, "0xpost", "snap", nil, []string{"all_5_5_0"}); err != nil {
+		t.Fatalf("record other: %v", err)
+	}
+	if got := st.PromotedUnsafeParts("db.t"); !reflect.DeepEqual(got, []string{"all_1_1_0", "all_2_2_0", "all_9_9_0"}) {
+		t.Fatalf("promoted (sorted, table-wide) = %v", got)
+	}
+	// Second promotion on the same partition appends; duplicates collapse.
+	if err := st.RecordAppliedPromotion(k0, 2, ack, "0xpost2", "snap", nil, []string{"all_3_3_0", "all_1_1_0"}); err != nil {
+		t.Fatalf("record p0 seq2: %v", err)
+	}
+	if got := st.PromotedUnsafeParts("db.t"); len(got) != 4 {
+		t.Fatalf("after second promotion = %v", got)
+	}
+	// Cleanup drops exactly the named parts; unknown names are ignored.
+	if err := st.RecordCleanup(k0, []string{"all_1_1_0", "all_2_2_0", "ghost"}); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if got := st.PromotedUnsafeParts("db.t"); !reflect.DeepEqual(got, []string{"all_3_3_0", "all_9_9_0"}) {
+		t.Fatalf("after cleanup = %v", got)
+	}
+	// Durable across reopen.
+	reopened, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got := reopened.PromotedUnsafeParts("db.t"); !reflect.DeepEqual(got, []string{"all_3_3_0", "all_9_9_0"}) {
+		t.Fatalf("reopened = %v", got)
+	}
+	if got := reopened.PromotedUnsafeParts("db.u"); !reflect.DeepEqual(got, []string{"all_5_5_0"}) {
+		t.Fatalf("other table = %v", got)
+	}
+	if got := reopened.PromotedUnsafeParts("db.none"); got != nil {
+		t.Fatalf("unknown table = %v, want nil", got)
 	}
 }
 

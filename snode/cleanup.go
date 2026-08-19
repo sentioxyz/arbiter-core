@@ -28,6 +28,13 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 			return fmt.Errorf("drop part %s: %w", p.PartName, err)
 		}
 	}
+	names := make([]string, 0, len(cmd.Parts))
+	for _, p := range cmd.Parts {
+		names = append(names, p.PartName)
+	}
+	if err := r.state.RecordCleanup(partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}, names); err != nil {
+		return fmt.Errorf("journal cleanup: %w", err)
+	}
 	ack := arbiter.CleanupAck{
 		NodeID: r.cfg.NodeID, PromotionSeq: cmd.PromotionSeq,
 		TableID: cmd.TableID, PartitionID: cmd.PartitionID,
