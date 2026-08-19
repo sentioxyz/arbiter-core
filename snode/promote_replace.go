@@ -3,6 +3,7 @@ package snode
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/chexec"
@@ -59,6 +60,11 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 		_ = r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition)
 		return "", nil, fmt.Errorf("shadow closure mismatch: promote partition root %s != base+candidates %s (unverified or missing part in shadow)", shadowRoot, post)
 	}
+	safeBefore = partsInLogicalPartition(safeBefore, sch, cmd.PartitionID)
+	intent := promotionIntentFor(cmd, post, safeBefore)
+	if err := r.state.BeginPromotion(partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}, intent); err != nil {
+		return "", nil, fmt.Errorf("journal promotion intent: %w", err)
+	}
 	if err := r.exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLACE PARTITION %s FROM %s", safe, partition, promote)); err != nil {
 		return "", nil, err
 	}
@@ -70,6 +76,132 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 		return "", nil, err
 	}
 	return post, mappings, nil
+}
+
+// reconcilePromotionIntent resolves the crash boundary around REPLACE. The
+// pre-publication safe inventory distinguishes "intent persisted, REPLACE not
+// run" from "REPLACE visible, final ACK state not persisted". In the latter
+// case it derives the mappings from the already-published parts instead of
+// publishing the candidates twice.
+func (r *Role) reconcilePromotionIntent(ctx context.Context, cmd arbiter.PromoteSafePartition, intent promotionIntent) (string, []arbiter.SafePartMapping, bool, error) {
+	post, err := lthashCombineHexAll(cmd.BasePartitionRoot, candidateHashes(cmd))
+	if err != nil {
+		return "", nil, false, err
+	}
+	if !promotionIntentMatchesCommand(intent, cmd, post) {
+		return "", nil, false, fmt.Errorf("unresolved promotion intent seq %d does not match command seq %d", intent.PromotionSeq, cmd.PromotionSeq)
+	}
+	sch, err := r.schemaFor(cmd.TableID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	table := CHTableName(cmd.TableID)
+	safe := r.cfg.SafeDatabase + "." + table
+	partition, err := quotePartition(sch, cmd.PartitionID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	current, err := activeParts(ctx, r.d.Conn, r.cfg.SafeDatabase, table)
+	if err != nil {
+		return "", nil, false, err
+	}
+	current = partsInLogicalPartition(current, sch, cmd.PartitionID)
+	currentRoot, err := r.partitionContentRoot(ctx, r.cfg.SafeDatabase, table, sch, cmd.PartitionID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	baseRoot, err := lthashCombineHexAll(cmd.BasePartitionRoot, nil)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if samePromotionSafeParts(intent.SafePartsBefore, current) {
+		if currentRoot != baseRoot {
+			return "", nil, false, fmt.Errorf("safe partition changed without a visible part-inventory change: root %s, expected base %s", currentRoot, baseRoot)
+		}
+		return "", nil, false, nil
+	}
+	if currentRoot != post {
+		return "", nil, false, fmt.Errorf("safe partition after unresolved promotion has root %s, expected base %s or post %s", currentRoot, baseRoot, post)
+	}
+	if err := r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition); err != nil {
+		return "", nil, false, err
+	}
+	mappings, err := r.safeMappings(ctx, safe, table, sch, partInfosFromPromotionSnapshot(intent.SafePartsBefore), cmd.CandidateParts)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return post, mappings, true, nil
+}
+
+func promotionIntentFor(cmd arbiter.PromoteSafePartition, post string, safeBefore []partInfo) promotionIntent {
+	unsafeNames := make([]string, 0, len(cmd.CandidateParts))
+	for _, cp := range cmd.CandidateParts {
+		unsafeNames = append(unsafeNames, cp.PartName)
+	}
+	before := make([]promotionSafePart, 0, len(safeBefore))
+	for _, p := range safeBefore {
+		before = append(before, promotionSafePart{
+			Name: p.Name, PartitionID: p.PartitionID,
+			PartitionValue: p.PartitionValue, PhysHash: p.PhysHash,
+		})
+	}
+	return promotionIntent{
+		PromotionSeq:        cmd.PromotionSeq,
+		BasePartitionRoot:   cmd.BasePartitionRoot,
+		PostPartitionRoot:   post,
+		BaseSafeSnapshotID:  cmd.BaseSafeSnapshotID,
+		CandidatePartHashes: candidateHashes(cmd),
+		UnsafePartNames:     unsafeNames,
+		SafePartsBefore:     before,
+	}
+}
+
+func promotionIntentMatchesCommand(intent promotionIntent, cmd arbiter.PromoteSafePartition, post string) bool {
+	if intent.PromotionSeq != cmd.PromotionSeq ||
+		intent.BasePartitionRoot != cmd.BasePartitionRoot ||
+		intent.PostPartitionRoot != post ||
+		intent.BaseSafeSnapshotID != cmd.BaseSafeSnapshotID ||
+		!slices.Equal(intent.CandidatePartHashes, candidateHashes(cmd)) {
+		return false
+	}
+	names := make([]string, 0, len(cmd.CandidateParts))
+	for _, cp := range cmd.CandidateParts {
+		names = append(names, cp.PartName)
+	}
+	return slices.Equal(intent.UnsafePartNames, names)
+}
+
+func partsInLogicalPartition(parts []partInfo, sch payloadexec.TableSchema, partitionID string) []partInfo {
+	out := make([]partInfo, 0, len(parts))
+	for _, p := range parts {
+		if logicalPartitionID(sch, p) == partitionID {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func samePromotionSafeParts(before []promotionSafePart, current []partInfo) bool {
+	if len(before) != len(current) {
+		return false
+	}
+	for i := range before {
+		if before[i].Name != current[i].Name || before[i].PhysHash != current[i].PhysHash {
+			return false
+		}
+	}
+	return true
+}
+
+func partInfosFromPromotionSnapshot(parts []promotionSafePart) []partInfo {
+	out := make([]partInfo, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, partInfo{
+			Name: p.Name, PartitionID: p.PartitionID,
+			PartitionValue: p.PartitionValue, PhysHash: p.PhysHash,
+		})
+	}
+	return out
 }
 
 // partitionContentRoot sums the row-LtHash of every active part in one logical

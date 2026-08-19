@@ -4,8 +4,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +20,31 @@ import (
 type partitionKey struct {
 	Table     string
 	Partition string
+}
+
+// promotionSafePart identifies the safe-side part inventory immediately
+// before a promotion publishes. Name plus physical hash distinguishes an
+// unchanged base from a content-neutral REPLACE that happens to reuse a name.
+type promotionSafePart struct {
+	Name           string `json:"name"`
+	PartitionID    string `json:"partition_id"`
+	PartitionValue string `json:"partition_value"`
+	PhysHash       string `json:"phys_hash"`
+}
+
+// promotionIntent is the write-ahead boundary for safe publication. It is
+// durable before REPLACE PARTITION and remains until the applied ACK state is
+// durable. While one exists, unsafe_latest reads fail closed: the process
+// cannot know whether REPLACE became visible before a crash until it
+// reconciles ClickHouse on the command retry.
+type promotionIntent struct {
+	PromotionSeq        uint64              `json:"promotion_seq"`
+	BasePartitionRoot   string              `json:"base_partition_root"`
+	PostPartitionRoot   string              `json:"post_partition_root"`
+	BaseSafeSnapshotID  string              `json:"base_safe_snapshot_id"`
+	CandidatePartHashes []string            `json:"candidate_part_hashes"`
+	UnsafePartNames     []string            `json:"unsafe_part_names"`
+	SafePartsBefore     []promotionSafePart `json:"safe_parts_before"`
 }
 
 type localState struct {
@@ -33,6 +60,10 @@ type localState struct {
 	// excludes exactly these (`_part NOT IN (...)`) so promoted rows are
 	// not counted twice between REPLACE PARTITION and cleanup (Spec G D2).
 	PromotedUnsafeParts map[string][]string `json:"promoted_unsafe_parts,omitempty"`
+	// PromotionIntents are persisted before safe publication. Their presence
+	// makes the read-state port fail closed until retry reconciliation either
+	// publishes or recognizes and finalizes the already-published partition.
+	PromotionIntents map[string]promotionIntent `json:"promotion_intents,omitempty"`
 }
 
 type stateStore struct {
@@ -88,6 +119,9 @@ func (s *localState) ensureMaps() {
 	if s.PromotedUnsafeParts == nil {
 		s.PromotedUnsafeParts = map[string][]string{}
 	}
+	if s.PromotionIntents == nil {
+		s.PromotionIntents = map[string]promotionIntent{}
+	}
 }
 
 func (st *stateStore) Watermark(k partitionKey) uint64 {
@@ -116,6 +150,30 @@ func (st *stateStore) UnpromotedSum(k partitionKey) string {
 	return st.s.UnpromotedSums[key(k.Table, k.Partition)]
 }
 
+// BeginPromotion durably records the publication intent. Repeating the exact
+// intent is idempotent; a different command cannot replace an unresolved one.
+func (st *stateStore) BeginPromotion(k partitionKey, intent promotionIntent) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	ks := key(k.Table, k.Partition)
+	if existing, ok := st.s.PromotionIntents[ks]; ok {
+		if promotionIntentsEqual(existing, intent) {
+			return nil
+		}
+		return fmt.Errorf("promotion intent already exists for %s/%s at seq %d", k.Table, k.Partition, existing.PromotionSeq)
+	}
+	next := cloneLocalState(st.s)
+	next.PromotionIntents[ks] = clonePromotionIntent(intent)
+	return st.persistStateLocked(next)
+}
+
+func (st *stateStore) PendingPromotion(k partitionKey) (promotionIntent, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	intent, ok := st.s.PromotionIntents[key(k.Table, k.Partition)]
+	return clonePromotionIntent(intent), ok
+}
+
 func (st *stateStore) RecordAck(k partitionKey, seq uint64, ack arbiter.PromotionAck, newBaseRoot, newBaseSnapshotID string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -130,8 +188,9 @@ func (st *stateStore) RecordAck(k partitionKey, seq uint64, ack arbiter.Promotio
 func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arbiter.PromotionAck, newBaseRoot, newBaseSnapshotID string, partLtHashHexes, unsafePartNames []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	next := cloneLocalState(st.s)
 	ks := key(k.Table, k.Partition)
-	acc, err := parseAccumulatorHex(st.s.UnpromotedSums[ks])
+	acc, err := parseAccumulatorHex(next.UnpromotedSums[ks])
 	if err != nil {
 		return err
 	}
@@ -142,13 +201,13 @@ func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arb
 		}
 		acc.SubHash(part)
 	}
-	st.s.UnpromotedSums[ks] = accumulatorHex(acc)
-	st.s.Watermarks[ks] = seq
-	st.s.LastAcks[ks] = ack
-	st.s.BaseRoots[ks] = newBaseRoot
-	st.s.BaseSnapshotIDs[ks] = newBaseSnapshotID
+	next.UnpromotedSums[ks] = accumulatorHex(acc)
+	next.Watermarks[ks] = seq
+	next.LastAcks[ks] = ack
+	next.BaseRoots[ks] = newBaseRoot
+	next.BaseSnapshotIDs[ks] = newBaseSnapshotID
 	if len(unsafePartNames) > 0 {
-		existing := st.s.PromotedUnsafeParts[ks]
+		existing := next.PromotedUnsafeParts[ks]
 		seen := make(map[string]bool, len(existing)+len(unsafePartNames))
 		for _, p := range existing {
 			seen[p] = true
@@ -160,9 +219,10 @@ func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arb
 			seen[p] = true
 			existing = append(existing, p)
 		}
-		st.s.PromotedUnsafeParts[ks] = existing
+		next.PromotedUnsafeParts[ks] = existing
 	}
-	return st.persistLocked()
+	delete(next.PromotionIntents, ks)
+	return st.persistStateLocked(next)
 }
 
 // RecordCleanup forgets promoted unsafe parts once their cleanup ran. It is
@@ -197,11 +257,23 @@ func (st *stateStore) RecordCleanup(k partitionKey, partNames []string) error {
 }
 
 // PromotedUnsafeParts returns the sorted union, over every partition of
-// table, of promoted-not-yet-cleaned unsafe part names; nil when none.
-func (st *stateStore) PromotedUnsafeParts(table string) []string {
+// table, of promoted-not-yet-cleaned unsafe part names; nil when none. Any
+// unresolved write-ahead intent fails closed because publication may already
+// be visible even though its final exclusion journal is not durable yet.
+func (st *stateStore) PromotedUnsafeParts(table string) ([]string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	prefix := table + "\x00"
+	var pending []string
+	for ks := range st.s.PromotionIntents {
+		if strings.HasPrefix(ks, prefix) {
+			pending = append(pending, strings.TrimPrefix(ks, prefix))
+		}
+	}
+	if len(pending) > 0 {
+		sort.Strings(pending)
+		return nil, fmt.Errorf("storage-integrity promotion for %s partition(s) %s is unresolved; unsafe_latest reads are unavailable until retry reconciliation", table, strings.Join(pending, ","))
+	}
 	var out []string
 	for ks, parts := range st.s.PromotedUnsafeParts {
 		if !strings.HasPrefix(ks, prefix) {
@@ -210,10 +282,10 @@ func (st *stateStore) PromotedUnsafeParts(table string) []string {
 		out = append(out, parts...)
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, nil
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 func (st *stateStore) AddUnpromoted(k partitionKey, partLtHashHex string) error {
@@ -304,7 +376,15 @@ func (st *stateStore) DrainUnpromoted(k partitionKey, partLtHashHexes []string) 
 }
 
 func (st *stateStore) persistLocked() error {
-	b, err := json.Marshal(st.s)
+	return st.persistStateLocked(st.s)
+}
+
+// persistStateLocked publishes next to memory only after the file and its
+// containing directory are durable. Critical promotion transitions build a
+// cloned next state so a failed write cannot advance an in-memory watermark
+// or discard an unresolved intent.
+func (st *stateStore) persistStateLocked(next localState) error {
+	b, err := json.Marshal(next)
 	if err != nil {
 		return err
 	}
@@ -332,7 +412,49 @@ func (st *stateStore) persistLocked() error {
 		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	if err := dir.Sync(); err != nil {
+		return err
+	}
+	st.s = next
+	return nil
+}
+
+func cloneLocalState(s localState) localState {
+	next := localState{
+		Watermarks:          maps.Clone(s.Watermarks),
+		LastAcks:            maps.Clone(s.LastAcks),
+		BaseRoots:           maps.Clone(s.BaseRoots),
+		BaseSnapshotIDs:     maps.Clone(s.BaseSnapshotIDs),
+		UnpromotedSums:      maps.Clone(s.UnpromotedSums),
+		IntakeParts:         maps.Clone(s.IntakeParts),
+		PromotedUnsafeParts: make(map[string][]string, len(s.PromotedUnsafeParts)),
+		PromotionIntents:    make(map[string]promotionIntent, len(s.PromotionIntents)),
+	}
+	for k, parts := range s.PromotedUnsafeParts {
+		next.PromotedUnsafeParts[k] = slices.Clone(parts)
+	}
+	for k, intent := range s.PromotionIntents {
+		next.PromotionIntents[k] = clonePromotionIntent(intent)
+	}
+	next.ensureMaps()
+	return next
+}
+
+func clonePromotionIntent(intent promotionIntent) promotionIntent {
+	intent.CandidatePartHashes = slices.Clone(intent.CandidatePartHashes)
+	intent.UnsafePartNames = slices.Clone(intent.UnsafePartNames)
+	intent.SafePartsBefore = slices.Clone(intent.SafePartsBefore)
+	return intent
+}
+
+func promotionIntentsEqual(a, b promotionIntent) bool {
+	return a.PromotionSeq == b.PromotionSeq &&
+		a.BasePartitionRoot == b.BasePartitionRoot &&
+		a.PostPartitionRoot == b.PostPartitionRoot &&
+		a.BaseSafeSnapshotID == b.BaseSafeSnapshotID &&
+		slices.Equal(a.CandidatePartHashes, b.CandidatePartHashes) &&
+		slices.Equal(a.UnsafePartNames, b.UnsafePartNames) &&
+		slices.Equal(a.SafePartsBefore, b.SafePartsBefore)
 }
 
 func key(table, partition string) string {

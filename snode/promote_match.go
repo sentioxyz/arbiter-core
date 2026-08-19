@@ -11,10 +11,16 @@ import (
 )
 
 func (r *Role) safeMappings(ctx context.Context, safe, table string, sch payloadexec.TableSchema, before []partInfo, candidates []arbiter.PartRef) ([]arbiter.SafePartMapping, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	partitionID := candidates[0].PartitionID
+	before = partsInLogicalPartition(before, sch, partitionID)
 	after, err := activeParts(ctx, r.d.Conn, r.cfg.SafeDatabase, table)
 	if err != nil {
 		return nil, err
 	}
+	after = partsInLogicalPartition(after, sch, partitionID)
 	newSafe := diffParts(before, after)
 	names := make([]string, 0, len(newSafe))
 	infoByName := make(map[string]partInfo, len(newSafe))

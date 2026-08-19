@@ -97,7 +97,7 @@ func (r *Role) Register(ctx context.Context) error {
 // them in unsafe_latest mode (rewriter.StorageIntegrityReadState); pass the
 // Role straight into housegate.Options.StorageIntegrityReadState.
 func (r *Role) PromotedUnsafeParts(tableID string) ([]string, error) {
-	return r.state.PromotedUnsafeParts(tableID), nil
+	return r.state.PromotedUnsafeParts(tableID)
 }
 
 func (r *Role) Run(ctx context.Context) error {

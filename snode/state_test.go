@@ -68,21 +68,21 @@ func TestStateStore_PromotedUnsafePartsLifecycle(t *testing.T) {
 	if err := st.RecordAppliedPromotion(other, 1, ack, "0xpost", "snap", nil, []string{"all_5_5_0"}); err != nil {
 		t.Fatalf("record other: %v", err)
 	}
-	if got := st.PromotedUnsafeParts("db.t"); !reflect.DeepEqual(got, []string{"all_1_1_0", "all_2_2_0", "all_9_9_0"}) {
+	if got, err := st.PromotedUnsafeParts("db.t"); err != nil || !reflect.DeepEqual(got, []string{"all_1_1_0", "all_2_2_0", "all_9_9_0"}) {
 		t.Fatalf("promoted (sorted, table-wide) = %v", got)
 	}
 	// Second promotion on the same partition appends; duplicates collapse.
 	if err := st.RecordAppliedPromotion(k0, 2, ack, "0xpost2", "snap", nil, []string{"all_3_3_0", "all_1_1_0"}); err != nil {
 		t.Fatalf("record p0 seq2: %v", err)
 	}
-	if got := st.PromotedUnsafeParts("db.t"); len(got) != 4 {
+	if got, err := st.PromotedUnsafeParts("db.t"); err != nil || len(got) != 4 {
 		t.Fatalf("after second promotion = %v", got)
 	}
 	// Cleanup drops exactly the named parts; unknown names are ignored.
 	if err := st.RecordCleanup(k0, []string{"all_1_1_0", "all_2_2_0", "ghost"}); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if got := st.PromotedUnsafeParts("db.t"); !reflect.DeepEqual(got, []string{"all_3_3_0", "all_9_9_0"}) {
+	if got, err := st.PromotedUnsafeParts("db.t"); err != nil || !reflect.DeepEqual(got, []string{"all_3_3_0", "all_9_9_0"}) {
 		t.Fatalf("after cleanup = %v", got)
 	}
 	// Durable across reopen.
@@ -90,14 +90,68 @@ func TestStateStore_PromotedUnsafePartsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if got := reopened.PromotedUnsafeParts("db.t"); !reflect.DeepEqual(got, []string{"all_3_3_0", "all_9_9_0"}) {
+	if got, err := reopened.PromotedUnsafeParts("db.t"); err != nil || !reflect.DeepEqual(got, []string{"all_3_3_0", "all_9_9_0"}) {
 		t.Fatalf("reopened = %v", got)
 	}
-	if got := reopened.PromotedUnsafeParts("db.u"); !reflect.DeepEqual(got, []string{"all_5_5_0"}) {
+	if got, err := reopened.PromotedUnsafeParts("db.u"); err != nil || !reflect.DeepEqual(got, []string{"all_5_5_0"}) {
 		t.Fatalf("other table = %v", got)
 	}
-	if got := reopened.PromotedUnsafeParts("db.none"); got != nil {
+	if got, err := reopened.PromotedUnsafeParts("db.none"); err != nil || got != nil {
 		t.Fatalf("unknown table = %v, want nil", got)
+	}
+}
+
+func TestStateStore_PromotionIntentFailsReadsClosedUntilDurableFinalize(t *testing.T) {
+	dir := t.TempDir()
+	st, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	k := partitionKey{Table: "db.t", Partition: "p0"}
+	intent := promotionIntent{
+		PromotionSeq:       2,
+		BasePartitionRoot:  "0xbase",
+		PostPartitionRoot:  "0xpost",
+		BaseSafeSnapshotID: "snap-1",
+		CandidatePartHashes: []string{
+			"0xpart",
+		},
+		UnsafePartNames: []string{"all_2_2_0"},
+		SafePartsBefore: []promotionSafePart{{
+			Name: "all_1_1_0", PhysHash: "hash-1",
+		}},
+	}
+	if err := st.BeginPromotion(k, intent); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := st.PromotedUnsafeParts("db.t"); err == nil {
+		t.Fatal("unresolved durable promotion intent must fail unsafe_latest reads closed")
+	}
+
+	reopened, err := openStateStore(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got, ok := reopened.PendingPromotion(k); !ok || !reflect.DeepEqual(got, intent) {
+		t.Fatalf("pending after reopen = %+v ok=%v, want %+v", got, ok, intent)
+	}
+	if _, err := reopened.PromotedUnsafeParts("db.t"); err == nil {
+		t.Fatal("reopened unresolved promotion intent must still fail reads closed")
+	}
+
+	// A failed final state-file replacement must not advance the in-memory
+	// watermark or drop the fail-closed intent. Otherwise a same-process retry
+	// could ACK state that was never made durable.
+	reopened.path = dir // os.Rename(temp, existing directory) must fail.
+	ack := arbiter.PromotionAck{NodeID: "s1", PromotionSeq: 2, TableID: "db.t", PartitionID: "p0", Applied: true}
+	if err := reopened.RecordAppliedPromotion(k, 2, ack, "0xpost", "snap-2", nil, []string{"all_2_2_0"}); err == nil {
+		t.Fatal("finalize with an unwritable state target unexpectedly succeeded")
+	}
+	if got := reopened.Watermark(k); got != 0 {
+		t.Fatalf("watermark after failed finalize = %d, want 0", got)
+	}
+	if _, ok := reopened.PendingPromotion(k); !ok {
+		t.Fatal("failed finalize dropped the in-memory promotion intent")
 	}
 }
 

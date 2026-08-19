@@ -2,10 +2,12 @@ package snode
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
+	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
@@ -125,6 +127,109 @@ func TestHandlePromote_StaleSeqResendsPersistedAck(t *testing.T) {
 	if len(acks) != 2 || !reflect.DeepEqual(acks[0], acks[1]) {
 		t.Fatalf("duplicate did not resend identical ack: %+v", acks)
 	}
+}
+
+func TestHandlePromote_PostReplaceFailureRestartRetryConverges(t *testing.T) {
+	ctx := context.Background()
+	role, claims, signer, schema, _ := seedPromotableStatement(t, ctx)
+	first := claims.snapshot()[0].CandidateParts[0]
+	firstCmd := arbiter.PromoteSafePartition{
+		TableID: schema.TableID, PartitionID: first.PartitionID, PromotionSeq: 1,
+		BaseSafeSnapshotID: "genesis",
+		CandidateParts: []arbiter.PartRef{{
+			TableID: schema.TableID, PartitionID: first.PartitionID,
+			PartRowLtHash: first.PartRowLtHash, PartName: first.PartName,
+		}},
+	}
+	if err := role.handlePromote(ctx, wire.PromoteToPB(firstCmd), mustSignPromotion(t, signer, firstCmd)); err != nil {
+		t.Fatalf("first promote: %v", err)
+	}
+	cleanup := cleanupCommand(schema.TableID, first)
+	if err := role.handleCleanup(ctx, wire.CleanupToPB(cleanup), mustSignCleanup(t, signer, cleanup)); err != nil {
+		t.Fatalf("first cleanup: %v", err)
+	}
+
+	secondPayload := nativePayload(t, pv{"p0", 3}, pv{"p0", 4})
+	secondEnv := intakeEnvelope(secondPayload)
+	secondEnv.StatementID.ClientSeq = 2
+	secondEnv.StatementID.ClientNonce = "n2"
+	secondEnv.PayloadRef = "payload-2.native"
+	if err := role.SubmitLocalStatement(ctx, secondEnv, secondPayload); err != nil {
+		t.Fatalf("second SubmitLocalStatement: %v", err)
+	}
+	second := claims.snapshot()[1].CandidateParts[0]
+	baseRoot, _ := role.state.BaseRoot(partitionKey{Table: schema.TableID, Partition: second.PartitionID})
+	secondCmd := arbiter.PromoteSafePartition{
+		TableID: schema.TableID, PartitionID: second.PartitionID, PromotionSeq: 2,
+		BaseSafeSnapshotID: "safe-1", BasePartitionRoot: baseRoot,
+		CandidateParts: []arbiter.PartRef{{
+			TableID: schema.TableID, PartitionID: second.PartitionID,
+			PartRowLtHash: second.PartRowLtHash, PartName: second.PartName,
+		}},
+	}
+	secondJWS := mustSignPromotion(t, signer, secondCmd)
+
+	baseConn := role.d.Conn
+	failing := &failAfterReplaceConn{Conn: baseConn}
+	role.d.Conn = failing
+	if err := role.handlePromote(ctx, wire.PromoteToPB(secondCmd), secondJWS); err == nil ||
+		!strings.Contains(err.Error(), "injected post-REPLACE failure") {
+		t.Fatalf("post-REPLACE failure = %v", err)
+	}
+	if !failing.replaced {
+		t.Fatal("fault fired before REPLACE became visible")
+	}
+	if got := rowCount(t, ctx, baseConn, role.cfg.SafeDatabase+"."+CHTableName(schema.TableID)); got != 4 {
+		t.Fatalf("safe rows after published-but-unfinalized promotion = %d, want 4", got)
+	}
+	if _, err := role.PromotedUnsafeParts(schema.TableID); err == nil {
+		t.Fatal("unsafe_latest read state must fail closed while publication intent is unresolved")
+	}
+	if got := len(claims.promotionAcks()); got != 1 {
+		t.Fatalf("promotion acks before recovery = %d, want only the first ack", got)
+	}
+
+	deps := role.d
+	deps.Conn = baseConn
+	restarted, err := New(role.cfg, deps)
+	if err != nil {
+		t.Fatalf("restart role: %v", err)
+	}
+	if _, err := restarted.PromotedUnsafeParts(schema.TableID); err == nil {
+		t.Fatal("durable unresolved intent was lost across restart")
+	}
+	if err := restarted.handlePromote(ctx, wire.PromoteToPB(secondCmd), secondJWS); err != nil {
+		t.Fatalf("retry after restart: %v", err)
+	}
+	if got := rowCount(t, ctx, baseConn, restarted.cfg.SafeDatabase+"."+CHTableName(schema.TableID)); got != 4 {
+		t.Fatalf("safe rows after retry = %d, want 4 (no duplicate publication)", got)
+	}
+	if got, err := restarted.PromotedUnsafeParts(schema.TableID); err != nil || !reflect.DeepEqual(got, []string{second.PartName}) {
+		t.Fatalf("PromotedUnsafeParts after recovery = %v %v, want [%s]", got, err, second.PartName)
+	}
+	acks := claims.promotionAcks()
+	if len(acks) != 2 || !acks[1].Applied || acks[1].PromotionSeq != 2 {
+		t.Fatalf("promotion acks after recovery = %+v", acks)
+	}
+	assertExactSafePartMappings(t, ctx, restarted, schema, second, acks[1].Parts)
+}
+
+type failAfterReplaceConn struct {
+	clickhouse.Conn
+	replaced bool
+	failed   bool
+}
+
+func (c *failAfterReplaceConn) Exec(ctx context.Context, query string, args ...any) error {
+	if c.replaced && !c.failed {
+		c.failed = true
+		return errors.New("injected post-REPLACE failure")
+	}
+	err := c.Conn.Exec(ctx, query, args...)
+	if err == nil && strings.Contains(query, " REPLACE PARTITION ") {
+		c.replaced = true
+	}
+	return err
 }
 
 func TestHandlePromote_BaseCASMismatchAcksNotApplied(t *testing.T) {
