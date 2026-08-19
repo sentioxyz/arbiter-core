@@ -91,6 +91,15 @@ func (r *Role) Register(ctx context.Context) error {
 	return nil
 }
 
+// PromotedUnsafeParts returns the hg_unsafe part names of tableID that an
+// applied promotion already copied into hg_safe and whose cleanup has not
+// yet been journaled. HouseGate's storage-integrity read surface excludes
+// them in unsafe_latest mode (rewriter.StorageIntegrityReadState); pass the
+// Role straight into housegate.Options.StorageIntegrityReadState.
+func (r *Role) PromotedUnsafeParts(tableID string) ([]string, error) {
+	return r.state.PromotedUnsafeParts(tableID)
+}
+
 func (r *Role) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

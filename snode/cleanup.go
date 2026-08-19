@@ -2,8 +2,11 @@ package snode
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
+
+	chproto "github.com/ClickHouse/ch-go/proto"
+	clickhouseproto "github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
@@ -28,6 +31,13 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 			return fmt.Errorf("drop part %s: %w", p.PartName, err)
 		}
 	}
+	names := make([]string, 0, len(cmd.Parts))
+	for _, p := range cmd.Parts {
+		names = append(names, p.PartName)
+	}
+	if err := r.state.RecordCleanup(partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}, names); err != nil {
+		return fmt.Errorf("journal cleanup: %w", err)
+	}
 	ack := arbiter.CleanupAck{
 		NodeID: r.cfg.NodeID, PromotionSeq: cmd.PromotionSeq,
 		TableID: cmd.TableID, PartitionID: cmd.PartitionID,
@@ -43,9 +53,6 @@ func (r *Role) sendCleanupAck(ctx context.Context, ack arbiter.CleanupAck) error
 }
 
 func isMissingPartErr(err error) bool {
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "no part") ||
-		strings.Contains(s, "not found") ||
-		strings.Contains(s, "doesn't exist") ||
-		strings.Contains(s, "does not exist")
+	var exception *clickhouseproto.Exception
+	return errors.As(err, &exception) && exception.Code == int32(chproto.ErrNoSuchDataPart)
 }

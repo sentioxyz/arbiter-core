@@ -28,6 +28,15 @@ func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jw
 		r.d.Logger.Warn("stale promotion below watermark with no stored ack", "seq", cmd.PromotionSeq)
 		return nil
 	}
+	if intent, ok := r.state.PendingPromotion(k); ok {
+		post, mappings, published, err := r.reconcilePromotionIntent(ctx, cmd, intent)
+		if err != nil {
+			return fmt.Errorf("promotion %d recovery: %w", cmd.PromotionSeq, err)
+		}
+		if published {
+			return r.finishAppliedPromotion(ctx, k, cmd, post, mappings)
+		}
+	}
 
 	baseRoot, baseSnapshotID := r.state.BaseRoot(k)
 	if cmd.BasePartitionRoot != baseRoot {
@@ -46,14 +55,22 @@ func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jw
 	if err != nil {
 		return fmt.Errorf("promotion %d: %w", cmd.PromotionSeq, err)
 	}
+	return r.finishAppliedPromotion(ctx, k, cmd, post, mappings)
+}
+
+func (r *Role) finishAppliedPromotion(ctx context.Context, k partitionKey, cmd arbiter.PromoteSafePartition, post string, mappings []arbiter.SafePartMapping) error {
 	ack := arbiter.PromotionAck{
 		NodeID: r.cfg.NodeID, PromotionSeq: cmd.PromotionSeq,
 		TableID: cmd.TableID, PartitionID: cmd.PartitionID,
 		PostPartitionCommitment: post, Applied: true, Parts: mappings,
 	}
 	hashes := candidateHashes(cmd)
-	if err := r.state.RecordAppliedPromotion(k, cmd.PromotionSeq, ack, post, cmd.BaseSafeSnapshotID, hashes); err != nil {
-		return err
+	unsafeParts := make([]string, 0, len(cmd.CandidateParts))
+	for _, cp := range cmd.CandidateParts {
+		unsafeParts = append(unsafeParts, cp.PartName)
+	}
+	if err := r.state.RecordAppliedPromotion(k, cmd.PromotionSeq, ack, post, cmd.BaseSafeSnapshotID, hashes, unsafeParts); err != nil {
+		return fmt.Errorf("journal applied promotion: %w", err)
 	}
 	return r.sendAck(ctx, ack)
 }
