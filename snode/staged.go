@@ -13,13 +13,16 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/housegate/housegate/pkg/replay/chexec"
+	"github.com/housegate/housegate/pkg/replay/nativepayload"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
-const stagedCSVEncoding = "csv-with-names-v1"
+// stagedNativeEncoding is the only payload format the SI lane admits
+// (envelope v2 D1): the exact ClickHouse Native ClientData wire bytes.
+const stagedNativeEncoding = nativepayload.PayloadFormat
 
 type PrepareRequest struct {
 	Envelope        arbiter.StatementEnvelope
@@ -44,6 +47,7 @@ type PreparedLocalResult struct {
 var (
 	ErrEncodingNotSupported   = errors.New("snode: payload encoding not supported")
 	ErrPayloadMismatch        = errors.New("snode: payload does not match envelope")
+	ErrSchemaHashMismatch     = errors.New("snode: envelope schema_hash does not match this source's declared schema")
 	ErrSchemaUnknown          = errors.New("snode: unknown target table")
 	ErrNotPrepared            = errors.New("snode: statement has no prepared unsafe write")
 	ErrConvergenceForeignRows = errors.New("snode: foreign row ids in candidate part; operator intervention required")
@@ -69,6 +73,11 @@ type ClaimOutcome struct {
 func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, payload []byte) (PreparedLocalResult, error) {
 	r.intakeMu.Lock()
 	defer r.intakeMu.Unlock()
+
+	payloadEncoding, revision, err := validatePrepareBindings(req)
+	if err != nil {
+		return PreparedLocalResult{}, err
+	}
 
 	flat := req.Envelope.StatementID.Flat()
 	rec, ok, err := r.journal.load(flat)
@@ -103,12 +112,6 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		}
 	}
 
-	if req.PayloadEncoding != stagedCSVEncoding {
-		return PreparedLocalResult{}, fmt.Errorf("encoding %q: %w", req.PayloadEncoding, ErrEncodingNotSupported)
-	}
-	if req.Revision == 0 {
-		return PreparedLocalResult{}, fmt.Errorf("revision must be non-zero: %w", ErrPayloadMismatch)
-	}
 	if err := validatePayloadBinding(req.Envelope, payload); err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("%v: %w", err, ErrPayloadMismatch)
 	}
@@ -116,11 +119,17 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	if err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("%v: %w", err, ErrSchemaUnknown)
 	}
+	// Envelope v2: the agent signed the schema hash it encoded against; a
+	// disagreement with this source's declared schema is a terminal reject,
+	// checked BEFORE any decode or unsafe write.
+	if want := payloadexec.TableSchemaHash(r.cfg.NetworkID, schema); req.Envelope.SchemaHash != want {
+		return PreparedLocalResult{}, fmt.Errorf("statement %s schema_hash %q, source has %q: %w", flat, req.Envelope.SchemaHash, want, ErrSchemaHashMismatch)
+	}
 	if r.d.Payloads == nil || r.d.Conn == nil {
 		return PreparedLocalResult{}, errors.New("snode: payload store and clickhouse connection are required")
 	}
 
-	rows, err := payloadexec.DecodeCSV(payload, schema)
+	rows, err := nativepayload.Decode(schema, revision, payload)
 	if err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("decode payload: %v: %w", err, ErrPayloadMismatch)
 	}
@@ -152,8 +161,8 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		StatementID:       flat,
 		Lifecycle:         LifecyclePreparing,
 		Envelope:          req.Envelope,
-		PayloadEncoding:   req.PayloadEncoding,
-		Revision:          req.Revision,
+		PayloadEncoding:   payloadEncoding,
+		Revision:          revision,
 		TouchedPartitions: touched,
 		PreWriteInventory: inventory,
 		ExpectedRowCount:  uint64(len(rows)),
@@ -179,6 +188,24 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		return PreparedLocalResult{}, fmt.Errorf("persist unsafe written: %w", err)
 	}
 	return result, nil
+}
+
+func validatePrepareBindings(req PrepareRequest) (string, int, error) {
+	if req.Envelope.PayloadFormat != stagedNativeEncoding {
+		return "", 0, fmt.Errorf("signed payload format %q: %w", req.Envelope.PayloadFormat, ErrEncodingNotSupported)
+	}
+	if req.Envelope.ClientRevision == 0 {
+		return "", 0, fmt.Errorf("signed client revision must be non-zero: %w", ErrPayloadMismatch)
+	}
+	if req.PayloadEncoding != req.Envelope.PayloadFormat {
+		return "", 0, fmt.Errorf("request payload encoding %q does not match signed payload format %q: %w",
+			req.PayloadEncoding, req.Envelope.PayloadFormat, ErrPayloadMismatch)
+	}
+	if req.Revision <= 0 || uint64(req.Revision) != uint64(req.Envelope.ClientRevision) {
+		return "", 0, fmt.Errorf("request revision %d does not match signed client revision %d: %w",
+			req.Revision, req.Envelope.ClientRevision, ErrPayloadMismatch)
+	}
+	return req.Envelope.PayloadFormat, int(req.Envelope.ClientRevision), nil
 }
 
 func validateReplayRequest(rec intakeRecord, req PrepareRequest, payload []byte) error {

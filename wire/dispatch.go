@@ -14,32 +14,38 @@ import (
 
 func statementToPB(s replay.Statement) *pb.Statement {
 	return &pb.Statement{
-		StatementId:   s.StatementID,
-		StatementSeq:  s.StatementSeq,
-		Sql:           s.SQL,
-		SqlHash:       s.SQLHash,
-		SettingsHash:  s.SettingsHash,
-		PayloadRef:    s.PayloadRef,
-		PayloadHash:   s.PayloadHash,
-		PayloadLength: s.PayloadLength,
-		TargetTableId: s.TargetTableID,
-		UserJws:       s.UserJWS,
+		StatementId:    s.StatementID,
+		StatementSeq:   s.StatementSeq,
+		Sql:            s.SQL,
+		SqlHash:        s.SQLHash,
+		SettingsHash:   s.SettingsHash,
+		PayloadRef:     s.PayloadRef,
+		PayloadHash:    s.PayloadHash,
+		PayloadLength:  s.PayloadLength,
+		TargetTableId:  s.TargetTableID,
+		UserJws:        s.UserJWS,
+		PayloadFormat:  s.PayloadFormat,
+		ClientRevision: s.ClientRevision,
+		SchemaHash:     s.SchemaHash,
 	}
 }
 
 // StatementFromPB converts a replay statement from its wire form.
 func StatementFromPB(m *pb.Statement) replay.Statement {
 	return replay.Statement{
-		StatementID:   m.GetStatementId(),
-		StatementSeq:  m.GetStatementSeq(),
-		SQL:           m.GetSql(),
-		SQLHash:       m.GetSqlHash(),
-		SettingsHash:  m.GetSettingsHash(),
-		PayloadRef:    m.GetPayloadRef(),
-		PayloadHash:   m.GetPayloadHash(),
-		PayloadLength: m.GetPayloadLength(),
-		TargetTableID: m.GetTargetTableId(),
-		UserJWS:       m.GetUserJws(),
+		StatementID:    m.GetStatementId(),
+		StatementSeq:   m.GetStatementSeq(),
+		SQL:            m.GetSql(),
+		SQLHash:        m.GetSqlHash(),
+		SettingsHash:   m.GetSettingsHash(),
+		PayloadRef:     m.GetPayloadRef(),
+		PayloadHash:    m.GetPayloadHash(),
+		PayloadLength:  m.GetPayloadLength(),
+		TargetTableID:  m.GetTargetTableId(),
+		UserJWS:        m.GetUserJws(),
+		PayloadFormat:  m.GetPayloadFormat(),
+		ClientRevision: m.GetClientRevision(),
+		SchemaHash:     m.GetSchemaHash(),
 	}
 }
 

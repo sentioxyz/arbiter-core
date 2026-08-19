@@ -22,11 +22,28 @@ func NewReplayCore(cfg Config, conn clickhouse.Conn, manifests replay.SnapshotSt
 		return nil, fmt.Errorf("verifier signer: %w", err)
 	}
 	return &replay.Verifier{
-		Snapshots: manifests,
-		Payloads:  payloads,
-		Executor:  payloadexec.NewWithMaterializer(cfg.NetworkID, chexec.NewMaterializer(cfg.NetworkID, conn), cfg.Tables...),
-		Signer:    signer,
+		Snapshots:    manifests,
+		Payloads:     payloads,
+		Executor:     payloadexec.NewWithMaterializer(cfg.NetworkID, chexec.NewMaterializer(cfg.NetworkID, conn), cfg.Tables...),
+		Signer:       signer,
+		SchemaHashes: tableSchemaHashes{networkID: cfg.NetworkID, tables: cfg.Tables},
 	}, nil
+}
+
+// tableSchemaHashes implements replay.SchemaHashSource over the verifier's
+// configured tables (Phase-B hashes under this network id).
+type tableSchemaHashes struct {
+	networkID string
+	tables    []payloadexec.TableSchema
+}
+
+func (s tableSchemaHashes) TableSchemaHash(tableID string) (string, bool) {
+	for _, t := range s.tables {
+		if t.TableID == tableID {
+			return payloadexec.TableSchemaHash(s.networkID, t), true
+		}
+	}
+	return "", false
 }
 
 // CHScanner recomputes byte-side part commitments from this verifier's ClickHouse.

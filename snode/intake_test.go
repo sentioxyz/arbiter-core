@@ -24,7 +24,7 @@ func TestSubmitLocalStatement_WritesSourceAndRegistersRC(t *testing.T) {
 
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\np0,2\n")
+	payload := nativePayload(t, pv{"p0", 1}, pv{"p0", 2})
 	env := intakeEnvelope(payload)
 	if err := role.SubmitLocalStatement(ctx, env, payload); err != nil {
 		t.Fatalf("SubmitLocalStatement: %v", err)

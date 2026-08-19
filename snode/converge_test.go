@@ -38,7 +38,7 @@ func TestConverge_CompleteWriteRepairsToUnsafeWritten(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\np1,2\n")
+	payload := nativePayload(t, pv{"p0", 1}, pv{"p1", 2})
 	req := stagedRequest(payload)
 	want, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestConverge_PartialWriteCleansViaAbortPath(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\np1,2\n")
+	payload := nativePayload(t, pv{"p0", 1}, pv{"p1", 2})
 	req := stagedRequest(payload)
 	res, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -100,7 +100,7 @@ func TestConverge_ZeroWriteCleansViaAbortPath(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
 	res, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -130,7 +130,7 @@ func TestConverge_ForeignRowIDFailsClosed(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
 	res, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {
@@ -163,7 +163,7 @@ func TestConverge_StartupResumesAbortPending(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	req := stagedRequest(payload)
 	res, err := role.PrepareLocalStatement(ctx, req, payload)
 	if err != nil {

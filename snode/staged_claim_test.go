@@ -22,7 +22,7 @@ func TestRegisterPreparedClaim_AcceptedAndIdempotent(t *testing.T) {
 	role, claims := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	prepared, err := role.PrepareLocalStatement(ctx, stagedRequest(payload), payload)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -72,7 +72,7 @@ func TestRegisterPreparedClaim_TerminalRejectKeepsUnsafeWritten(t *testing.T) {
 	role, claims := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	prepared, err := role.PrepareLocalStatement(ctx, stagedRequest(payload), payload)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -97,7 +97,7 @@ func TestRegisterPreparedClaim_IndeterminateFailureIsUnknown(t *testing.T) {
 	role, claims := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	prepared, err := role.PrepareLocalStatement(context.Background(), stagedRequest(payload), payload)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -125,7 +125,7 @@ func TestAbortPreparedStatement_DropsExactPartsAndCleans(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\np1,2\n")
+	payload := nativePayload(t, pv{"p0", 1}, pv{"p1", 2})
 	prepared, err := role.PrepareLocalStatement(ctx, stagedRequest(payload), payload)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -159,7 +159,7 @@ func TestAbortPreparedStatement_PreparingConvergesBeforeAbort(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	prepared, err := role.PrepareLocalStatement(ctx, stagedRequest(payload), payload)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -188,7 +188,7 @@ func TestAbortPreparedStatement_PreparingRejectsUnattributedPart(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	prepared, err := role.PrepareLocalStatement(ctx, stagedRequest(payload), payload)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -214,7 +214,7 @@ func TestSubmitLocalStatement_WrapperEquivalence(t *testing.T) {
 	role, _ := newIntakeHarness(t, conn, cfg)
 	createIntakeTable(t, conn, role, schema)
 
-	payload := []byte("p,v\np0,1\n")
+	payload := nativePayload(t, pv{"p0", 1})
 	env := intakeEnvelope(payload)
 	if err := role.SubmitLocalStatement(ctx, env, payload); err != nil {
 		t.Fatalf("wrapper: %v", err)

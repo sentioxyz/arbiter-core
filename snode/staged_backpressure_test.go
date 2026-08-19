@@ -29,7 +29,7 @@ func TestPrepareLocalStatement_RefusesAboveHardPartsLimitBeforeWriting(t *testin
 		t.Fatalf("seed parts = %d want 2", got)
 	}
 
-	payload := []byte("p,v\np0,3\n")
+	payload := nativePayload(t, pv{"p0", 3})
 	req := stagedRequest(payload)
 	_, err := role.PrepareLocalStatement(ctx, req, payload)
 	if !errors.Is(err, ErrBackpressure) {
@@ -45,7 +45,7 @@ func TestPrepareLocalStatement_RefusesAboveHardPartsLimitBeforeWriting(t *testin
 		t.Fatal("no claim may be registered")
 	}
 
-	other := []byte("p,v\np1,1\n")
+	other := nativePayload(t, pv{"p1", 1})
 	env := intakeEnvelope(other)
 	env.StatementID = arbiter.StatementID{ClientAccount: "0xacct", ClientSeq: 2, ClientNonce: "n"}
 	if _, err := role.PrepareLocalStatement(ctx, PrepareRequest{Envelope: env, PayloadEncoding: testEncoding, Revision: 54460}, other); err != nil {

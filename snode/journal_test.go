@@ -17,7 +17,7 @@ func testRecord(id string) intakeRecord {
 			StatementID: arbiter.StatementID{ClientAccount: "0xabc", ClientSeq: 7, ClientNonce: "n"},
 			SQL:         "INSERT INTO t VALUES",
 		},
-		PayloadEncoding:   "csv-with-names-v1",
+		PayloadEncoding:   "clickhouse-native-data-v1",
 		Revision:          54460,
 		TouchedPartitions: []string{"p_p0"},
 		PreWriteInventory: map[string][]string{"p_p0": {"p0_1_1_0"}},
