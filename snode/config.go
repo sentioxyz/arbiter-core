@@ -31,10 +31,11 @@ type Config struct {
 	SafeDatabase       string
 	PromoteDatabase    string
 	AuthorityAddresses []string
-	// ProtocolTables selects whether Register creates/verifies the pinned
-	// hg_unsafe/hg_safe DDL. Production wiring resolves this from the schema
-	// source; ModeOff preserves hosts that own their test DDL.
-	ProtocolTables ddl.Mode
+	// SchemaSource names where Tables came from. It derives the protocol-table
+	// mode (Spec L D2); there is no configurable mode and no fail-open zero.
+	SchemaSource ddl.SchemaSource
+	// protocolTables is the derived mode; validate() sets it.
+	protocolTables ddl.Mode
 	// ProtocolTablesReconcile is the periodic re-run cadence (0 = 60s).
 	ProtocolTablesReconcile time.Duration
 	// KeeperShardID feeds /sentio/<shard>/unsafe/<table>; v1 uses zero.
@@ -92,6 +93,12 @@ func (c *Config) validate() error {
 	} else if c.ProtocolTablesReconcile == 0 {
 		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
 	}
+	mode, modeErr := ddl.ModeFromSchemaSource(c.SchemaSource)
+	if modeErr != nil {
+		errs = append(errs, modeErr)
+	} else {
+		c.protocolTables = mode
+	}
 	if c.HardPartsPerPartition < 0 {
 		errs = append(errs, errors.New("hard parts per partition must not be negative"))
 	} else if c.HardPartsPerPartition == 0 {
@@ -103,4 +110,11 @@ func (c *Config) validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ProtocolTablesMode derives the mode from SchemaSource without relying on
+// validate mutating this Config value. Invalid or unset sources return an
+// error instead of silently exposing the ModeOff zero value.
+func (c Config) ProtocolTablesMode() (ddl.Mode, error) {
+	return ddl.ModeFromSchemaSource(c.SchemaSource)
 }

@@ -50,7 +50,7 @@ func New(cfg Config, d Deps) (*Role, error) {
 	if d.Client == nil || d.Replay == nil || d.Scanner == nil {
 		return nil, fmt.Errorf("verifier: client, replay core, and scanner are required")
 	}
-	if cfg.ProtocolTables != ddl.ModeOff && d.Conn == nil {
+	if cfg.protocolTables != ddl.ModeOff && d.Conn == nil {
 		return nil, fmt.Errorf("verifier: clickhouse connection is required when protocol tables are ensured")
 	}
 	if d.Logger == nil {
@@ -102,14 +102,14 @@ func (r *Role) Run(ctx context.Context) error {
 			}
 		})
 	}
-	if r.cfg.ProtocolTables == ddl.ModeOff {
+	if r.cfg.protocolTables == ddl.ModeOff {
 		return runSubscription(runCtx)
 	}
 	return r.runWithProtocolTableReconcile(runCtx, cancel, runSubscription)
 }
 
 func (r *Role) ensureProtocolTables(ctx context.Context) error {
-	return r.ensureProtocolTablesMode(ctx, r.cfg.ProtocolTables)
+	return r.ensureProtocolTablesMode(ctx, r.cfg.protocolTables)
 }
 
 func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {

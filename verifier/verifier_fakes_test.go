@@ -17,6 +17,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
 func testSeedV() []byte {
@@ -46,6 +47,7 @@ func testConfigV() Config {
 		ExecutorProfileID: "housegate-replay-mvp-v0",
 		SchemaRoot:        payloadexec.SchemaRoot(networkID, tables),
 		Tables:            tables,
+		SchemaSource:      ddl.SchemaSourceUnmanaged,
 	}
 }
 

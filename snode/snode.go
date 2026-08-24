@@ -187,7 +187,7 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 		})
 	}
 	workers := roleWorkers{subscription: runSubscription}
-	if r.cfg.ProtocolTables != ddl.ModeOff {
+	if r.cfg.protocolTables != ddl.ModeOff {
 		workers.reconcile = r.reconcileProtocolTables
 	}
 	return newRoleWorkerCoordinator(runCtx, cancel, ready, workers).run().Err()
@@ -201,7 +201,7 @@ func (r *Role) pinned() ddl.Pinned {
 }
 
 func (r *Role) ensureProtocolTables(ctx context.Context) error {
-	return r.ensureProtocolTablesMode(ctx, r.cfg.ProtocolTables)
+	return r.ensureProtocolTablesMode(ctx, r.cfg.protocolTables)
 }
 
 func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {

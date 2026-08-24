@@ -303,6 +303,25 @@ func TestEnsureProtocolTables_ValidatesAllSchemasBeforeAnyDDL(t *testing.T) {
 	}
 }
 
+func TestModeFromSchemaSource(t *testing.T) {
+	for source, want := range map[SchemaSource]Mode{
+		SchemaSourceNetworkState: ModeCreateAndVerify,
+		SchemaSourceChain:        ModeCreateAndVerify,
+		SchemaSourceClickHouse:   ModeVerifyOnly,
+		SchemaSourceUnmanaged:    ModeOff,
+	} {
+		got, err := ModeFromSchemaSource(source)
+		if err != nil || got != want {
+			t.Fatalf("ModeFromSchemaSource(%q) = %v, %v; want %v, nil", source, got, err, want)
+		}
+	}
+	for _, bad := range []SchemaSource{"", "CREATE", "network-state", "off"} {
+		if _, err := ModeFromSchemaSource(bad); err == nil {
+			t.Fatalf("ModeFromSchemaSource(%q) accepted an unknown schema source", bad)
+		}
+	}
+}
+
 func TestCHTableName(t *testing.T) {
 	if got := CHTableName("db.t"); got != "db__t" {
 		t.Fatalf("CHTableName = %q", got)

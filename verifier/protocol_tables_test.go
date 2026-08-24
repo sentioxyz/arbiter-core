@@ -24,7 +24,7 @@ import (
 
 func TestNew_ProtocolTablesModeRequiresConn(t *testing.T) {
 	cfg := testConfigV()
-	cfg.ProtocolTables = ddl.ModeCreateAndVerify
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
 	client, err := dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: "127.0.0.1:1"}}})
 	if err != nil {
 		t.Fatalf("new dataplane client: %v", err)
@@ -63,7 +63,7 @@ func TestRegister_EnsuresProtocolTablesOnVerifier(t *testing.T) {
 	cfg.UnsafeDatabase = "hg_unsafe_" + suffix
 	cfg.SafeDatabase = "hg_safe_" + suffix
 	cfg.PromoteDatabase = "hg_promote_" + suffix
-	cfg.ProtocolTables = ddl.ModeCreateAndVerify
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
 	t.Cleanup(func() {
 		for _, database := range []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase} {
 			_ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+database+" SYNC")
@@ -90,6 +90,33 @@ func TestConfigRejectsNegativeProtocolTablesReconcile(t *testing.T) {
 	cfg.ProtocolTablesReconcile = -time.Second
 	if err := cfg.validate(); err == nil {
 		t.Fatal("negative protocol table reconcile interval must fail validation")
+	}
+}
+
+func TestConfigRequiresSchemaSource(t *testing.T) {
+	cfg := testConfigV()
+	cfg.SchemaSource = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("an unset schema_source must be rejected; the old zero value silently disabled the lifecycle")
+	}
+}
+
+func TestConfigDerivesProtocolTableMode(t *testing.T) {
+	cfg := testConfigV()
+	cfg.SchemaSource = ddl.SchemaSourceClickHouse
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got, err := cfg.ProtocolTablesMode(); err != nil || got != ddl.ModeVerifyOnly {
+		t.Fatalf("clickhouse schema source derived %v, %v; want verify, nil", got, err)
+	}
+	cfg = testConfigV()
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got, err := cfg.ProtocolTablesMode(); err != nil || got != ddl.ModeCreateAndVerify {
+		t.Fatalf("network_state schema source derived %v, %v; want create, nil", got, err)
 	}
 }
 
@@ -196,7 +223,7 @@ func newProtocolTableRunHarnessV(t *testing.T, conn clickhouse.Conn) (*Role, *ve
 	cfg.UnsafeDatabase = "hg_unsafe_run_" + suffix
 	cfg.SafeDatabase = "hg_safe_run_" + suffix
 	cfg.PromoteDatabase = "hg_promote_run_" + suffix
-	cfg.ProtocolTables = ddl.ModeCreateAndVerify
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
 	cfg.ProtocolTablesReconcile = 20 * time.Millisecond
 	t.Cleanup(func() {
 		for _, database := range []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase} {

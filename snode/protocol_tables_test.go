@@ -55,7 +55,7 @@ func TestRegister_EnsuresProtocolTablesThenFailsClosedOnDrift(t *testing.T) {
 	cfg.NodeID = "snode-" + suffix
 	cfg.Tables = []payloadexec.TableSchema{schema}
 	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
-	cfg.ProtocolTables = ddl.ModeCreateAndVerify
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
 	setUniqueDatabases(t, &cfg)
 	t.Cleanup(func() {
 		for _, database := range []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase} {
@@ -96,7 +96,7 @@ func TestRegister_EnsuresProtocolTablesThenFailsClosedOnDrift(t *testing.T) {
 
 func TestRegister_ProtocolTablesModeRequiresConn(t *testing.T) {
 	cfg := testConfigS(t)
-	cfg.ProtocolTables = ddl.ModeVerifyOnly
+	cfg.SchemaSource = ddl.SchemaSourceClickHouse
 	server := &snodeFakeServer{}
 	addr := startSNodeFakeServer(t, server)
 	client, err := dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: addr}}})
@@ -118,6 +118,33 @@ func TestConfigRejectsNegativeProtocolTablesReconcile(t *testing.T) {
 	cfg.ProtocolTablesReconcile = -time.Second
 	if err := cfg.validate(); err == nil {
 		t.Fatal("negative protocol table reconcile interval must fail validation")
+	}
+}
+
+func TestConfigRequiresSchemaSource(t *testing.T) {
+	cfg := testConfigS(t)
+	cfg.SchemaSource = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("an unset schema_source must be rejected; the old zero value silently disabled the lifecycle")
+	}
+}
+
+func TestConfigDerivesProtocolTableMode(t *testing.T) {
+	cfg := testConfigS(t)
+	cfg.SchemaSource = ddl.SchemaSourceClickHouse
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got, err := cfg.ProtocolTablesMode(); err != nil || got != ddl.ModeVerifyOnly {
+		t.Fatalf("clickhouse schema source derived %v, %v; want verify, nil", got, err)
+	}
+	cfg = testConfigS(t)
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got, err := cfg.ProtocolTablesMode(); err != nil || got != ddl.ModeCreateAndVerify {
+		t.Fatalf("network_state schema source derived %v, %v; want create, nil", got, err)
 	}
 }
 
@@ -220,7 +247,7 @@ func newProtocolTableRunHarnessS(t *testing.T, conn clickhouse.Conn) (*Role, *sn
 	cfg.NodeID = "snode-run-" + suffix
 	cfg.Tables = []payloadexec.TableSchema{schema}
 	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
-	cfg.ProtocolTables = ddl.ModeCreateAndVerify
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
 	cfg.ProtocolTablesReconcile = 20 * time.Millisecond
 	setUniqueDatabases(t, &cfg)
 	t.Cleanup(func() {

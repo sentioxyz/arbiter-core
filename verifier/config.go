@@ -18,17 +18,21 @@ const (
 )
 
 type Config struct {
-	ReplicaID               string
-	Ed25519Seed             []byte
-	NetworkID               string
-	SchemaSnapshotID        string
-	ExecutorProfileID       string
-	SchemaRoot              string
-	Tables                  []payloadexec.TableSchema
-	UnsafeDatabase          string
-	SafeDatabase            string
-	PromoteDatabase         string
-	ProtocolTables          ddl.Mode
+	ReplicaID         string
+	Ed25519Seed       []byte
+	NetworkID         string
+	SchemaSnapshotID  string
+	ExecutorProfileID string
+	SchemaRoot        string
+	Tables            []payloadexec.TableSchema
+	UnsafeDatabase    string
+	SafeDatabase      string
+	PromoteDatabase   string
+	// SchemaSource names where Tables came from. It derives the protocol-table
+	// mode (Spec L D2); there is no configurable mode and no fail-open zero.
+	SchemaSource ddl.SchemaSource
+	// protocolTables is the derived mode; validate() sets it.
+	protocolTables          ddl.Mode
 	ProtocolTablesReconcile time.Duration
 	KeeperShardID           uint32
 }
@@ -78,10 +82,23 @@ func (c *Config) validate() error {
 	} else if c.ProtocolTablesReconcile == 0 {
 		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
 	}
+	mode, modeErr := ddl.ModeFromSchemaSource(c.SchemaSource)
+	if modeErr != nil {
+		errs = append(errs, modeErr)
+	} else {
+		c.protocolTables = mode
+	}
 	if len(errs) == 0 {
 		if got := payloadexec.SchemaRoot(c.NetworkID, c.Tables); got != c.SchemaRoot {
 			errs = append(errs, fmt.Errorf("schema_root mismatch: configured %s, computed %s", c.SchemaRoot, got))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ProtocolTablesMode derives the mode from SchemaSource without relying on
+// validate mutating this Config value. Invalid or unset sources return an
+// error instead of silently exposing the ModeOff zero value.
+func (c Config) ProtocolTablesMode() (ddl.Mode, error) {
+	return ddl.ModeFromSchemaSource(c.SchemaSource)
 }

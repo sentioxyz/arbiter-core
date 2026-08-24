@@ -16,14 +16,50 @@ import (
 type Mode int
 
 const (
-	// ModeOff leaves DDL ownership to the host. Production wiring resolves to
-	// verify or create; the zero value preserves existing test harnesses.
+	// ModeOff leaves DDL ownership to the host. Role production wiring cannot
+	// reach it; SchemaSourceUnmanaged preserves explicit test harnesses.
 	ModeOff Mode = iota
 	// ModeVerifyOnly verifies existing tables without creating anything.
 	ModeVerifyOnly
 	// ModeCreateAndVerify creates missing tables and verifies their live shape.
 	ModeCreateAndVerify
 )
+
+// SchemaSource names where a role's authoritative table schemas come from.
+// Spec L D2: the protocol-table mode is DERIVED from it, so a deployment can
+// never silently end up with the lifecycle disabled by omitting a field.
+type SchemaSource string
+
+const (
+	// SchemaSourceNetworkState resolves schemas from the network-state
+	// registry; the role may create protocol tables.
+	SchemaSourceNetworkState SchemaSource = "network_state"
+	// SchemaSourceChain resolves schemas from the on-chain declaration; the
+	// role may create protocol tables.
+	SchemaSourceChain SchemaSource = "chain"
+	// SchemaSourceClickHouse derives schemas from the local ClickHouse, so the
+	// role can only verify: creating from what it reads would be circular.
+	SchemaSourceClickHouse SchemaSource = "clickhouse"
+	// SchemaSourceUnmanaged is TEST/HARNESS ONLY: the host owns protocol DDL.
+	// Production config loaders must reject it; it exists so in-package tests
+	// that create their own tables keep a way to express that intent
+	// explicitly instead of relying on a fail-open zero value.
+	SchemaSourceUnmanaged SchemaSource = "unmanaged"
+)
+
+// ModeFromSchemaSource is the only supported way to obtain a Mode for a role.
+func ModeFromSchemaSource(source SchemaSource) (Mode, error) {
+	switch source {
+	case SchemaSourceNetworkState, SchemaSourceChain:
+		return ModeCreateAndVerify, nil
+	case SchemaSourceClickHouse:
+		return ModeVerifyOnly, nil
+	case SchemaSourceUnmanaged:
+		return ModeOff, nil
+	default:
+		return ModeOff, fmt.Errorf("ddl: unknown schema source %q (want network_state|chain|clickhouse, or unmanaged in tests)", source)
+	}
+}
 
 // DefaultReconcileInterval is the periodic role reconciliation cadence.
 const DefaultReconcileInterval = 60 * time.Second

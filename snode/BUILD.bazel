@@ -47,6 +47,7 @@ go_test(
     srcs = [
         "ch_test.go",
         "cleanup_test.go",
+        "config_external_test.go",
         "converge_test.go",
         "intake_fixtures_test.go",
         "intake_lock_test.go",

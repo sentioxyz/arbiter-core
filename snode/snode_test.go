@@ -16,6 +16,7 @@ import (
 
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/dastore"
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 	"github.com/sentioxyz/arbiter-core/dataplane/fspayload"
 )
 
@@ -35,6 +36,7 @@ func testConfigS(t *testing.T) Config {
 		ExecutorProfileID:  "housegate-replay-mvp-v0",
 		SchemaRoot:         payloadexec.SchemaRoot("testnet", tables),
 		Tables:             tables,
+		SchemaSource:       ddl.SchemaSourceUnmanaged,
 		StateDir:           t.TempDir(),
 		AuthorityAddresses: []string{"0xabcdef0123456789abcdef0123456789abcdef01"},
 	}
