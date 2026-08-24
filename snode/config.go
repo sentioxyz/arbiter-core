@@ -38,6 +38,9 @@ type Config struct {
 	protocolTables ddl.Mode
 	// ProtocolTablesReconcile is the periodic re-run cadence (0 = 60s).
 	ProtocolTablesReconcile time.Duration
+	// ProtocolTablesMaxFailures bounds consecutive transient reconcile failures
+	// before the role exits (0 = ddl.DefaultReconcileMaxFailures).
+	ProtocolTablesMaxFailures int
 	// KeeperShardID feeds /sentio/<shard>/unsafe/<table>; v1 uses zero.
 	KeeperShardID uint32
 	// HardPartsPerPartition refuses a prepare before journal or ClickHouse
@@ -92,6 +95,9 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("protocol tables reconcile interval must not be negative"))
 	} else if c.ProtocolTablesReconcile == 0 {
 		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
+	}
+	if c.ProtocolTablesMaxFailures < 0 {
+		errs = append(errs, errors.New("protocol tables reconcile max failures must not be negative"))
 	}
 	mode, modeErr := ddl.ModeFromSchemaSource(c.SchemaSource)
 	if modeErr != nil {

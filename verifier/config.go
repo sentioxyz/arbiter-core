@@ -32,9 +32,13 @@ type Config struct {
 	// mode (Spec L D2); there is no configurable mode and no fail-open zero.
 	SchemaSource ddl.SchemaSource
 	// protocolTables is the derived mode; validate() sets it.
-	protocolTables          ddl.Mode
+	protocolTables ddl.Mode
+	// ProtocolTablesReconcile is the periodic re-run cadence (0 = 60s).
 	ProtocolTablesReconcile time.Duration
-	KeeperShardID           uint32
+	// ProtocolTablesMaxFailures bounds consecutive transient reconcile failures
+	// before the role exits (0 = ddl.DefaultReconcileMaxFailures).
+	ProtocolTablesMaxFailures int
+	KeeperShardID             uint32
 }
 
 func (c *Config) validate() error {
@@ -81,6 +85,9 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("protocol tables reconcile interval must not be negative"))
 	} else if c.ProtocolTablesReconcile == 0 {
 		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
+	}
+	if c.ProtocolTablesMaxFailures < 0 {
+		errs = append(errs, errors.New("protocol tables reconcile max failures must not be negative"))
 	}
 	mode, modeErr := ddl.ModeFromSchemaSource(c.SchemaSource)
 	if modeErr != nil {

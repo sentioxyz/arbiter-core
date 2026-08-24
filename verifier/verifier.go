@@ -38,9 +38,10 @@ type Deps struct {
 }
 
 type Role struct {
-	cfg  Config
-	d    Deps
-	priv ed25519.PrivateKey
+	cfg      Config
+	d        Deps
+	priv     ed25519.PrivateKey
+	ensureFn func(context.Context, ddl.Mode) error
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -56,7 +57,9 @@ func New(cfg Config, d Deps) (*Role, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Role{cfg: cfg, d: d, priv: ed25519.NewKeyFromSeed(cfg.Ed25519Seed)}, nil
+	r := &Role{cfg: cfg, d: d, priv: ed25519.NewKeyFromSeed(cfg.Ed25519Seed)}
+	r.ensureFn = r.ensureProtocolTablesMode
+	return r, nil
 }
 
 func (r *Role) Register(ctx context.Context) error {
@@ -86,6 +89,11 @@ func (r *Role) Register(ctx context.Context) error {
 func (r *Role) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// Ensure before any subscription starts so Run is safe even when a host did
+	// not call Register first. The periodic worker remains verify-only below.
+	if err := r.ensureProtocolTables(runCtx); err != nil {
+		return err
+	}
 	runSubscription := func(ctx context.Context) error {
 		return r.d.Client.RunVerifierSubscription(ctx, r.cfg.ReplicaID, func(d *pb.VerifierDispatch) error {
 			if d == nil {
@@ -109,7 +117,7 @@ func (r *Role) Run(ctx context.Context) error {
 }
 
 func (r *Role) ensureProtocolTables(ctx context.Context) error {
-	return r.ensureProtocolTablesMode(ctx, r.cfg.protocolTables)
+	return r.ensureFn(ctx, r.cfg.protocolTables)
 }
 
 func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {
@@ -126,45 +134,95 @@ func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) erro
 	return nil
 }
 
+type protocolTableRunResultKind uint8
+
+const (
+	protocolTableRunSubscription protocolTableRunResultKind = iota
+	protocolTableRunReconcile
+)
+
+type protocolTableRunResult struct {
+	kind protocolTableRunResultKind
+	err  error
+}
+
 func (r *Role) runWithProtocolTableReconcile(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	runSubscription func(context.Context) error,
 ) error {
-	subscriptionDone := make(chan error, 1)
-	reconcileDone := make(chan error, 1)
-	go func() { subscriptionDone <- runSubscription(ctx) }()
-	go func() { reconcileDone <- r.reconcileProtocolTables(ctx) }()
+	results := make(chan protocolTableRunResult, 2)
+	go func() {
+		results <- protocolTableRunResult{kind: protocolTableRunSubscription, err: runSubscription(ctx)}
+	}()
+	go func() {
+		results <- protocolTableRunResult{kind: protocolTableRunReconcile, err: r.reconcileProtocolTables(ctx)}
+	}()
+	return r.resolveProtocolTableRunResults(cancel, results)
+}
 
-	select {
-	case subscriptionErr := <-subscriptionDone:
-		cancel()
-		reconcileErr := <-reconcileDone
-		if reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
-			return reconcileErr
+func (r *Role) resolveProtocolTableRunResults(
+	cancel context.CancelFunc,
+	results <-chan protocolTableRunResult,
+) error {
+	first := <-results
+	cancel()
+	second := <-results
+
+	switch first.kind {
+	case protocolTableRunSubscription:
+		if second.err != nil && !errors.Is(second.err, context.Canceled) {
+			r.d.Logger.Warn("protocol table reconcile stopped while the subscription was failing", "err", second.err)
 		}
-		return subscriptionErr
-	case reconcileErr := <-reconcileDone:
-		cancel()
-		subscriptionErr := <-subscriptionDone
-		if reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
-			return reconcileErr
+		return first.err
+	case protocolTableRunReconcile:
+		if first.err != nil && !errors.Is(first.err, context.Canceled) {
+			return first.err
 		}
-		return subscriptionErr
+		return second.err
+	default:
+		return fmt.Errorf("verifier: unknown protocol table worker result kind %d", first.kind)
 	}
 }
 
 func (r *Role) reconcileProtocolTables(ctx context.Context) error {
-	ticker := time.NewTicker(r.cfg.ProtocolTablesReconcile)
-	defer ticker.Stop()
+	interval := r.cfg.ProtocolTablesReconcile
+	maxFailures := r.cfg.ProtocolTablesMaxFailures
+	if maxFailures <= 0 {
+		maxFailures = ddl.DefaultReconcileMaxFailures
+	}
+	consecutive := 0
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
-			if err := r.ensureProtocolTablesMode(ctx, ddl.ModeVerifyOnly); err != nil {
-				return fmt.Errorf("verifier: reconcile protocol tables: %w", err)
+		case <-timer.C:
+		}
+
+		err := r.ensureFn(ctx, ddl.ModeVerifyOnly)
+		switch {
+		case err == nil:
+			consecutive = 0
+			timer.Reset(interval)
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case ddl.FatalReconcileError(err):
+			return fmt.Errorf("verifier: reconcile protocol tables: %w", err)
+		default:
+			consecutive++
+			if consecutive >= maxFailures {
+				return fmt.Errorf("verifier: reconcile protocol tables failed %d consecutive times: %w", consecutive, err)
 			}
+			backoff := ddl.ReconcileBackoff(consecutive, interval)
+			r.d.Logger.Warn("protocol table reconcile failed; retrying",
+				"consecutive_failures", consecutive,
+				"max_failures", maxFailures,
+				"retry_in", backoff,
+				"err", err,
+			)
+			timer.Reset(backoff)
 		}
 	}
 }
