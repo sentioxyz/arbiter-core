@@ -89,6 +89,46 @@ func TestEnsureProtocolTables_CanonicalizesFixedStringBeforeCreateAndVerify(t *t
 	}
 }
 
+// A declared type outside the SI whitelist must be refused BEFORE any DDL
+// runs. This is the permanent-brick scenario from Spec L §1a: a type string
+// that closes the column list would add a column, VerifyProtocolTable would
+// then report drift forever, and CREATE TABLE IF NOT EXISTS is a silent no-op
+// against the existing table, so the node could not recover without an
+// operator DROP.
+func TestEnsureProtocolTables_RejectsBadColumnTypeBeforeCreatingAnything(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	protocolDatabases := []string{p.UnsafeDB, p.SafeDB, p.PromoteDB}
+	for _, database := range protocolDatabases {
+		if err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(database)+" SYNC"); err != nil {
+			t.Fatalf("establish clean database precondition for %s: %v", database, err)
+		}
+	}
+	sch := ensureSchema(t)
+	sch.Columns = append(sch.Columns, lthash.Column{
+		Name: "evil",
+		Type: "String) ENGINE = MergeTree ORDER BY tuple() --",
+	})
+	err := EnsureProtocolTables(ctx, conn, p, []payloadexec.TableSchema{sch}, ModeCreateAndVerify, slog.Default())
+	if !errors.Is(err, payloadexec.ErrUnsupportedColumnType) {
+		t.Fatalf("EnsureProtocolTables = %v, want ErrUnsupportedColumnType", err)
+	}
+	for _, database := range protocolDatabases {
+		var n uint64
+		if err := conn.QueryRow(ctx,
+			"SELECT count() FROM system.databases WHERE name = ?", database,
+		).Scan(&n); err != nil {
+			t.Fatalf("count database %s: %v", database, err)
+		}
+		if n != 0 {
+			t.Fatalf("database %s exists after a rejected declaration; EnsureProtocolTables issued DDL before validating the full batch", database)
+		}
+	}
+}
+
 func TestEnsureProtocolTables_VerifyOnlyNeverCreates(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
