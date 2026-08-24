@@ -73,6 +73,12 @@ bash scripts/update-housegate.sh 4dd088f4fe17d7bf13ba2c2e2311d72d0b97cd54
 The script resolves the canonical Go version and full commit, updates
 `go.mod`, `go.sum`, `MODULE.bazel`, this example, and the Bzlmod lockfile.
 
+Storage-integrity protocol-table construction validates every declared column type against the storage-integrity whitelist before emitting any DDL. A declaration outside that profile fails role construction, so an invalid schema cannot create a partial set of protocol tables.
+
+The protocol-table mode is derived from `schema_source`: `network_state` and `chain` create and reconcile the tables, while `clickhouse` verifies an existing deployment without creating it. There is no separately configurable mode that can disagree with the authoritative schema source.
+
+`hg_promote` is created and verified together with `hg_unsafe` and `hg_safe`. A verify-only node whose protocol tables were never bootstrapped in create mode, or whose `hg_promote` table has drifted, now fails at startup instead of discovering the problem during the first promotion.
+
 ClickHouse-backed SNode tests are opt-in. The full DDL acceptance uses two
 ClickHouse 25.8 nodes sharing one Keeper:
 
