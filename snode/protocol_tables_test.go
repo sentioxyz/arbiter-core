@@ -36,10 +36,8 @@ func requireKeeperS(t *testing.T, conn clickhouse.Conn) {
 	}
 }
 
-func TestRegister_EnsuresProtocolTablesThenFailsClosedOnDrift(t *testing.T) {
-	ctx := context.Background()
-	conn := requireCH(t)
-	requireKeeperS(t, conn)
+func newRegisteredRoleFixture(t *testing.T, conn clickhouse.Conn) (*Role, Config, *snodeFakeServer) {
+	t.Helper()
 	server := &snodeFakeServer{}
 	addr := startSNodeFakeServer(t, server)
 	client, err := dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: addr}}})
@@ -67,10 +65,18 @@ func TestRegister_EnsuresProtocolTablesThenFailsClosedOnDrift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new snode: %v", err)
 	}
-
-	if err := role.Register(ctx); err != nil {
+	if err := role.Register(context.Background()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	return role, cfg, server
+}
+
+func TestRegister_EnsuresProtocolTablesThenFailsClosedOnDrift(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeperS(t, conn)
+	role, cfg, server := newRegisteredRoleFixture(t, conn)
+	schema := cfg.Tables[0]
 	table := CHTableName(schema.TableID)
 	var engine string
 	if err := conn.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = ?", role.cfg.UnsafeDatabase, table).Scan(&engine); err != nil || engine != "ReplicatedMergeTree" {
@@ -86,13 +92,47 @@ func TestRegister_EnsuresProtocolTablesThenFailsClosedOnDrift(t *testing.T) {
 	if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MODIFY SETTING max_bytes_to_merge_at_max_space_in_pool = 1", role.cfg.SafeDatabase, table)); err != nil {
 		t.Fatalf("tamper: %v", err)
 	}
-	err = role.Register(ctx)
+	err := role.Register(ctx)
 	if !errors.Is(err, ddl.ErrProtocolTableDrift) {
 		t.Fatalf("drift must fail closed before re-registration, got %v", err)
 	}
 	if regs, _ := server.snapshot(); len(regs) != 1 {
 		t.Fatalf("drifted role must not register again: %+v", regs)
 	}
+}
+
+// D5 acceptance: hg_promote drift is a startup failure, not a first-promotion
+// surprise. D4 acceptance: the role that survives it is the one whose
+// reconcile can tell drift from a blip.
+func TestRegister_FailsClosedOnPromoteTableDrift(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeperS(t, conn)
+	role, cfg, server := newRegisteredRoleFixture(t, conn)
+	assertSingleMembership := func(stage string) {
+		regs, active := server.snapshot()
+		if len(regs) != 1 || regs[0].GetNodeId() != cfg.NodeID {
+			t.Fatalf("%s registrations = %+v, want exactly one for %s", stage, regs, cfg.NodeID)
+		}
+		if len(active) != 1 || active[0] != cfg.NodeID {
+			t.Fatalf("%s active calls = %+v, want exactly one for %s", stage, active, cfg.NodeID)
+		}
+	}
+	assertSingleMembership("baseline")
+	table := ddl.CHTableName(cfg.Tables[0].TableID)
+	if err := conn.Exec(ctx, fmt.Sprintf(
+		"ALTER TABLE %s.%s MODIFY SETTING max_bytes_to_merge_at_max_space_in_pool = 1", cfg.PromoteDatabase, table,
+	)); err != nil {
+		t.Fatalf("tamper promote: %v", err)
+	}
+	err := role.Register(ctx)
+	if !errors.Is(err, ddl.ErrProtocolTableDrift) {
+		t.Fatalf("Register after promote drift = %v, want ErrProtocolTableDrift", err)
+	}
+	if !strings.Contains(err.Error(), cfg.PromoteDatabase) {
+		t.Fatalf("drift error %q does not name the promote database", err)
+	}
+	assertSingleMembership("after promote drift")
 }
 
 func TestRegister_ProtocolTablesModeRequiresConn(t *testing.T) {
