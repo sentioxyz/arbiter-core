@@ -122,6 +122,13 @@ func BuildDDL(p Pinned, t payloadexec.TableSchema) (string, string, string, erro
 	return unsafe.SQL(), safe.SQL(), promote.SQL(), nil
 }
 
+// ValidatePartitionFreeze is the role-config entry point for the P1c freeze
+// (partition_by must be empty or name a declared bare String column). Roles
+// call it so a freeze violation fails both of them identically at startup,
+// rather than bricking one and leaving the other silently without protocol
+// tables for that table.
+func ValidatePartitionFreeze(t payloadexec.TableSchema) error { return validatePartitionFreeze(t) }
+
 func validatePartitionFreeze(t payloadexec.TableSchema) error {
 	if t.PartitionBy == "" {
 		return nil

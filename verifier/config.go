@@ -56,6 +56,14 @@ func (c *Config) validate() error {
 	if err := ddl.ValidatePhysicalTableNames(c.Tables); err != nil {
 		errs = append(errs, err)
 	}
+	for i, tbl := range c.Tables {
+		if err := ddl.ValidatePartitionFreeze(tbl); err != nil {
+			errs = append(errs, fmt.Errorf("tables[%d] (%s): %w", i, tbl.TableID, err))
+		}
+		if err := payloadexec.ValidateTableSchemaColumns(tbl); err != nil {
+			errs = append(errs, fmt.Errorf("tables[%d]: %w", i, err))
+		}
+	}
 	if c.UnsafeDatabase == "" {
 		c.UnsafeDatabase = defaultUnsafeDatabase
 	}

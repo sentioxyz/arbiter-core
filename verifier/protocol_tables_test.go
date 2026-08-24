@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -88,6 +90,82 @@ func TestConfigRejectsNegativeProtocolTablesReconcile(t *testing.T) {
 	cfg.ProtocolTablesReconcile = -time.Second
 	if err := cfg.validate(); err == nil {
 		t.Fatal("negative protocol table reconcile interval must fail validation")
+	}
+}
+
+func TestConfigRejectsColumnTypeOutsideWhitelist(t *testing.T) {
+	cfg := testConfigV()
+	schema := scanTableSchema()
+	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Array(UInt64)"})
+	cfg.Tables = []payloadexec.TableSchema{schema}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	err := cfg.validate()
+	if !errors.Is(err, payloadexec.ErrUnsupportedColumnType) {
+		t.Fatalf("validate = %v, want ErrUnsupportedColumnType", err)
+	}
+	if !strings.Contains(err.Error(), `tables[0]: table db.t column "bad"`) {
+		t.Fatalf("validate lacks shared table/column context: %v", err)
+	}
+}
+
+// Spec L D7: a freeze-violating declaration must fail both roles identically.
+// Before this change the SNode refused to start while the verifier started
+// without protocol tables for that table.
+func TestConfigRejectsPartitionFreezeViolation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate     func(*payloadexec.TableSchema)
+		wantDetail string
+	}{
+		"expression": {
+			mutate:     func(s *payloadexec.TableSchema) { s.PartitionBy = "toYYYYMM(d)" },
+			wantDetail: `got expression "toYYYYMM(d)"`,
+		},
+		"non_string": {
+			mutate: func(s *payloadexec.TableSchema) {
+				s.Columns[0].Type = "UInt64"
+				s.PartitionBy = s.Columns[0].Name
+			},
+			wantDetail: `column "p" has type UInt64`,
+		},
+		"undeclared": {
+			mutate:     func(s *payloadexec.TableSchema) { s.PartitionBy = "nope" },
+			wantDetail: `"nope" names no declared column`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfigV()
+			schema := scanTableSchema()
+			tc.mutate(&schema)
+			cfg.Tables = []payloadexec.TableSchema{schema}
+			cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+			err := cfg.validate()
+			if !errors.Is(err, ddl.ErrPartitionFreeze) {
+				t.Fatalf("validate = %v, want ErrPartitionFreeze", err)
+			}
+			for _, want := range []string{"tables[0] (db.t): " + ddl.ErrPartitionFreeze.Error(), tc.wantDetail} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("validate lacks shared context %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigValidationOrdersPartitionBeforeColumnTypes(t *testing.T) {
+	cfg := testConfigV()
+	schema := scanTableSchema()
+	schema.PartitionBy = "toYYYYMM(d)"
+	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Nullable(String)"})
+	cfg.Tables = []payloadexec.TableSchema{schema}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	err := cfg.validate()
+	if !errors.Is(err, ddl.ErrPartitionFreeze) || !errors.Is(err, payloadexec.ErrUnsupportedColumnType) {
+		t.Fatalf("validate = %v, want both partition and column-type errors", err)
+	}
+	partitionAt := strings.Index(err.Error(), "tables[0] (db.t): "+ddl.ErrPartitionFreeze.Error())
+	typeAt := strings.Index(err.Error(), `tables[0]: table db.t column "bad"`)
+	if partitionAt < 0 || typeAt < 0 || partitionAt >= typeAt {
+		t.Fatalf("validation error order = %q, want partition freeze before column types", err)
 	}
 }
 
