@@ -16,6 +16,26 @@ import (
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
+func TestPrepareShadow_FailsClearlyWhenPromoteTableIsAbsent(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeperS(t, conn)
+	r, cmd, sch, table := newPromoteFixtureWithoutPromoteTable(t, conn)
+	safe := r.cfg.SafeDatabase + "." + table
+	promote := r.cfg.PromoteDatabase + "." + table
+	partition, err := quotePartition(sch, cmd.PartitionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.prepareShadow(ctx, cmd, sch, table, safe, promote, partition)
+	if !errors.Is(err, ErrPromoteTableMissing) {
+		t.Fatalf("prepareShadow = %v, want ErrPromoteTableMissing", err)
+	}
+	if !strings.Contains(err.Error(), promote) {
+		t.Fatalf("error %q does not name the missing table", err)
+	}
+}
+
 func TestHandlePromote_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	role, claims, signer, schema, env := seedPromotableStatement(t, ctx)

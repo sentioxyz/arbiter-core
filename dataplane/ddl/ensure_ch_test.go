@@ -62,6 +62,40 @@ func TestEnsureProtocolTables_CreateVerifyTamperDrift(t *testing.T) {
 	}
 }
 
+func TestEnsureProtocolTables_CreatesAndVerifiesPromoteTable(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	for _, database := range []string{p.UnsafeDB, p.SafeDB, p.PromoteDB} {
+		if err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(database)+" SYNC"); err != nil {
+			t.Fatalf("establish clean database precondition for %s: %v", database, err)
+		}
+	}
+	sch := ensureSchema(t)
+	tables := []payloadexec.TableSchema{sch}
+	if err := EnsureProtocolTables(ctx, conn, p, tables, ModeCreateAndVerify, slog.Default()); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	table := CHTableName(sch.TableID)
+	var engine string
+	if err := conn.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = ?", p.PromoteDB, table).Scan(&engine); err != nil {
+		t.Fatalf("hg_promote table missing after create: %v", err)
+	}
+	if engine != EngineMergeTree {
+		t.Fatalf("hg_promote engine = %q, want MergeTree", engine)
+	}
+	// D5: promote drift is detected at startup, not at first promotion.
+	if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MODIFY SETTING max_bytes_to_merge_at_max_space_in_pool = 1", p.PromoteDB, table)); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	err := EnsureProtocolTables(ctx, conn, p, tables, ModeCreateAndVerify, slog.Default())
+	if !errors.Is(err, ErrProtocolTableDrift) || !strings.Contains(err.Error(), p.PromoteDB) {
+		t.Fatalf("ensure after promote tamper = %v, want drift naming %s", err, p.PromoteDB)
+	}
+}
+
 func TestEnsureProtocolTables_CanonicalizesFixedStringBeforeCreateAndVerify(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)

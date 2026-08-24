@@ -2,6 +2,7 @@ package snode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -11,6 +12,13 @@ import (
 
 	"github.com/sentioxyz/arbiter-core"
 )
+
+// ErrPromoteTableMissing means the protocol-owned hg_promote table does not
+// exist. Spec L D5 moved it into EnsureProtocolTables, so its absence is a
+// startup-detectable condition rather than a first-promotion surprise; the
+// promotion path no longer creates it, because an ad-hoc CREATE would bypass
+// the pinned DDL and its drift detection.
+var ErrPromoteTableMissing = errors.New("snode: hg_promote table is missing; run the role with a create-capable schema source so EnsureProtocolTables can build it")
 
 func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafePartition) (string, []arbiter.SafePartMapping, error) {
 	if r.d.Conn == nil {
@@ -230,8 +238,14 @@ func (r *Role) partitionContentRoot(ctx context.Context, db, table string, sch p
 }
 
 func (r *Role) prepareShadow(ctx context.Context, cmd arbiter.PromoteSafePartition, sch payloadexec.TableSchema, table, safe, promote, partition string) error {
-	if err := r.exec(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s AS %s", promote, safe)); err != nil {
-		return err
+	var exists uint64
+	if err := r.d.Conn.QueryRow(ctx,
+		"SELECT count() FROM system.tables WHERE database = ? AND name = ?", r.cfg.PromoteDatabase, table,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("snode: check %s: %w", promote, err)
+	}
+	if exists == 0 {
+		return fmt.Errorf("%w: %s", ErrPromoteTableMissing, promote)
 	}
 	if err := r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition); err != nil {
 		return err
