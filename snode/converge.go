@@ -11,7 +11,9 @@ import (
 // LookupPreparedStatement returns a prepared result only after any durable
 // non-terminal intake record has converged to a truthful endpoint.
 func (r *Role) LookupPreparedStatement(ctx context.Context, statementID string) (PreparedLocalResult, bool, error) {
-	r.intakeMu.Lock()
+	if err := r.intakeMu.LockContext(ctx); err != nil {
+		return PreparedLocalResult{}, false, fmt.Errorf("acquire prepared lookup: %w", err)
+	}
 	defer r.intakeMu.Unlock()
 
 	rec, ok, err := r.journal.load(statementID)
@@ -219,7 +221,9 @@ func (r *Role) excludeAbortedPart(rec intakeRecord, name string) error {
 // starts its promotion subscription. Staged entry points also converge lazily,
 // so correctness does not depend on callers invoking Run first.
 func (r *Role) convergeStartup(ctx context.Context) error {
-	r.intakeMu.Lock()
+	if err := r.intakeMu.LockContext(ctx); err != nil {
+		return fmt.Errorf("acquire intake convergence: %w", err)
+	}
 	defer r.intakeMu.Unlock()
 
 	records, err := r.journal.list()

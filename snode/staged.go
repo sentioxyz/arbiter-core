@@ -71,7 +71,9 @@ type ClaimOutcome struct {
 }
 
 func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, payload []byte) (PreparedLocalResult, error) {
-	r.intakeMu.Lock()
+	if err := r.intakeMu.LockContext(ctx); err != nil {
+		return PreparedLocalResult{}, fmt.Errorf("acquire intake prepare: %w", err)
+	}
 	defer r.intakeMu.Unlock()
 
 	payloadEncoding, revision, err := validatePrepareBindings(req)
@@ -298,7 +300,9 @@ func (r *Role) assembleAfterWrite(
 }
 
 func (r *Role) RegisterPreparedClaim(ctx context.Context, statementID string) (ClaimOutcome, error) {
-	r.intakeMu.Lock()
+	if err := r.intakeMu.LockContext(ctx); err != nil {
+		return ClaimOutcome{}, fmt.Errorf("acquire prepared claim: %w", err)
+	}
 	defer r.intakeMu.Unlock()
 
 	rec, ok, err := r.journal.load(statementID)
@@ -340,7 +344,9 @@ func (r *Role) RegisterPreparedClaim(ctx context.Context, statementID string) (C
 }
 
 func (r *Role) AbortPreparedStatement(ctx context.Context, statementID string, partNames []string, reason string) error {
-	r.intakeMu.Lock()
+	if err := r.intakeMu.LockContext(ctx); err != nil {
+		return fmt.Errorf("acquire prepared abort: %w", err)
+	}
 	defer r.intakeMu.Unlock()
 
 	rec, ok, err := r.journal.load(statementID)
