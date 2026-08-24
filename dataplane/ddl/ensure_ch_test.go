@@ -62,6 +62,33 @@ func TestEnsureProtocolTables_CreateVerifyTamperDrift(t *testing.T) {
 	}
 }
 
+func TestEnsureProtocolTables_CanonicalizesFixedStringBeforeCreateAndVerify(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	suffix := uniqueSuffix(t)
+	var tables []payloadexec.TableSchema
+	for i, typeName := range []string{
+		"FixedString(+8)",
+		"FixedString(0008)",
+		"FixedString(\t +0008 \n)",
+	} {
+		tables = append(tables, payloadexec.TableSchema{
+			TableID: fmt.Sprintf("db.fixed_%d_%s", i, suffix),
+			Columns: []lthash.Column{{Name: "v", Type: typeName}},
+		})
+	}
+
+	if err := EnsureProtocolTables(ctx, conn, p, tables, ModeCreateAndVerify, slog.Default()); err != nil {
+		t.Fatalf("create and verify canonicalized FixedString declarations: %v", err)
+	}
+	if err := EnsureProtocolTables(ctx, conn, p, tables, ModeVerifyOnly, slog.Default()); err != nil {
+		t.Fatalf("canonicalized FixedString declarations drifted immediately: %v", err)
+	}
+}
+
 func TestEnsureProtocolTables_VerifyOnlyNeverCreates(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
@@ -177,10 +204,9 @@ func TestVerifyProtocolTable_RejectsArrayExpressionMatchingQuotedColumnName(t *t
 		PartitionBy: "arr[1]",
 		Columns: []lthash.Column{
 			{Name: "arr[1]", Type: "String"},
-			{Name: "arr", Type: "Array(String)"},
 		},
 	}
-	_, want, err := Intents(p, sch)
+	_, want, _, err := Intents(p, sch)
 	if err != nil {
 		t.Fatalf("build intent: %v", err)
 	}

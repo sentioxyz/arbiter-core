@@ -55,9 +55,9 @@ func ParseMode(value string) (Mode, error) {
 	}
 }
 
-// EnsureProtocolTables creates (when permitted) and verifies hg_unsafe and
-// hg_safe for every startup schema. Partition-freeze violations are skipped
-// with a warning; missing or drifted protocol tables fail closed.
+// EnsureProtocolTables creates (when permitted) and verifies hg_unsafe,
+// hg_safe and hg_promote for every startup schema. Partition-freeze violations
+// are skipped with a warning; missing or drifted protocol tables fail closed.
 func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinned, tables []payloadexec.TableSchema, mode Mode, logger *slog.Logger) error {
 	if err := ValidatePhysicalTableNames(tables); err != nil {
 		return err
@@ -74,6 +74,21 @@ func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinn
 	if pinned.UnsafeDB == "" || pinned.SafeDB == "" || pinned.PromoteDB == "" || pinned.NodeID == "" {
 		return errors.New("ddl: Pinned needs UnsafeDB, SafeDB, PromoteDB and NodeID")
 	}
+	// Compile and validate the complete batch before issuing any DDL. In
+	// particular, a fatal declaration after a valid one must not leave a
+	// partially-created protocol-table set that then fails closed on restart.
+	plan := make([]TableIntent, 0, len(tables)*3)
+	for _, table := range tables {
+		unsafe, safe, promote, err := Intents(pinned, table)
+		if err != nil {
+			if errors.Is(err, ErrPartitionFreeze) {
+				logger.Warn("skipping protocol tables for declaration outside the partition freeze", "table_id", table.TableID, "err", err)
+				continue
+			}
+			return err
+		}
+		plan = append(plan, unsafe, safe, promote)
+	}
 	if mode == ModeCreateAndVerify {
 		for _, database := range []string{pinned.UnsafeDB, pinned.SafeDB, pinned.PromoteDB} {
 			if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(database)); err != nil {
@@ -82,26 +97,15 @@ func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinn
 		}
 	}
 	var errs []error
-	for _, table := range tables {
-		unsafe, safe, err := Intents(pinned, table)
-		if err != nil {
-			if errors.Is(err, ErrPartitionFreeze) {
-				logger.Warn("skipping protocol tables for declaration outside the partition freeze", "table_id", table.TableID, "err", err)
+	for _, intent := range plan {
+		if mode == ModeCreateAndVerify {
+			if err := conn.Exec(ctx, intent.SQL()); err != nil {
+				errs = append(errs, fmt.Errorf("ddl: create %s.%s: %w", intent.Database, intent.Table, err))
 				continue
 			}
-			errs = append(errs, err)
-			continue
 		}
-		for _, intent := range []TableIntent{unsafe, safe} {
-			if mode == ModeCreateAndVerify {
-				if err := conn.Exec(ctx, intent.SQL()); err != nil {
-					errs = append(errs, fmt.Errorf("ddl: create %s.%s: %w", intent.Database, intent.Table, err))
-					continue
-				}
-			}
-			if err := VerifyProtocolTable(ctx, conn, intent); err != nil {
-				errs = append(errs, err)
-			}
+		if err := VerifyProtocolTable(ctx, conn, intent); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
