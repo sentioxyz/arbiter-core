@@ -205,6 +205,44 @@ func TestConfigRejectsNegativeHardPartsPerPartition(t *testing.T) {
 	}
 }
 
+func TestConfigRejectsHalfConfiguredHardPartsDisable(t *testing.T) {
+	cfg := testConfigS(t)
+	cfg.DisableHardParts = true
+	cfg.HardPartsPerPartition = 2950
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("DisableHardParts with a non-zero hard_parts_per_partition must be a validation error")
+	}
+	if !strings.Contains(err.Error(), "disable_hard_parts") {
+		t.Fatalf("error must name the offending field, got %v", err)
+	}
+}
+
+func TestConfigDisableHardPartsKeepsTheLimitZero(t *testing.T) {
+	cfg := testConfigS(t)
+	cfg.DisableHardParts = true
+	cfg.HardPartsPerPartition = 0
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("an explicit disable with a zero limit must validate, got %v", err)
+	}
+	if cfg.HardPartsPerPartition != 0 {
+		t.Fatalf("validate must not default the limit to %d when the check is disabled, got %d",
+			DefaultHardPartsPerPartition, cfg.HardPartsPerPartition)
+	}
+}
+
+func TestConfigZeroHardPartsStillDefaultsWhenNotDisabled(t *testing.T) {
+	cfg := testConfigS(t)
+	cfg.HardPartsPerPartition = 0
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if cfg.HardPartsPerPartition != DefaultHardPartsPerPartition {
+		t.Fatalf("HardPartsPerPartition = %d, want the safe default %d for anyone who did not opt out",
+			cfg.HardPartsPerPartition, DefaultHardPartsPerPartition)
+	}
+}
+
 func TestConfigRejectsColumnTypeOutsideWhitelist(t *testing.T) {
 	cfg := testConfigS(t)
 	schema := intakeSchema()

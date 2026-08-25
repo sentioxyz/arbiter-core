@@ -13,6 +13,10 @@ type recordedBindingMutation struct {
 	mutate func(*intakeRecord)
 }
 
+// recordedBindingMutations enumerates the binding corruptions a recovered
+// journal record can carry. Every caller of this table drives a post-record
+// path -- the record was already durably saved before the check runs -- so
+// the payload-mismatch entries expect ErrPayloadMismatchPostRecord.
 func recordedBindingMutations() []recordedBindingMutation {
 	return []recordedBindingMutation{
 		{
@@ -25,14 +29,14 @@ func recordedBindingMutations() []recordedBindingMutation {
 		},
 		{
 			name: "payload encoding disagrees with envelope",
-			want: ErrPayloadMismatch,
+			want: ErrPayloadMismatchPostRecord,
 			mutate: func(rec *intakeRecord) {
 				rec.PayloadEncoding = "csv-with-names-v1"
 			},
 		},
 		{
 			name: "signed and recorded revision are zero",
-			want: ErrPayloadMismatch,
+			want: ErrPayloadMismatchPostRecord,
 			mutate: func(rec *intakeRecord) {
 				rec.Envelope.ClientRevision = 0
 				rec.Revision = 0
@@ -40,14 +44,14 @@ func recordedBindingMutations() []recordedBindingMutation {
 		},
 		{
 			name: "recorded revision is zero",
-			want: ErrPayloadMismatch,
+			want: ErrPayloadMismatchPostRecord,
 			mutate: func(rec *intakeRecord) {
 				rec.Revision = 0
 			},
 		},
 		{
 			name: "recorded revision disagrees with envelope",
-			want: ErrPayloadMismatch,
+			want: ErrPayloadMismatchPostRecord,
 			mutate: func(rec *intakeRecord) {
 				rec.Revision++
 			},

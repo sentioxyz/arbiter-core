@@ -46,6 +46,12 @@ type Config struct {
 	// HardPartsPerPartition refuses a prepare before journal or ClickHouse
 	// writes when any touched unsafe partition is already at this limit.
 	HardPartsPerPartition int
+	// DisableHardParts turns off the source-side hard parts-per-partition
+	// refusal entirely. It is a deliberate footgun made explicit: with it set,
+	// inserts fail at ClickHouse's own parts_to_throw_insert instead of at the
+	// source. Configuring it together with a non-zero HardPartsPerPartition is
+	// a validation error, so a half-configured disable is not expressible.
+	DisableHardParts bool
 }
 
 func (c *Config) validate() error {
@@ -105,9 +111,15 @@ func (c *Config) validate() error {
 	} else {
 		c.protocolTables = mode
 	}
-	if c.HardPartsPerPartition < 0 {
+	switch {
+	case c.HardPartsPerPartition < 0:
 		errs = append(errs, errors.New("hard parts per partition must not be negative"))
-	} else if c.HardPartsPerPartition == 0 {
+	case c.DisableHardParts && c.HardPartsPerPartition != 0:
+		errs = append(errs, errors.New("disable_hard_parts requires hard_parts_per_partition to be 0; a half-configured disable is not allowed"))
+	case c.DisableHardParts:
+		// Leave the limit at 0: nothing reads it while the check is skipped,
+		// and defaulting it would make the disable invisible in a config dump.
+	case c.HardPartsPerPartition == 0:
 		c.HardPartsPerPartition = DefaultHardPartsPerPartition
 	}
 	if len(errs) == 0 {
