@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
-	"fmt"
+	"log/slog"
 	"testing"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
+	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -61,26 +62,43 @@ func setUniqueDatabases(t *testing.T, cfg *Config) {
 
 func createSNodeTables(t *testing.T, conn clickhouse.Conn, cfg Config, schema payloadexec.TableSchema) {
 	t.Helper()
+	requireKeeperS(t, conn)
 	table := CHTableName(schema.TableID)
-	for _, db := range []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase} {
-		mustExecIntake(t, conn, "CREATE DATABASE IF NOT EXISTS "+db)
-		qualified := db + "." + table
-		mustExecIntake(t, conn, "DROP TABLE IF EXISTS "+qualified)
-		mustExecIntake(t, conn, fmt.Sprintf(`
-			CREATE TABLE %s (
-				_hg_row_id FixedString(32),
-				p String,
-				v UInt64
-			) ENGINE = MergeTree
-			PARTITION BY p
-			ORDER BY tuple()`, qualified))
-		mustExecIntake(t, conn, "SYSTEM STOP MERGES "+qualified)
+	databases := []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase}
+	for _, db := range databases {
+		mustExecIntake(t, conn, "DROP DATABASE IF EXISTS "+db+" SYNC")
 	}
 	t.Cleanup(func() {
-		for _, db := range []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase} {
-			_ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+db)
+		for _, db := range databases {
+			_ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+db+" SYNC")
 		}
 	})
+	pinned := ddl.Pinned{
+		UnsafeDB: cfg.UnsafeDatabase, SafeDB: cfg.SafeDatabase, PromoteDB: cfg.PromoteDatabase,
+		NodeID: cfg.NodeID, KeeperShardID: cfg.KeeperShardID,
+	}
+	if err := ddl.EnsureProtocolTables(context.Background(), conn, pinned, []payloadexec.TableSchema{schema}, ddl.ModeCreateAndVerify, slog.Default()); err != nil {
+		t.Fatalf("ensure promotion protocol tables: %v", err)
+	}
+	for _, db := range databases {
+		mustExecIntake(t, conn, "SYSTEM STOP MERGES "+db+"."+table)
+	}
+}
+
+func newPromoteFixtureWithoutPromoteTable(t *testing.T, conn clickhouse.Conn) (*Role, arbiter.PromoteSafePartition, payloadexec.TableSchema, string) {
+	t.Helper()
+	schema := promoteSchema()
+	cfg := testConfigS(t)
+	cfg.Tables = []payloadexec.TableSchema{schema}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	setUniqueDatabases(t, &cfg)
+	role, _ := newIntakeHarness(t, conn, cfg)
+	createSNodeTables(t, conn, role.cfg, schema)
+	table := CHTableName(schema.TableID)
+	qualifiedPromote := role.cfg.PromoteDatabase + "." + table
+	mustExecIntake(t, conn, "DROP TABLE "+qualifiedPromote+" SYNC")
+	cmd := arbiter.PromoteSafePartition{TableID: schema.TableID, PartitionID: "p_p0"}
+	return role, cmd, schema, table
 }
 
 func mustPromoteSigner(t *testing.T) commandSigner {

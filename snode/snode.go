@@ -79,6 +79,9 @@ type Role struct {
 	intakeMu         contextMutex
 	promotionLocksMu sync.Mutex
 	promotionLocks   map[string]*sync.Mutex
+	// ensureFn is the protocol-table lifecycle seam. New wires production to
+	// ensureProtocolTablesMode; tests inject deterministic reconcile outcomes.
+	ensureFn func(context.Context, ddl.Mode) error
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -99,13 +102,15 @@ func New(cfg Config, d Deps) (*Role, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Role{
+	r := &Role{
 		cfg:       cfg,
 		d:         d,
 		state:     st,
 		journal:   journal,
 		authority: authorityValidator(cfg.AuthorityAddresses),
-	}, nil
+	}
+	r.ensureFn = r.ensureProtocolTablesMode
+	return r, nil
 }
 
 func (r *Role) Register(ctx context.Context) error {
@@ -167,6 +172,12 @@ func (r *Role) Run(ctx context.Context) error {
 func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// The periodic verifier first fires after an interval. Ensure before
+	// Prepare so startup convergence never touches ClickHouse in an unverified
+	// protocol-table state, including when Run is called without Register.
+	if err := r.ensureProtocolTables(runCtx); err != nil {
+		return err
+	}
 	if err := r.Prepare(runCtx); err != nil {
 		return err
 	}
@@ -187,10 +198,10 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 		})
 	}
 	workers := roleWorkers{subscription: runSubscription}
-	if r.cfg.ProtocolTables != ddl.ModeOff {
+	if r.cfg.protocolTables != ddl.ModeOff {
 		workers.reconcile = r.reconcileProtocolTables
 	}
-	return newRoleWorkerCoordinator(runCtx, cancel, ready, workers).run().Err()
+	return r.resolveWorkerErrors(newRoleWorkerCoordinator(runCtx, cancel, ready, workers).run())
 }
 
 func (r *Role) pinned() ddl.Pinned {
@@ -201,7 +212,7 @@ func (r *Role) pinned() ddl.Pinned {
 }
 
 func (r *Role) ensureProtocolTables(ctx context.Context) error {
-	return r.ensureProtocolTablesMode(ctx, r.cfg.ProtocolTables)
+	return r.ensureFn(ctx, r.cfg.protocolTables)
 }
 
 func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {
@@ -244,9 +255,15 @@ type roleWorkerResult struct {
 type roleWorkerErrors struct {
 	subscription error
 	reconcile    error
+	first        roleWorkerKind
+	hasFirst     bool
 }
 
 func (e *roleWorkerErrors) add(result roleWorkerResult) {
+	if !e.hasFirst {
+		e.first = result.kind
+		e.hasFirst = true
+	}
 	switch result.kind {
 	case roleWorkerSubscription:
 		e.subscription = result.err
@@ -262,6 +279,19 @@ func (e roleWorkerErrors) Err() error {
 		return e.reconcile
 	}
 	return e.subscription
+}
+
+func (r *Role) resolveWorkerErrors(errs roleWorkerErrors) error {
+	if errs.hasFirst && errs.first == roleWorkerSubscription {
+		// The coordinator canceled reconcile because the subscription stopped.
+		// A non-cancellation reconcile result is therefore an artifact to report,
+		// not a replacement for the subscription's authoritative cause.
+		if errs.reconcile != nil && !errors.Is(errs.reconcile, context.Canceled) {
+			r.d.Logger.Warn("protocol table reconcile stopped while the subscription was failing", "err", errs.reconcile)
+		}
+		return errs.subscription
+	}
+	return errs.Err()
 }
 
 type roleWorkerCoordinator struct {
@@ -431,16 +461,43 @@ func (c *roleWorkerCoordinator) join(first *roleWorkerResult) roleWorkerErrors {
 }
 
 func (r *Role) reconcileProtocolTables(ctx context.Context) error {
-	ticker := time.NewTicker(r.cfg.ProtocolTablesReconcile)
-	defer ticker.Stop()
+	interval := r.cfg.ProtocolTablesReconcile
+	maxFailures := r.cfg.ProtocolTablesMaxFailures
+	if maxFailures <= 0 {
+		maxFailures = ddl.DefaultReconcileMaxFailures
+	}
+	consecutive := 0
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
-			if err := r.ensureProtocolTablesMode(ctx, ddl.ModeVerifyOnly); err != nil {
-				return fmt.Errorf("snode: reconcile protocol tables: %w", err)
+		case <-timer.C:
+		}
+
+		err := r.ensureFn(ctx, ddl.ModeVerifyOnly)
+		switch {
+		case err == nil:
+			consecutive = 0
+			timer.Reset(interval)
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case ddl.FatalReconcileError(err):
+			return fmt.Errorf("snode: reconcile protocol tables: %w", err)
+		default:
+			consecutive++
+			if consecutive >= maxFailures {
+				return fmt.Errorf("snode: reconcile protocol tables failed %d consecutive times: %w", consecutive, err)
 			}
+			backoff := ddl.ReconcileBackoff(consecutive, interval)
+			r.d.Logger.Warn("protocol table reconcile failed; retrying",
+				"consecutive_failures", consecutive,
+				"max_failures", maxFailures,
+				"retry_in", backoff,
+				"err", err,
+			)
+			timer.Reset(backoff)
 		}
 	}
 }

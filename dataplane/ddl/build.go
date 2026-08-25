@@ -61,16 +61,30 @@ func (t TableIntent) SQL() string {
 	return b.String()
 }
 
-// Intents derives the hg_unsafe and hg_safe intents for one declared schema.
-func Intents(p Pinned, t payloadexec.TableSchema) (TableIntent, TableIntent, error) {
+// Intents derives the hg_unsafe, hg_safe and hg_promote intents for one
+// declared schema. Validation order is frozen: partition freeze (callers may
+// skip such a declaration), then the reserved row-id column, then the column
+// types. Every check runs before any caller can issue DDL.
+func Intents(p Pinned, t payloadexec.TableSchema) (TableIntent, TableIntent, TableIntent, error) {
 	if err := validatePartitionFreeze(t); err != nil {
-		return TableIntent{}, TableIntent{}, fmt.Errorf("table %s: %w", t.TableID, err)
+		return TableIntent{}, TableIntent{}, TableIntent{}, fmt.Errorf("table %s: %w", t.TableID, err)
 	}
 	for _, c := range t.Columns {
 		if c.Name == RowIDColumn {
-			return TableIntent{}, TableIntent{}, fmt.Errorf("table %s: declared schema must not contain %s (the protocol injects it)", t.TableID, RowIDColumn)
+			return TableIntent{}, TableIntent{}, TableIntent{}, fmt.Errorf("table %s: declared schema must not contain %s (the protocol injects it)", t.TableID, RowIDColumn)
 		}
 	}
+	// Spec L D1: a declared type outside the storage-integrity profile's own
+	// supported set is rejected before any CREATE. A type ClickHouse would
+	// accept but the pinned replay executor cannot materialize diverges
+	// silently; a type string that closes the column list would add a column
+	// and permanently brick the role, because drift is fail-closed and
+	// CREATE TABLE IF NOT EXISTS is a no-op against the existing table.
+	canonical, err := payloadexec.CanonicalizeTableSchemaColumnTypes(t)
+	if err != nil {
+		return TableIntent{}, TableIntent{}, TableIntent{}, fmt.Errorf("table %s: invalid DDL column declaration: %w", t.TableID, err)
+	}
+	t = canonical
 	cols := make([]lthash.Column, 0, len(t.Columns)+1)
 	cols = append(cols, lthash.Column{Name: RowIDColumn, Type: RowIDType})
 	cols = append(cols, t.Columns...)
@@ -89,18 +103,31 @@ func Intents(p Pinned, t payloadexec.TableSchema) (TableIntent, TableIntent, err
 		Database: p.SafeDB, Table: table, Engine: EngineMergeTree,
 		Columns: cols, PartitionKey: t.PartitionBy, SortingKey: sorting, Settings: SafeSettings(),
 	}
-	return unsafe, safe, nil
+	// Spec L D5: hg_promote is the promotion shadow. It was created ad hoc as
+	// `CREATE TABLE ... AS hg_safe.<t>`, i.e. structurally identical to hg_safe
+	// but in the promote database, so the intent is exactly that — now rendered
+	// and verified like the other two instead of appearing at first promotion.
+	promote := safe
+	promote.Database = p.PromoteDB
+	return unsafe, safe, promote, nil
 }
 
-// BuildDDL renders the two CREATE TABLE IF NOT EXISTS statements. Pure; golden
-// tested. hg_promote is created lazily by the promotion path (AS hg_safe).
-func BuildDDL(p Pinned, t payloadexec.TableSchema) (string, string, error) {
-	unsafe, safe, err := Intents(p, t)
+// BuildDDL renders the three CREATE TABLE IF NOT EXISTS statements. Pure;
+// golden tested.
+func BuildDDL(p Pinned, t payloadexec.TableSchema) (string, string, string, error) {
+	unsafe, safe, promote, err := Intents(p, t)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return unsafe.SQL(), safe.SQL(), nil
+	return unsafe.SQL(), safe.SQL(), promote.SQL(), nil
 }
+
+// ValidatePartitionFreeze is the role-config entry point for the P1c freeze
+// (partition_by must be empty or name a declared bare String column). Roles
+// call it so a freeze violation fails both of them identically at startup,
+// rather than bricking one and leaving the other silently without protocol
+// tables for that table.
+func ValidatePartitionFreeze(t payloadexec.TableSchema) error { return validatePartitionFreeze(t) }
 
 func validatePartitionFreeze(t payloadexec.TableSchema) error {
 	if t.PartitionBy == "" {

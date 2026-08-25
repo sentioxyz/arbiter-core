@@ -27,6 +27,7 @@ go_test(
     name = "verifier_test",
     srcs = [
         "backends_test.go",
+        "config_external_test.go",
         "protocol_tables_test.go",
         "scanner_test.go",
         "verifier_fakes_test.go",
@@ -39,7 +40,6 @@ go_test(
         "//dataplane/ddl",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
-        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/lthash",
         "@housegate//pkg/replay",

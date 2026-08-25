@@ -62,6 +62,107 @@ func TestEnsureProtocolTables_CreateVerifyTamperDrift(t *testing.T) {
 	}
 }
 
+func TestEnsureProtocolTables_CreatesAndVerifiesPromoteTable(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	for _, database := range []string{p.UnsafeDB, p.SafeDB, p.PromoteDB} {
+		if err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(database)+" SYNC"); err != nil {
+			t.Fatalf("establish clean database precondition for %s: %v", database, err)
+		}
+	}
+	sch := ensureSchema(t)
+	tables := []payloadexec.TableSchema{sch}
+	if err := EnsureProtocolTables(ctx, conn, p, tables, ModeCreateAndVerify, slog.Default()); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	table := CHTableName(sch.TableID)
+	var engine string
+	if err := conn.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = ?", p.PromoteDB, table).Scan(&engine); err != nil {
+		t.Fatalf("hg_promote table missing after create: %v", err)
+	}
+	if engine != EngineMergeTree {
+		t.Fatalf("hg_promote engine = %q, want MergeTree", engine)
+	}
+	// D5: promote drift is detected at startup, not at first promotion.
+	if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MODIFY SETTING max_bytes_to_merge_at_max_space_in_pool = 1", p.PromoteDB, table)); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	err := EnsureProtocolTables(ctx, conn, p, tables, ModeCreateAndVerify, slog.Default())
+	if !errors.Is(err, ErrProtocolTableDrift) || !strings.Contains(err.Error(), p.PromoteDB) {
+		t.Fatalf("ensure after promote tamper = %v, want drift naming %s", err, p.PromoteDB)
+	}
+}
+
+func TestEnsureProtocolTables_CanonicalizesFixedStringBeforeCreateAndVerify(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	suffix := uniqueSuffix(t)
+	var tables []payloadexec.TableSchema
+	for i, typeName := range []string{
+		"FixedString(+8)",
+		"FixedString(0008)",
+		"FixedString(\t +0008 \n)",
+	} {
+		tables = append(tables, payloadexec.TableSchema{
+			TableID: fmt.Sprintf("db.fixed_%d_%s", i, suffix),
+			Columns: []lthash.Column{{Name: "v", Type: typeName}},
+		})
+	}
+
+	if err := EnsureProtocolTables(ctx, conn, p, tables, ModeCreateAndVerify, slog.Default()); err != nil {
+		t.Fatalf("create and verify canonicalized FixedString declarations: %v", err)
+	}
+	if err := EnsureProtocolTables(ctx, conn, p, tables, ModeVerifyOnly, slog.Default()); err != nil {
+		t.Fatalf("canonicalized FixedString declarations drifted immediately: %v", err)
+	}
+}
+
+// A declared type outside the SI whitelist must be refused BEFORE any DDL
+// runs. This is the permanent-brick scenario from Spec L §1a: a type string
+// that closes the column list would add a column, VerifyProtocolTable would
+// then report drift forever, and CREATE TABLE IF NOT EXISTS is a silent no-op
+// against the existing table, so the node could not recover without an
+// operator DROP.
+func TestEnsureProtocolTables_RejectsBadColumnTypeBeforeCreatingAnything(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	protocolDatabases := []string{p.UnsafeDB, p.SafeDB, p.PromoteDB}
+	for _, database := range protocolDatabases {
+		if err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(database)+" SYNC"); err != nil {
+			t.Fatalf("establish clean database precondition for %s: %v", database, err)
+		}
+	}
+	sch := ensureSchema(t)
+	sch.Columns = append(sch.Columns, lthash.Column{
+		Name: "evil",
+		Type: "String) ENGINE = MergeTree ORDER BY tuple() --",
+	})
+	err := EnsureProtocolTables(ctx, conn, p, []payloadexec.TableSchema{sch}, ModeCreateAndVerify, slog.Default())
+	if !errors.Is(err, payloadexec.ErrUnsupportedColumnType) {
+		t.Fatalf("EnsureProtocolTables = %v, want ErrUnsupportedColumnType", err)
+	}
+	for _, database := range protocolDatabases {
+		var n uint64
+		if err := conn.QueryRow(ctx,
+			"SELECT count() FROM system.databases WHERE name = ?", database,
+		).Scan(&n); err != nil {
+			t.Fatalf("count database %s: %v", database, err)
+		}
+		if n != 0 {
+			t.Fatalf("database %s exists after a rejected declaration; EnsureProtocolTables issued DDL before validating the full batch", database)
+		}
+	}
+}
+
 func TestEnsureProtocolTables_VerifyOnlyNeverCreates(t *testing.T) {
 	ctx := context.Background()
 	conn := requireCH(t)
@@ -177,10 +278,9 @@ func TestVerifyProtocolTable_RejectsArrayExpressionMatchingQuotedColumnName(t *t
 		PartitionBy: "arr[1]",
 		Columns: []lthash.Column{
 			{Name: "arr[1]", Type: "String"},
-			{Name: "arr", Type: "Array(String)"},
 		},
 	}
-	_, want, err := Intents(p, sch)
+	_, want, _, err := Intents(p, sch)
 	if err != nil {
 		t.Fatalf("build intent: %v", err)
 	}

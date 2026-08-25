@@ -3,6 +3,7 @@ package snode
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -316,6 +317,34 @@ func TestRoleWorkerCoordinator_EarlyNilStopsAndJoinsPeer(t *testing.T) {
 
 	if err := coordinator.run().Err(); err != nil {
 		t.Fatalf("coordinator error = %v, want early nil subscription result", err)
+	}
+	requireRoleWorkersJoined(t, coordinator, roleWorkerSubscription, roleWorkerReconcile)
+}
+
+func TestRoleWorkerCoordinator_SubscriptionFirstCauseWinsForRole(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	subscriptionErr := errors.New("subscription failed")
+	reconcileArtifact := errors.New("reconcile cancellation artifact")
+	reconcileStarted := make(chan struct{})
+	coordinator := newRoleWorkerCoordinator(ctx, cancel, nil, roleWorkers{
+		subscription: func(context.Context) error {
+			<-reconcileStarted
+			return subscriptionErr
+		},
+		reconcile: func(ctx context.Context) error {
+			close(reconcileStarted)
+			<-ctx.Done()
+			return reconcileArtifact
+		},
+	})
+
+	errs := coordinator.run()
+	role := &Role{d: Deps{Logger: slog.Default()}}
+	if err := role.resolveWorkerErrors(errs); !errors.Is(err, subscriptionErr) {
+		t.Fatalf("role worker error = %v, want original subscription cause", err)
+	}
+	if err := errs.Err(); !errors.Is(err, reconcileArtifact) {
+		t.Fatalf("generic coordinator error = %v, want established reconcile priority", err)
 	}
 	requireRoleWorkersJoined(t, coordinator, roleWorkerSubscription, roleWorkerReconcile)
 }

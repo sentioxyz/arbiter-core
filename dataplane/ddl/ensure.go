@@ -16,14 +16,50 @@ import (
 type Mode int
 
 const (
-	// ModeOff leaves DDL ownership to the host. Production wiring resolves to
-	// verify or create; the zero value preserves existing test harnesses.
+	// ModeOff leaves DDL ownership to the host. Role production wiring cannot
+	// reach it; SchemaSourceUnmanaged preserves explicit test harnesses.
 	ModeOff Mode = iota
 	// ModeVerifyOnly verifies existing tables without creating anything.
 	ModeVerifyOnly
 	// ModeCreateAndVerify creates missing tables and verifies their live shape.
 	ModeCreateAndVerify
 )
+
+// SchemaSource names where a role's authoritative table schemas come from.
+// Spec L D2: the protocol-table mode is DERIVED from it, so a deployment can
+// never silently end up with the lifecycle disabled by omitting a field.
+type SchemaSource string
+
+const (
+	// SchemaSourceNetworkState resolves schemas from the network-state
+	// registry; the role may create protocol tables.
+	SchemaSourceNetworkState SchemaSource = "network_state"
+	// SchemaSourceChain resolves schemas from the on-chain declaration; the
+	// role may create protocol tables.
+	SchemaSourceChain SchemaSource = "chain"
+	// SchemaSourceClickHouse derives schemas from the local ClickHouse, so the
+	// role can only verify: creating from what it reads would be circular.
+	SchemaSourceClickHouse SchemaSource = "clickhouse"
+	// SchemaSourceUnmanaged is TEST/HARNESS ONLY: the host owns protocol DDL.
+	// Production config loaders must reject it; it exists so in-package tests
+	// that create their own tables keep a way to express that intent
+	// explicitly instead of relying on a fail-open zero value.
+	SchemaSourceUnmanaged SchemaSource = "unmanaged"
+)
+
+// ModeFromSchemaSource is the only supported way to obtain a Mode for a role.
+func ModeFromSchemaSource(source SchemaSource) (Mode, error) {
+	switch source {
+	case SchemaSourceNetworkState, SchemaSourceChain:
+		return ModeCreateAndVerify, nil
+	case SchemaSourceClickHouse:
+		return ModeVerifyOnly, nil
+	case SchemaSourceUnmanaged:
+		return ModeOff, nil
+	default:
+		return ModeOff, fmt.Errorf("ddl: unknown schema source %q (want network_state|chain|clickhouse, or unmanaged in tests)", source)
+	}
+}
 
 // DefaultReconcileInterval is the periodic role reconciliation cadence.
 const DefaultReconcileInterval = 60 * time.Second
@@ -55,9 +91,9 @@ func ParseMode(value string) (Mode, error) {
 	}
 }
 
-// EnsureProtocolTables creates (when permitted) and verifies hg_unsafe and
-// hg_safe for every startup schema. Partition-freeze violations are skipped
-// with a warning; missing or drifted protocol tables fail closed.
+// EnsureProtocolTables creates (when permitted) and verifies hg_unsafe,
+// hg_safe and hg_promote for every startup schema. Partition-freeze violations
+// are skipped with a warning; missing or drifted protocol tables fail closed.
 func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinned, tables []payloadexec.TableSchema, mode Mode, logger *slog.Logger) error {
 	if err := ValidatePhysicalTableNames(tables); err != nil {
 		return err
@@ -74,6 +110,21 @@ func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinn
 	if pinned.UnsafeDB == "" || pinned.SafeDB == "" || pinned.PromoteDB == "" || pinned.NodeID == "" {
 		return errors.New("ddl: Pinned needs UnsafeDB, SafeDB, PromoteDB and NodeID")
 	}
+	// Compile and validate the complete batch before issuing any DDL. In
+	// particular, a fatal declaration after a valid one must not leave a
+	// partially-created protocol-table set that then fails closed on restart.
+	plan := make([]TableIntent, 0, len(tables)*3)
+	for _, table := range tables {
+		unsafe, safe, promote, err := Intents(pinned, table)
+		if err != nil {
+			if errors.Is(err, ErrPartitionFreeze) {
+				logger.Warn("skipping protocol tables for declaration outside the partition freeze", "table_id", table.TableID, "err", err)
+				continue
+			}
+			return err
+		}
+		plan = append(plan, unsafe, safe, promote)
+	}
 	if mode == ModeCreateAndVerify {
 		for _, database := range []string{pinned.UnsafeDB, pinned.SafeDB, pinned.PromoteDB} {
 			if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(database)); err != nil {
@@ -82,26 +133,15 @@ func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinn
 		}
 	}
 	var errs []error
-	for _, table := range tables {
-		unsafe, safe, err := Intents(pinned, table)
-		if err != nil {
-			if errors.Is(err, ErrPartitionFreeze) {
-				logger.Warn("skipping protocol tables for declaration outside the partition freeze", "table_id", table.TableID, "err", err)
+	for _, intent := range plan {
+		if mode == ModeCreateAndVerify {
+			if err := conn.Exec(ctx, intent.SQL()); err != nil {
+				errs = append(errs, fmt.Errorf("ddl: create %s.%s: %w", intent.Database, intent.Table, err))
 				continue
 			}
-			errs = append(errs, err)
-			continue
 		}
-		for _, intent := range []TableIntent{unsafe, safe} {
-			if mode == ModeCreateAndVerify {
-				if err := conn.Exec(ctx, intent.SQL()); err != nil {
-					errs = append(errs, fmt.Errorf("ddl: create %s.%s: %w", intent.Database, intent.Table, err))
-					continue
-				}
-			}
-			if err := VerifyProtocolTable(ctx, conn, intent); err != nil {
-				errs = append(errs, err)
-			}
+		if err := VerifyProtocolTable(ctx, conn, intent); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	if err := errors.Join(errs...); err != nil {

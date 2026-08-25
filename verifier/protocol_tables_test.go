@@ -5,13 +5,17 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -22,7 +26,7 @@ import (
 
 func TestNew_ProtocolTablesModeRequiresConn(t *testing.T) {
 	cfg := testConfigV()
-	cfg.ProtocolTables = ddl.ModeCreateAndVerify
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
 	client, err := dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: "127.0.0.1:1"}}})
 	if err != nil {
 		t.Fatalf("new dataplane client: %v", err)
@@ -61,7 +65,7 @@ func TestRegister_EnsuresProtocolTablesOnVerifier(t *testing.T) {
 	cfg.UnsafeDatabase = "hg_unsafe_" + suffix
 	cfg.SafeDatabase = "hg_safe_" + suffix
 	cfg.PromoteDatabase = "hg_promote_" + suffix
-	cfg.ProtocolTables = ddl.ModeCreateAndVerify
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
 	t.Cleanup(func() {
 		for _, database := range []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase} {
 			_ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+database+" SYNC")
@@ -88,6 +92,351 @@ func TestConfigRejectsNegativeProtocolTablesReconcile(t *testing.T) {
 	cfg.ProtocolTablesReconcile = -time.Second
 	if err := cfg.validate(); err == nil {
 		t.Fatal("negative protocol table reconcile interval must fail validation")
+	}
+}
+
+func TestConfigRejectsNegativeProtocolTablesMaxFailures(t *testing.T) {
+	cfg := testConfigV()
+	cfg.ProtocolTablesMaxFailures = -1
+	if err := cfg.validate(); err == nil {
+		t.Fatal("negative protocol table reconcile max failures must fail validation")
+	}
+}
+
+func TestConfigRequiresSchemaSource(t *testing.T) {
+	cfg := testConfigV()
+	cfg.SchemaSource = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("an unset schema_source must be rejected; the old zero value silently disabled the lifecycle")
+	}
+}
+
+func TestConfigDerivesProtocolTableMode(t *testing.T) {
+	cfg := testConfigV()
+	cfg.SchemaSource = ddl.SchemaSourceClickHouse
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got, err := cfg.ProtocolTablesMode(); err != nil || got != ddl.ModeVerifyOnly {
+		t.Fatalf("clickhouse schema source derived %v, %v; want verify, nil", got, err)
+	}
+	cfg = testConfigV()
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got, err := cfg.ProtocolTablesMode(); err != nil || got != ddl.ModeCreateAndVerify {
+		t.Fatalf("network_state schema source derived %v, %v; want create, nil", got, err)
+	}
+}
+
+func TestConfigRejectsColumnTypeOutsideWhitelist(t *testing.T) {
+	cfg := testConfigV()
+	schema := scanTableSchema()
+	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Array(UInt64)"})
+	cfg.Tables = []payloadexec.TableSchema{schema}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	err := cfg.validate()
+	if !errors.Is(err, payloadexec.ErrUnsupportedColumnType) {
+		t.Fatalf("validate = %v, want ErrUnsupportedColumnType", err)
+	}
+	if !strings.Contains(err.Error(), `tables[0]: table db.t column "bad"`) {
+		t.Fatalf("validate lacks shared table/column context: %v", err)
+	}
+}
+
+// Spec L D7: a freeze-violating declaration must fail both roles identically.
+// Before this change the SNode refused to start while the verifier started
+// without protocol tables for that table.
+func TestConfigRejectsPartitionFreezeViolation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate     func(*payloadexec.TableSchema)
+		wantDetail string
+	}{
+		"expression": {
+			mutate:     func(s *payloadexec.TableSchema) { s.PartitionBy = "toYYYYMM(d)" },
+			wantDetail: `got expression "toYYYYMM(d)"`,
+		},
+		"non_string": {
+			mutate: func(s *payloadexec.TableSchema) {
+				s.Columns[0].Type = "UInt64"
+				s.PartitionBy = s.Columns[0].Name
+			},
+			wantDetail: `column "p" has type UInt64`,
+		},
+		"undeclared": {
+			mutate:     func(s *payloadexec.TableSchema) { s.PartitionBy = "nope" },
+			wantDetail: `"nope" names no declared column`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfigV()
+			schema := scanTableSchema()
+			tc.mutate(&schema)
+			cfg.Tables = []payloadexec.TableSchema{schema}
+			cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+			err := cfg.validate()
+			if !errors.Is(err, ddl.ErrPartitionFreeze) {
+				t.Fatalf("validate = %v, want ErrPartitionFreeze", err)
+			}
+			for _, want := range []string{"tables[0] (db.t): " + ddl.ErrPartitionFreeze.Error(), tc.wantDetail} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("validate lacks shared context %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigValidationOrdersPartitionBeforeColumnTypes(t *testing.T) {
+	cfg := testConfigV()
+	schema := scanTableSchema()
+	schema.PartitionBy = "toYYYYMM(d)"
+	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Nullable(String)"})
+	cfg.Tables = []payloadexec.TableSchema{schema}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	err := cfg.validate()
+	if !errors.Is(err, ddl.ErrPartitionFreeze) || !errors.Is(err, payloadexec.ErrUnsupportedColumnType) {
+		t.Fatalf("validate = %v, want both partition and column-type errors", err)
+	}
+	partitionAt := strings.Index(err.Error(), "tables[0] (db.t): "+ddl.ErrPartitionFreeze.Error())
+	typeAt := strings.Index(err.Error(), `tables[0]: table db.t column "bad"`)
+	if partitionAt < 0 || typeAt < 0 || partitionAt >= typeAt {
+		t.Fatalf("validation error order = %q, want partition freeze before column types", err)
+	}
+}
+
+func TestReconcile_RetriesTransientErrorsAndDiesOnDrift(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transientErr := errors.New("connection reset by peer")
+		driftErr := fmt.Errorf("wrapped drift: %w", ddl.ErrProtocolTableDrift)
+		attempts := 0
+		role := &Role{
+			cfg: Config{
+				ProtocolTablesReconcile:   time.Minute,
+				ProtocolTablesMaxFailures: 3,
+			},
+			d: Deps{Logger: slog.Default()},
+			ensureFn: func(context.Context, ddl.Mode) error {
+				attempts++
+				if attempts == 1 {
+					return transientErr
+				}
+				return driftErr
+			},
+		}
+
+		err := role.reconcileProtocolTables(t.Context())
+		if !errors.Is(err, ddl.ErrProtocolTableDrift) {
+			t.Fatalf("reconcile = %v, want ErrProtocolTableDrift", err)
+		}
+		if attempts != 2 {
+			t.Fatalf("attempts = %d, want transient retry followed by drift", attempts)
+		}
+	})
+}
+
+func TestReconcile_GivesUpAfterMaxConsecutiveTransientFailures(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transientErr := errors.New("connection refused")
+		attempts := 0
+		role := &Role{
+			cfg: Config{
+				ProtocolTablesReconcile:   time.Minute,
+				ProtocolTablesMaxFailures: 2,
+			},
+			d: Deps{Logger: slog.Default()},
+			ensureFn: func(_ context.Context, mode ddl.Mode) error {
+				if mode != ddl.ModeVerifyOnly {
+					t.Fatalf("reconcile mode = %s, want verify", mode)
+				}
+				attempts++
+				return transientErr
+			},
+		}
+
+		err := role.reconcileProtocolTables(t.Context())
+		if !errors.Is(err, transientErr) || !strings.Contains(err.Error(), "failed 2 consecutive times") {
+			t.Fatalf("reconcile = %v, want wrapped two-failure exhaustion", err)
+		}
+		if attempts != 2 {
+			t.Fatalf("attempts = %d, want exactly ProtocolTablesMaxFailures", attempts)
+		}
+	})
+}
+
+func TestReconcile_DefaultMaxFailuresAndSuccessReset(t *testing.T) {
+	t.Run("zero uses default", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			transientErr := errors.New("EOF")
+			attempts := 0
+			role := &Role{
+				cfg: Config{ProtocolTablesReconcile: time.Minute},
+				d:   Deps{Logger: slog.Default()},
+				ensureFn: func(context.Context, ddl.Mode) error {
+					attempts++
+					return transientErr
+				},
+			}
+
+			err := role.reconcileProtocolTables(t.Context())
+			if !errors.Is(err, transientErr) {
+				t.Fatalf("reconcile = %v, want wrapped transient error", err)
+			}
+			if attempts != ddl.DefaultReconcileMaxFailures {
+				t.Fatalf("attempts = %d, want default %d", attempts, ddl.DefaultReconcileMaxFailures)
+			}
+		})
+	})
+
+	t.Run("success resets consecutive failures", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			transientErr := errors.New("connection reset")
+			attempts := 0
+			role := &Role{
+				cfg: Config{
+					ProtocolTablesReconcile:   time.Minute,
+					ProtocolTablesMaxFailures: 2,
+				},
+				d: Deps{Logger: slog.Default()},
+				ensureFn: func(context.Context, ddl.Mode) error {
+					attempts++
+					if attempts == 2 {
+						return nil
+					}
+					return transientErr
+				},
+			}
+
+			err := role.reconcileProtocolTables(t.Context())
+			if !errors.Is(err, transientErr) {
+				t.Fatalf("reconcile = %v, want wrapped transient error", err)
+			}
+			if attempts != 4 {
+				t.Fatalf("attempts = %d, want failure, success, then two consecutive failures", attempts)
+			}
+		})
+	})
+}
+
+func TestReconcile_CancellationTakesPrecedenceOverEnsureError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		role := &Role{
+			cfg: Config{ProtocolTablesReconcile: time.Minute},
+			d:   Deps{Logger: slog.Default()},
+			ensureFn: func(context.Context, ddl.Mode) error {
+				cancel()
+				return fmt.Errorf("late drift: %w", ddl.ErrProtocolTableDrift)
+			},
+		}
+
+		err := role.reconcileProtocolTables(ctx)
+		if !errors.Is(err, context.Canceled) || errors.Is(err, ddl.ErrProtocolTableDrift) {
+			t.Fatalf("reconcile = %v, want context cancellation precedence", err)
+		}
+	})
+}
+
+func TestRun_EnsuresBeforeSubscription(t *testing.T) {
+	server := newVerifierFakeServer()
+	release := make(chan struct{})
+	close(release)
+	server.failSubscriptionWhen(release, status.Error(codes.InvalidArgument, "subscription started before ensure"))
+	addr := startVerifierFakeServer(t, server)
+	client, err := dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: addr}}})
+	if err != nil {
+		t.Fatalf("new dataplane client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	role, err := New(testConfigV(), Deps{Client: client, Replay: &fakeReplayCore{}, Scanner: &fakeScanner{}})
+	if err != nil {
+		t.Fatalf("new verifier: %v", err)
+	}
+
+	startupErr := errors.New("startup protocol-table ensure failed")
+	role.cfg.protocolTables = ddl.ModeVerifyOnly
+	var gotModes []ddl.Mode
+	role.ensureFn = func(_ context.Context, mode ddl.Mode) error {
+		gotModes = append(gotModes, mode)
+		return startupErr
+	}
+	err = role.Run(t.Context())
+	if !errors.Is(err, startupErr) {
+		t.Fatalf("Run = %v, want startup ensure error", err)
+	}
+	if len(gotModes) != 1 || gotModes[0] != ddl.ModeVerifyOnly {
+		t.Fatalf("startup ensure modes = %v, want [verify]", gotModes)
+	}
+	if starts, active := server.subscriptionSnapshot(); starts != 0 || active != 0 {
+		t.Fatalf("subscription crossed startup ensure failure: starts=%d active=%d", starts, active)
+	}
+}
+
+func TestRunWithProtocolTableReconcile_SubscriptionFirstPreservesCause(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		subscriptionErr := status.Error(codes.InvalidArgument, "subscription rejected")
+		reconcileArtifact := errors.New("reconcile cancellation artifact")
+		entered := make(chan struct{})
+		cancelSeen := make(chan struct{})
+		release := make(chan struct{})
+		role := &Role{
+			cfg: Config{ProtocolTablesReconcile: time.Minute},
+			d:   Deps{Logger: slog.Default()},
+			ensureFn: func(ctx context.Context, mode ddl.Mode) error {
+				if mode != ddl.ModeVerifyOnly {
+					t.Fatalf("reconcile mode = %s, want verify", mode)
+				}
+				close(entered)
+				<-ctx.Done()
+				close(cancelSeen)
+				<-release
+				return reconcileArtifact
+			},
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- role.runWithProtocolTableReconcile(ctx, cancel, func(context.Context) error {
+				<-entered
+				return subscriptionErr
+			})
+		}()
+
+		<-cancelSeen
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("Run returned before the canceled reconcile exited: %v", err)
+		default:
+		}
+		close(release)
+		synctest.Wait()
+		err := <-done
+		if status.Code(err) != codes.InvalidArgument || !errors.Is(err, subscriptionErr) {
+			t.Fatalf("Run = %v, want original subscription error", err)
+		}
+	})
+}
+
+func TestProtocolTableRunResults_SubscriptionFirstWinsWhenBothResultsAlreadyReady(t *testing.T) {
+	subscriptionErr := status.Error(codes.InvalidArgument, "subscription rejected")
+	reconcileErr := errors.New("simultaneous reconcile failure")
+	results := make(chan protocolTableRunResult, 2)
+	results <- protocolTableRunResult{kind: protocolTableRunSubscription, err: subscriptionErr}
+	results <- protocolTableRunResult{kind: protocolTableRunReconcile, err: reconcileErr}
+	if got := len(results); got != 2 {
+		t.Fatalf("ready results = %d, want both results queued before receive", got)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	role := &Role{d: Deps{Logger: slog.Default()}}
+	err := role.resolveProtocolTableRunResults(cancel, results)
+	if err != subscriptionErr {
+		t.Fatalf("worker result = %v, want original subscription cause %v", err, subscriptionErr)
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("worker context = %v, want canceled before join", ctx.Err())
 	}
 }
 
@@ -118,7 +467,7 @@ func newProtocolTableRunHarnessV(t *testing.T, conn clickhouse.Conn) (*Role, *ve
 	cfg.UnsafeDatabase = "hg_unsafe_run_" + suffix
 	cfg.SafeDatabase = "hg_safe_run_" + suffix
 	cfg.PromoteDatabase = "hg_promote_run_" + suffix
-	cfg.ProtocolTables = ddl.ModeCreateAndVerify
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
 	cfg.ProtocolTablesReconcile = 20 * time.Millisecond
 	t.Cleanup(func() {
 		for _, database := range []string{cfg.UnsafeDatabase, cfg.SafeDatabase, cfg.PromoteDatabase} {
@@ -149,9 +498,12 @@ func waitVerifierSubscriptions(t *testing.T, server *verifierFakeServer, wantSta
 	t.Fatalf("subscriptions starts=%d active=%d, want starts>=%d active=%d", starts, active, wantStarts, wantActive)
 }
 
-type blockingProtocolConnV struct {
-	clickhouse.Conn
-	blockOnce   sync.Once
+type blockingProtocolEnsureV struct {
+	initial     func(context.Context, ddl.Mode) error
+	cancelErr   error
+	mu          sync.Mutex
+	calls       int
+	modes       []ddl.Mode
 	releaseOnce sync.Once
 	entered     chan struct{}
 	cancelSeen  chan struct{}
@@ -159,9 +511,10 @@ type blockingProtocolConnV struct {
 	exited      chan struct{}
 }
 
-func newBlockingProtocolConnV(conn clickhouse.Conn) *blockingProtocolConnV {
-	return &blockingProtocolConnV{
-		Conn:       conn,
+func newBlockingProtocolEnsureV(initial func(context.Context, ddl.Mode) error, cancelErr error) *blockingProtocolEnsureV {
+	return &blockingProtocolEnsureV{
+		initial:    initial,
+		cancelErr:  cancelErr,
 		entered:    make(chan struct{}),
 		cancelSeen: make(chan struct{}),
 		allowExit:  make(chan struct{}),
@@ -169,21 +522,34 @@ func newBlockingProtocolConnV(conn clickhouse.Conn) *blockingProtocolConnV {
 	}
 }
 
-func (c *blockingProtocolConnV) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
-	blocked := false
-	c.blockOnce.Do(func() { blocked = true })
-	if blocked {
-		close(c.entered)
-		<-ctx.Done()
-		close(c.cancelSeen)
-		<-c.allowExit
-		close(c.exited)
+func (p *blockingProtocolEnsureV) ensure(ctx context.Context, mode ddl.Mode) error {
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	p.modes = append(p.modes, mode)
+	p.mu.Unlock()
+	if call == 1 {
+		return p.initial(ctx, mode)
 	}
-	return c.Conn.QueryRow(ctx, query, args...)
+	if call != 2 {
+		return fmt.Errorf("unexpected protocol-table ensure call %d", call)
+	}
+	close(p.entered)
+	<-ctx.Done()
+	close(p.cancelSeen)
+	<-p.allowExit
+	close(p.exited)
+	return p.cancelErr
 }
 
-func (c *blockingProtocolConnV) release() {
-	c.releaseOnce.Do(func() { close(c.allowExit) })
+func (p *blockingProtocolEnsureV) release() {
+	p.releaseOnce.Do(func() { close(p.allowExit) })
+}
+
+func (p *blockingProtocolEnsureV) modesSnapshot() []ddl.Mode {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]ddl.Mode(nil), p.modes...)
 }
 
 func TestRun_ReconcileDriftFailsClosedAndCancelsSubscription(t *testing.T) {
@@ -231,9 +597,9 @@ func TestRun_CancellationDoesNotLeakVerifierSubscriptionAcrossRuns(t *testing.T)
 func TestRun_SubscriptionFailureJoinsReconcileBeforeReturn(t *testing.T) {
 	conn := requireCH(t)
 	role, server, _ := newProtocolTableRunHarnessV(t, conn)
-	probe := newBlockingProtocolConnV(conn)
+	probe := newBlockingProtocolEnsureV(role.ensureFn, errors.New("reconcile cancellation artifact"))
 	t.Cleanup(probe.release)
-	role.d.Conn = probe
+	role.ensureFn = probe.ensure
 	subscriptionRelease := make(chan struct{})
 	server.failSubscriptionWhen(subscriptionRelease, status.Error(codes.InvalidArgument, "subscription rejected"))
 
@@ -262,6 +628,9 @@ func TestRun_SubscriptionFailureJoinsReconcileBeforeReturn(t *testing.T) {
 	case <-probe.exited:
 	case <-time.After(2 * time.Second):
 		t.Fatal("reconcile probe did not exit after release")
+	}
+	if got := probe.modesSnapshot(); len(got) != 2 || got[0] != ddl.ModeCreateAndVerify || got[1] != ddl.ModeVerifyOnly {
+		t.Fatalf("ensure modes = %v, want [create verify]", got)
 	}
 	select {
 	case err := <-done:
