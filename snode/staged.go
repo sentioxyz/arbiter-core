@@ -159,10 +159,14 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	for _, partitionID := range touched {
 		inventory[partitionID] = partNamesForPartition(schema, before, partitionID)
 	}
-	for _, partitionID := range touched {
-		if n := len(inventory[partitionID]); n >= r.cfg.HardPartsPerPartition {
-			return PreparedLocalResult{}, fmt.Errorf("%w: %s.%s partition %s has %d active parts (hard limit %d)",
-				ErrBackpressure, r.cfg.UnsafeDatabase, table, partitionID, n, r.cfg.HardPartsPerPartition)
+	// inventory is computed unconditionally: it feeds intakeRecord's
+	// PreWriteInventory below and is not back-pressure state.
+	if !r.cfg.DisableHardParts {
+		for _, partitionID := range touched {
+			if n := len(inventory[partitionID]); n >= r.cfg.HardPartsPerPartition {
+				return PreparedLocalResult{}, fmt.Errorf("%w: %s.%s partition %s has %d active parts (hard limit %d)",
+					ErrBackpressure, r.cfg.UnsafeDatabase, table, partitionID, n, r.cfg.HardPartsPerPartition)
+			}
 		}
 	}
 
