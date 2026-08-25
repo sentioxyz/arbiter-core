@@ -5,7 +5,9 @@ go_test(
     srcs = [
         "arbiter_wire_test.go",
         "replay_wire_test.go",
+        "statement_envelope_golden_test.go",
     ],
+    data = glob(["testdata/**"]),
     deps = [
         "//:arbiter-core",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
