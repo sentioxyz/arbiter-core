@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
+
+	"github.com/sentioxyz/arbiter-core"
 )
 
 const testEncoding = "clickhouse-native-data-v1"
@@ -84,6 +87,52 @@ func TestPrepareLocalStatement_IdempotentReplayAtUnsafeWritten(t *testing.T) {
 	}
 	if got := countActiveParts(t, conn, role, schema); got != partsBefore {
 		t.Fatalf("replay must not write again: parts %d -> %d", partsBefore, got)
+	}
+}
+
+func TestPrepareLocalStatement_CachedReplayRevalidatesCurrentSchema(t *testing.T) {
+	schema := intakeSchema()
+	cfg := testConfigS(t)
+	cfg.Tables = []payloadexec.TableSchema{schema}
+	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
+	role, _ := newIntakeHarness(t, nil, cfg)
+
+	payload := []byte("cached payload bytes")
+	req := stagedRequest(payload)
+	result := PreparedLocalResult{
+		StatementID:     req.Envelope.StatementID.Flat(),
+		PayloadEncoding: req.PayloadEncoding,
+		Revision:        req.Revision,
+		Lifecycle:       LifecycleUnsafeWritten,
+	}
+	rc := arbiter.RCRecord{StatementID: req.Envelope.StatementID}
+	rec := intakeRecord{
+		StatementID:     req.Envelope.StatementID.Flat(),
+		Lifecycle:       LifecyclePreparing,
+		Envelope:        req.Envelope,
+		PayloadEncoding: req.PayloadEncoding,
+		Revision:        req.Revision,
+	}
+	if err := role.journal.save(rec); err != nil {
+		t.Fatalf("seed preparing record: %v", err)
+	}
+	rec.Lifecycle = LifecycleUnsafeWritten
+	rec.Result = &result
+	rec.RC = &rc
+	if err := role.journal.save(rec); err != nil {
+		t.Fatalf("seed cached result: %v", err)
+	}
+
+	changed := schema
+	changed.Columns = append([]lthash.Column(nil), schema.Columns...)
+	changed.Columns[1].Type = "UInt32"
+	restartedCfg := cfg
+	restartedCfg.Tables = []payloadexec.TableSchema{changed}
+	restartedCfg.SchemaRoot = payloadexec.SchemaRoot(restartedCfg.NetworkID, restartedCfg.Tables)
+	restartedRole, _ := newIntakeHarness(t, nil, restartedCfg)
+
+	if _, err := restartedRole.PrepareLocalStatement(context.Background(), req, payload); !errors.Is(err, ErrSchemaHashMismatch) {
+		t.Fatalf("cached replay under a changed schema must reject with ErrSchemaHashMismatch, got %v", err)
 	}
 }
 

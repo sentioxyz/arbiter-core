@@ -23,8 +23,18 @@ func (r *Role) LookupPreparedStatement(ctx context.Context, statementID string) 
 	if !ok {
 		return PreparedLocalResult{}, false, nil
 	}
+	if rec.Lifecycle == LifecycleCleaned {
+		return PreparedLocalResult{}, false, nil
+	}
+	if err := validateRecordedBindings(rec); err != nil {
+		return PreparedLocalResult{}, false, err
+	}
+	schema, err := r.resolveEnvelopeSchema(rec.Envelope)
+	if err != nil {
+		return PreparedLocalResult{}, false, err
+	}
 	if rec.Lifecycle == LifecyclePreparing || rec.Lifecycle == LifecycleAbortPending {
-		rec, err = r.convergeIntake(ctx, rec)
+		rec, err = r.convergeIntake(ctx, rec, schema)
 		if err != nil {
 			return PreparedLocalResult{}, false, err
 		}
@@ -42,21 +52,17 @@ func (r *Role) LookupPreparedStatement(ctx context.Context, statementID string) 
 	}
 }
 
-func (r *Role) convergeIntake(ctx context.Context, rec intakeRecord) (intakeRecord, error) {
+func (r *Role) convergeIntake(ctx context.Context, rec intakeRecord, schema payloadexec.TableSchema) (intakeRecord, error) {
 	if rec.ConvergeFailed != "" {
 		return rec, fmt.Errorf("statement %s: %s: %w", rec.StatementID, rec.ConvergeFailed, ErrConvergenceForeignRows)
 	}
 	if rec.Lifecycle == LifecycleAbortPending {
-		return r.runAbort(ctx, rec)
+		return r.runAbort(ctx, rec, schema)
 	}
 	if rec.Lifecycle != LifecyclePreparing {
 		return rec, nil
 	}
 
-	schema, err := r.schemaFor(rec.Envelope.TargetTableID)
-	if err != nil {
-		return rec, fmt.Errorf("converge schema: %w", err)
-	}
 	table := CHTableName(schema.TableID)
 	expected := make(map[string]bool, rec.ExpectedRowCount)
 	for ordinal := uint64(0); ordinal < rec.ExpectedRowCount; ordinal++ {
@@ -134,7 +140,7 @@ func (r *Role) convergeIntake(ctx context.Context, rec intakeRecord) (intakeReco
 	if err := r.journal.save(rec); err != nil {
 		return rec, fmt.Errorf("persist abort intent: %w", err)
 	}
-	return r.runAbort(ctx, rec)
+	return r.runAbort(ctx, rec, schema)
 }
 
 func (r *Role) persistConvergenceFailure(rec intakeRecord, detail, partName string) (intakeRecord, error) {
@@ -148,7 +154,7 @@ func (r *Role) persistConvergenceFailure(rec intakeRecord, detail, partName stri
 	return rec, fmt.Errorf("statement %s part %s: %w", rec.StatementID, partName, ErrConvergenceForeignRows)
 }
 
-func (r *Role) runAbort(ctx context.Context, rec intakeRecord) (intakeRecord, error) {
+func (r *Role) runAbort(ctx context.Context, rec intakeRecord, schema payloadexec.TableSchema) (intakeRecord, error) {
 	if rec.Abort == nil {
 		return rec, fmt.Errorf("statement %s is AbortPending without abort details", rec.StatementID)
 	}
@@ -158,10 +164,6 @@ func (r *Role) runAbort(ctx context.Context, rec intakeRecord) (intakeRecord, er
 			return rec, fmt.Errorf("persist cleaned: %w", err)
 		}
 		return rec, nil
-	}
-	schema, err := r.schemaFor(rec.Envelope.TargetTableID)
-	if err != nil {
-		return rec, fmt.Errorf("abort schema: %w", err)
 	}
 	table := CHTableName(schema.TableID)
 	for _, name := range rec.Abort.PartNames {
@@ -234,7 +236,14 @@ func (r *Role) convergeStartup(ctx context.Context) error {
 		if rec.Lifecycle != LifecyclePreparing && rec.Lifecycle != LifecycleAbortPending {
 			continue
 		}
-		if _, err := r.convergeIntake(ctx, rec); err != nil {
+		if err := validateRecordedBindings(rec); err != nil {
+			return fmt.Errorf("converge intake %s: %w", rec.StatementID, err)
+		}
+		schema, err := r.resolveEnvelopeSchema(rec.Envelope)
+		if err != nil {
+			return fmt.Errorf("converge intake %s current binding: %w", rec.StatementID, err)
+		}
+		if _, err := r.convergeIntake(ctx, rec, schema); err != nil {
 			if errors.Is(err, ErrConvergenceForeignRows) {
 				r.d.Logger.Error(
 					"intake convergence requires operator intervention",
