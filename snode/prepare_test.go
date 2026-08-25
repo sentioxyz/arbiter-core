@@ -14,6 +14,7 @@ import (
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core/dataplane"
 )
@@ -70,11 +71,11 @@ func TestPrepare_PropagatesJournalAndConvergenceErrorsBeforeRunStarts(t *testing
 		}
 
 		err := role.Prepare(t.Context())
-		if err == nil || !strings.Contains(err.Error(), "converge staged intake") || !strings.Contains(err.Error(), "converge schema") {
+		if !errors.Is(err, ErrSchemaUnknown) || !strings.Contains(err.Error(), "converge staged intake") || !strings.Contains(err.Error(), "current binding") {
 			t.Fatalf("Prepare error = %v, want wrapped convergence failure", err)
 		}
 		var readyCalls atomic.Int32
-		if err := role.RunWithReady(t.Context(), func() { readyCalls.Add(1) }); err == nil || !strings.Contains(err.Error(), "converge schema") {
+		if err := role.RunWithReady(t.Context(), func() { readyCalls.Add(1) }); !errors.Is(err, ErrSchemaUnknown) || !strings.Contains(err.Error(), "current binding") {
 			t.Fatalf("RunWithReady error = %v, want convergence failure", err)
 		}
 		if starts, active := server.subscriptionSnapshot(); starts != 0 || active != 0 {
@@ -450,11 +451,11 @@ func TestPrepare_RechecksJournalAcrossCallsAndRuns(t *testing.T) {
 	if err := role.journal.save(rec); err != nil {
 		t.Fatalf("seed later intake record: %v", err)
 	}
-	if err := role.Prepare(t.Context()); err == nil || !strings.Contains(err.Error(), "converge schema") {
+	if err := role.Prepare(t.Context()); !errors.Is(err, ErrSchemaUnknown) || !strings.Contains(err.Error(), "current binding") {
 		t.Fatalf("repeat Prepare error = %v, want new convergence failure", err)
 	}
 	var readyCalls atomic.Int32
-	if err := role.RunWithReady(t.Context(), func() { readyCalls.Add(1) }); err == nil || !strings.Contains(err.Error(), "converge schema") {
+	if err := role.RunWithReady(t.Context(), func() { readyCalls.Add(1) }); !errors.Is(err, ErrSchemaUnknown) || !strings.Contains(err.Error(), "current binding") {
 		t.Fatalf("second RunWithReady error = %v, want new convergence failure", err)
 	}
 	if got := readyCalls.Load(); got != 0 {
@@ -531,6 +532,7 @@ func TestPrepare_SecondCallerCanCancelWhileConvergenceIsSerialized(t *testing.T)
 	role.d.Conn = probe
 	rec := testRecord("0xabc:10:blocking")
 	rec.Envelope.TargetTableID = role.cfg.Tables[0].TableID
+	rec.Envelope.SchemaHash = payloadexec.TableSchemaHash(role.cfg.NetworkID, role.cfg.Tables[0])
 	if err := role.journal.save(rec); err != nil {
 		t.Fatalf("seed intake record: %v", err)
 	}

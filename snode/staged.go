@@ -80,6 +80,10 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	if err != nil {
 		return PreparedLocalResult{}, err
 	}
+	schema, err := r.resolveEnvelopeSchema(req.Envelope)
+	if err != nil {
+		return PreparedLocalResult{}, err
+	}
 
 	flat := req.Envelope.StatementID.Flat()
 	rec, ok, err := r.journal.load(flat)
@@ -99,7 +103,7 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 		case LifecycleCleaned:
 			// A cleaned attempt left no unsafe bytes, so a fresh prepare is safe.
 		case LifecyclePreparing, LifecycleAbortPending:
-			rec, err = r.convergeIntake(ctx, rec)
+			rec, err = r.convergeIntake(ctx, rec, schema)
 			if err != nil {
 				return PreparedLocalResult{}, err
 			}
@@ -116,16 +120,6 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 
 	if err := validatePayloadBinding(req.Envelope, payload); err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("%v: %w", err, ErrPayloadMismatch)
-	}
-	schema, err := r.schemaFor(req.Envelope.TargetTableID)
-	if err != nil {
-		return PreparedLocalResult{}, fmt.Errorf("%v: %w", err, ErrSchemaUnknown)
-	}
-	// Envelope v2: the agent signed the schema hash it encoded against; a
-	// disagreement with this source's declared schema is a terminal reject,
-	// checked BEFORE any decode or unsafe write.
-	if want := payloadexec.TableSchemaHash(r.cfg.NetworkID, schema); req.Envelope.SchemaHash != want {
-		return PreparedLocalResult{}, fmt.Errorf("statement %s schema_hash %q, source has %q: %w", flat, req.Envelope.SchemaHash, want, ErrSchemaHashMismatch)
 	}
 	if r.d.Payloads == nil || r.d.Conn == nil {
 		return PreparedLocalResult{}, errors.New("snode: payload store and clickhouse connection are required")
@@ -208,6 +202,39 @@ func validatePrepareBindings(req PrepareRequest) (string, int, error) {
 			req.Revision, req.Envelope.ClientRevision, ErrPayloadMismatch)
 	}
 	return req.Envelope.PayloadFormat, int(req.Envelope.ClientRevision), nil
+}
+
+// validateRecordedBindings applies the same signed payload-format and client-
+// revision checks as a fresh prepare to the values recovered from the intake
+// journal. Recovery must never trust persisted request metadata more than the
+// original request that created it.
+func validateRecordedBindings(rec intakeRecord) error {
+	_, _, err := validatePrepareBindings(PrepareRequest{
+		Envelope:        rec.Envelope,
+		PayloadEncoding: rec.PayloadEncoding,
+		Revision:        rec.Revision,
+	})
+	if err != nil {
+		return fmt.Errorf("statement %s recorded bindings: %w", rec.StatementID, err)
+	}
+	return nil
+}
+
+// resolveEnvelopeSchema is the current-binding check shared by every fresh,
+// cached, and converged intake path. A durable record cannot be read or acted
+// on after the role's authoritative table schema has drifted from the schema
+// the client signed.
+func (r *Role) resolveEnvelopeSchema(env arbiter.StatementEnvelope) (payloadexec.TableSchema, error) {
+	schema, err := r.schemaFor(env.TargetTableID)
+	if err != nil {
+		return payloadexec.TableSchema{}, fmt.Errorf("%v: %w", err, ErrSchemaUnknown)
+	}
+	want := payloadexec.TableSchemaHash(r.cfg.NetworkID, schema)
+	if env.SchemaHash != want {
+		return payloadexec.TableSchema{}, fmt.Errorf("statement %s schema_hash %q, source has %q: %w",
+			env.StatementID.Flat(), env.SchemaHash, want, ErrSchemaHashMismatch)
+	}
+	return schema, nil
 }
 
 func validateReplayRequest(rec intakeRecord, req PrepareRequest, payload []byte) error {
@@ -309,13 +336,23 @@ func (r *Role) RegisterPreparedClaim(ctx context.Context, statementID string) (C
 	if err != nil {
 		return ClaimOutcome{}, fmt.Errorf("intake journal: %w", err)
 	}
-	if ok && (rec.Lifecycle == LifecyclePreparing || rec.Lifecycle == LifecycleAbortPending) {
-		rec, err = r.convergeIntake(ctx, rec)
+	if !ok || rec.Lifecycle == LifecycleCleaned {
+		return ClaimOutcome{}, fmt.Errorf("statement %s: %w", statementID, ErrNotPrepared)
+	}
+	if err := validateRecordedBindings(rec); err != nil {
+		return ClaimOutcome{}, err
+	}
+	schema, err := r.resolveEnvelopeSchema(rec.Envelope)
+	if err != nil {
+		return ClaimOutcome{}, err
+	}
+	if rec.Lifecycle == LifecyclePreparing || rec.Lifecycle == LifecycleAbortPending {
+		rec, err = r.convergeIntake(ctx, rec, schema)
 		if err != nil {
 			return ClaimOutcome{}, err
 		}
 	}
-	if !ok || (rec.Lifecycle != LifecycleUnsafeWritten && rec.Lifecycle != LifecycleRCBound) {
+	if rec.Lifecycle != LifecycleUnsafeWritten && rec.Lifecycle != LifecycleRCBound {
 		return ClaimOutcome{}, fmt.Errorf("statement %s: %w", statementID, ErrNotPrepared)
 	}
 	if rec.RC == nil || rec.Result == nil {
@@ -362,8 +399,15 @@ func (r *Role) AbortPreparedStatement(ctx context.Context, statementID string, p
 	if rec.Lifecycle == LifecycleCleaned {
 		return nil
 	}
+	if err := validateRecordedBindings(rec); err != nil {
+		return err
+	}
+	schema, err := r.resolveEnvelopeSchema(rec.Envelope)
+	if err != nil {
+		return err
+	}
 	if rec.Lifecycle == LifecyclePreparing || rec.Lifecycle == LifecycleAbortPending {
-		rec, err = r.convergeIntake(ctx, rec)
+		rec, err = r.convergeIntake(ctx, rec, schema)
 		if err != nil {
 			return err
 		}
@@ -385,7 +429,7 @@ func (r *Role) AbortPreparedStatement(ctx context.Context, statementID string, p
 	if err := r.journal.save(rec); err != nil {
 		return fmt.Errorf("persist abort intent: %w", err)
 	}
-	if _, err := r.runAbort(ctx, rec); err != nil {
+	if _, err := r.runAbort(ctx, rec, schema); err != nil {
 		return err
 	}
 	return nil

@@ -1,0 +1,53 @@
+{
+  "hash_profile": "housegate-replay-mvp-v0",
+  "domain": "arbiter-l3-statements-v1",
+  "digest": "0x72683a2f8d7c288579d12dc232dda2571d6f62313b534b8fd7ab7531a5e82921",
+  "value": [
+    {
+      "statement_id": {
+        "client_account": "0x00000000000000000000000000000000000000a1",
+        "client_seq": 11,
+        "client_nonce": "00112233445566778899aabbccddeeff"
+      },
+      "statement_kind": 1,
+      "sql": "INSERT INTO db1.events FORMAT Native",
+      "sql_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "settings_hash": "0x213f12b28bb47c05d226c4b86dad5b91e11d61040568a87dffe2ee87113ec006",
+      "payload_ref": "payload/golden-1",
+      "payload_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "payload_length": 4096,
+      "target_table_id": "db1.events",
+      "user_jws": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJKV1QifQ.eyJnb2xkZW4iOjF9.Z29sZGVuLXNpZ25hdHVyZS0x",
+      "envelope_version": 2,
+      "network_id": "arbiter-golden-net",
+      "keeper_shard_id": 0,
+      "payload_format": "clickhouse-native-data-v1",
+      "client_revision": 54460,
+      "schema_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "row_id_profile_id": "housegate-row-id-v1"
+    },
+    {
+      "statement_id": {
+        "client_account": "0x00000000000000000000000000000000000000b2",
+        "client_seq": 12,
+        "client_nonce": "ffeeddccbbaa99887766554433221100"
+      },
+      "statement_kind": 1,
+      "sql": "INSERT INTO db1.metrics FORMAT Native",
+      "sql_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "settings_hash": "0x213f12b28bb47c05d226c4b86dad5b91e11d61040568a87dffe2ee87113ec006",
+      "payload_ref": "payload/golden-2",
+      "payload_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "payload_length": 8192,
+      "target_table_id": "db1.metrics",
+      "user_jws": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJKV1QifQ.eyJnb2xkZW4iOjJ9.Z29sZGVuLXNpZ25hdHVyZS0y",
+      "envelope_version": 2,
+      "network_id": "arbiter-golden-net",
+      "keeper_shard_id": 0,
+      "payload_format": "clickhouse-native-data-v1",
+      "client_revision": 54460,
+      "schema_hash": "0x6666666666666666666666666666666666666666666666666666666666666666",
+      "row_id_profile_id": "housegate-row-id-v1"
+    }
+  ]
+}

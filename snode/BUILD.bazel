@@ -58,6 +58,7 @@ go_test(
         "promote_fixtures_test.go",
         "promote_test.go",
         "protocol_tables_test.go",
+        "recorded_bindings_test.go",
         "snode_test.go",
         "staged_backpressure_test.go",
         "staged_claim_test.go",
