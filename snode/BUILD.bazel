@@ -54,6 +54,7 @@ go_test(
         "intake_test.go",
         "journal_test.go",
         "native_fixture_test.go",
+        "payload_mismatch_class_test.go",
         "prepare_test.go",
         "promote_fixtures_test.go",
         "promote_test.go",
@@ -66,6 +67,7 @@ go_test(
         "state_test.go",
     ],
     embed = [":snode"],
+    embedsrcs = ["staged.go"],
     deps = [
         "//:arbiter-core",
         "//authority",

@@ -45,12 +45,25 @@ type PreparedLocalResult struct {
 }
 
 var (
-	ErrEncodingNotSupported   = errors.New("snode: payload encoding not supported")
-	ErrPayloadMismatch        = errors.New("snode: payload does not match envelope")
-	ErrSchemaHashMismatch     = errors.New("snode: envelope schema_hash does not match this source's declared schema")
-	ErrSchemaUnknown          = errors.New("snode: unknown target table")
-	ErrNotPrepared            = errors.New("snode: statement has no prepared unsafe write")
-	ErrConvergenceForeignRows = errors.New("snode: foreign row ids in candidate part; operator intervention required")
+	ErrEncodingNotSupported = errors.New("snode: payload encoding not supported")
+	ErrPayloadMismatch      = errors.New("snode: payload does not match envelope")
+	// ErrPayloadMismatchPreWrite is raised only on call paths where no
+	// unsafe write can exist for this statement id: before journal.save has
+	// succeeded, or after a durable record has converged to LifecycleCleaned,
+	// which by definition left no unsafe bytes. HouseGate maps this class --
+	// and only this class -- to sicore.ErrPrepareTerminalReject, whose
+	// contract is "provably no write": its abortTerminalPrepareReject
+	// hard-errors on a non-empty candidate set.
+	ErrPayloadMismatchPreWrite = fmt.Errorf("%w (proved before any unsafe write)", ErrPayloadMismatch)
+	// ErrPayloadMismatchPostRecord is raised where a durable record already
+	// exists, so an unsafe write may have happened. It must stay non-terminal
+	// and go through the ordinary source-lookup path: "not retryable" is not
+	// "did not write".
+	ErrPayloadMismatchPostRecord = fmt.Errorf("%w (a durable record already exists)", ErrPayloadMismatch)
+	ErrSchemaHashMismatch        = errors.New("snode: envelope schema_hash does not match this source's declared schema")
+	ErrSchemaUnknown             = errors.New("snode: unknown target table")
+	ErrNotPrepared               = errors.New("snode: statement has no prepared unsafe write")
+	ErrConvergenceForeignRows    = errors.New("snode: foreign row ids in candidate part; operator intervention required")
 	// ErrBackpressure means a touched unsafe partition is at the hard parts
 	// limit. The prepare has not journaled or written anything.
 	ErrBackpressure = errors.New("snode: back-pressure: hg_unsafe partition at hard parts limit")
@@ -76,7 +89,7 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	}
 	defer r.intakeMu.Unlock()
 
-	payloadEncoding, revision, err := validatePrepareBindings(req)
+	payloadEncoding, revision, err := validatePrepareBindings(req, ErrPayloadMismatchPreWrite)
 	if err != nil {
 		return PreparedLocalResult{}, err
 	}
@@ -119,7 +132,7 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	}
 
 	if err := validatePayloadBinding(req.Envelope, payload); err != nil {
-		return PreparedLocalResult{}, fmt.Errorf("%v: %w", err, ErrPayloadMismatch)
+		return PreparedLocalResult{}, fmt.Errorf("%v: %w", err, ErrPayloadMismatchPreWrite)
 	}
 	if r.d.Payloads == nil || r.d.Conn == nil {
 		return PreparedLocalResult{}, errors.New("snode: payload store and clickhouse connection are required")
@@ -127,7 +140,7 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 
 	rows, err := nativepayload.Decode(schema, revision, payload)
 	if err != nil {
-		return PreparedLocalResult{}, fmt.Errorf("decode payload: %v: %w", err, ErrPayloadMismatch)
+		return PreparedLocalResult{}, fmt.Errorf("decode payload: %v: %w", err, ErrPayloadMismatchPreWrite)
 	}
 	for i := range rows {
 		rows[i].RowID = payloadexec.RowID(r.cfg.NetworkID, schema.TableID, flat, uint64(i))
@@ -186,20 +199,28 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	return result, nil
 }
 
-func validatePrepareBindings(req PrepareRequest) (string, int, error) {
+// validatePrepareBindings checks the signed payload-format and client-revision
+// bindings. class selects which payload-mismatch sentinel its failures carry:
+// a fresh prepare is pre-write, while a check re-run against a recovered
+// journal record is post-record. The caller owns that fact; this function
+// cannot observe it, so it must never name a class itself.
+//
+// ErrEncodingNotSupported is deliberately not classified: it is already
+// terminal and pre-write in every caller's eyes, and HouseGate already maps it.
+func validatePrepareBindings(req PrepareRequest, class error) (string, int, error) {
 	if req.Envelope.PayloadFormat != stagedNativeEncoding {
 		return "", 0, fmt.Errorf("signed payload format %q: %w", req.Envelope.PayloadFormat, ErrEncodingNotSupported)
 	}
 	if req.Envelope.ClientRevision == 0 {
-		return "", 0, fmt.Errorf("signed client revision must be non-zero: %w", ErrPayloadMismatch)
+		return "", 0, fmt.Errorf("signed client revision must be non-zero: %w", class)
 	}
 	if req.PayloadEncoding != req.Envelope.PayloadFormat {
 		return "", 0, fmt.Errorf("request payload encoding %q does not match signed payload format %q: %w",
-			req.PayloadEncoding, req.Envelope.PayloadFormat, ErrPayloadMismatch)
+			req.PayloadEncoding, req.Envelope.PayloadFormat, class)
 	}
 	if req.Revision <= 0 || uint64(req.Revision) != uint64(req.Envelope.ClientRevision) {
 		return "", 0, fmt.Errorf("request revision %d does not match signed client revision %d: %w",
-			req.Revision, req.Envelope.ClientRevision, ErrPayloadMismatch)
+			req.Revision, req.Envelope.ClientRevision, class)
 	}
 	return req.Envelope.PayloadFormat, int(req.Envelope.ClientRevision), nil
 }
@@ -213,7 +234,7 @@ func validateRecordedBindings(rec intakeRecord) error {
 		Envelope:        rec.Envelope,
 		PayloadEncoding: rec.PayloadEncoding,
 		Revision:        rec.Revision,
-	})
+	}, ErrPayloadMismatchPostRecord)
 	if err != nil {
 		return fmt.Errorf("statement %s recorded bindings: %w", rec.StatementID, err)
 	}
@@ -239,16 +260,16 @@ func (r *Role) resolveEnvelopeSchema(env arbiter.StatementEnvelope) (payloadexec
 
 func validateReplayRequest(rec intakeRecord, req PrepareRequest, payload []byte) error {
 	if !reflect.DeepEqual(rec.Envelope, req.Envelope) {
-		return fmt.Errorf("statement %s envelope changed across prepare attempts: %w", rec.StatementID, ErrPayloadMismatch)
+		return fmt.Errorf("statement %s envelope changed across prepare attempts: %w", rec.StatementID, ErrPayloadMismatchPostRecord)
 	}
 	if rec.PayloadEncoding != req.PayloadEncoding {
-		return fmt.Errorf("statement %s payload encoding changed across prepare attempts: %w", rec.StatementID, ErrPayloadMismatch)
+		return fmt.Errorf("statement %s payload encoding changed across prepare attempts: %w", rec.StatementID, ErrPayloadMismatchPostRecord)
 	}
 	if rec.Revision != req.Revision {
-		return fmt.Errorf("statement %s revision changed across prepare attempts: %w", rec.StatementID, ErrPayloadMismatch)
+		return fmt.Errorf("statement %s revision changed across prepare attempts: %w", rec.StatementID, ErrPayloadMismatchPostRecord)
 	}
 	if err := validatePayloadBinding(req.Envelope, payload); err != nil {
-		return fmt.Errorf("%v: %w", err, ErrPayloadMismatch)
+		return fmt.Errorf("%v: %w", err, ErrPayloadMismatchPostRecord)
 	}
 	return nil
 }
