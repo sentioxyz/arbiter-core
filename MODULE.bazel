@@ -8,7 +8,7 @@ bazel_dep(name = "rules_go", version = "0.62.0")
 bazel_dep(name = "gazelle", version = "0.52.2")
 bazel_dep(
     name = "housegate",
-    version = "0.10.0",
+    version = "0.12.0",
 )
 bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
 
@@ -17,8 +17,8 @@ bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
 # overrides from dependencies.
 git_override(
     module_name = "housegate",
-    # Resolved Housegate v0.10.0; source is pinned by the commit below.
-    commit = "576848692bb87dc891da95559577115d0fcb9773",
+    # Resolved Housegate v0.12.0; source is pinned by the commit below.
+    commit = "011571ad618b8ad73444541489f57a46d2adb87a",
     remote = "https://github.com/housegate/housegate",
 )
 
