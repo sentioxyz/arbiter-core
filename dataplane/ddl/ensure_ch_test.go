@@ -105,9 +105,9 @@ func TestEnsureProtocolTables_CanonicalizesFixedStringBeforeCreateAndVerify(t *t
 	suffix := uniqueSuffix(t)
 	var tables []payloadexec.TableSchema
 	for i, typeName := range []string{
-		"FixedString(+8)",
-		"FixedString(0008)",
-		"FixedString(\t +0008 \n)",
+		"FixedString(+32)",
+		"FixedString(0032)",
+		"FixedString(\t +0032 \n)",
 	} {
 		tables = append(tables, payloadexec.TableSchema{
 			TableID: fmt.Sprintf("db.fixed_%d_%s", i, suffix),
