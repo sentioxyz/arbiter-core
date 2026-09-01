@@ -175,9 +175,16 @@ func TestIntents_MatchRenderedDDLShape(t *testing.T) {
 
 func TestIntents_RejectsColumnTypeOutsideTheSIWhitelist(t *testing.T) {
 	for name, schema := range map[string]payloadexec.TableSchema{
+		// Nullable and Array stay out: Spec Q defers them to Phase 2, which also
+		// bumps ExecutorProfileID. Date32 is deferred with them — the Native
+		// decoder has no *proto.ColDate32 case, measured in Spec Q M-Date32.
 		"nullable": {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Nullable(UInt64)"}}},
 		"array":    {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Array(String)"}}},
-		"temporal": {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "DateTime"}}},
+		"date32":   {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Date32"}}},
+		// Spec Q Q-D7 narrowed FixedString to the one width the Native lane
+		// actually decodes. Widths ClickHouse and ch-go both accept are still
+		// refused here, deliberately.
+		"fixedstring_wrong_width": {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "FixedString(16)"}}},
 		"ddl_injection": {TableID: "db.t", Columns: []lthash.Column{
 			{Name: "v", Type: "String, injected UInt64"},
 		}},
@@ -220,10 +227,15 @@ func TestIntents_AcceptsEveryWhitelistedType(t *testing.T) {
 		TableID:     "db.t",
 		PartitionBy: "p",
 		Columns: []lthash.Column{
-			{Name: "p", Type: "String"}, {Name: "f", Type: "FixedString(8)"},
+			{Name: "p", Type: "String"}, {Name: "f", Type: "FixedString(32)"},
 			{Name: "b", Type: "Bool"}, {Name: "f32", Type: "Float32"}, {Name: "f64", Type: "Float64"},
 			{Name: "u8", Type: "UInt8"}, {Name: "u16", Type: "UInt16"}, {Name: "u32", Type: "UInt32"}, {Name: "u64", Type: "UInt64"},
 			{Name: "i8", Type: "Int8"}, {Name: "i16", Type: "Int16"}, {Name: "i32", Type: "Int32"}, {Name: "i64", Type: "Int64"},
+			// Temporal families, restored by Spec Q Phase 1. They were always
+			// supported by the Native decoder, the canonical row encoder and the
+			// ClickHouse executor; only the declaration validator refused them.
+			{Name: "d", Type: "Date"}, {Name: "dt", Type: "DateTime"}, {Name: "dttz", Type: "DateTime('UTC')"},
+			{Name: "dt64", Type: "DateTime64(3)"}, {Name: "dt64tz", Type: "DateTime64(3, 'UTC')"},
 		},
 	}
 	if _, _, _, err := Intents(goldenPinned(), schema); err != nil {
@@ -233,9 +245,9 @@ func TestIntents_AcceptsEveryWhitelistedType(t *testing.T) {
 
 func TestIntents_CanonicalizesAcceptedFixedStringSpellings(t *testing.T) {
 	for name, typeName := range map[string]string{
-		"leading_plus":   "FixedString(+8)",
-		"leading_zeroes": "FixedString(0008)",
-		"whitespace":     "FixedString(\t +0008 \n)",
+		"leading_plus":   "FixedString(+32)",
+		"leading_zeroes": "FixedString(0032)",
+		"whitespace":     "FixedString(\t +0032 \n)",
 	} {
 		t.Run(name, func(t *testing.T) {
 			schema := payloadexec.TableSchema{
@@ -252,8 +264,8 @@ func TestIntents_CanonicalizesAcceptedFixedStringSpellings(t *testing.T) {
 			for intentName, intent := range map[string]TableIntent{
 				"unsafe": unsafe, "safe": safe, "promote": promote,
 			} {
-				if got := intent.Columns[1].Type; got != "FixedString(8)" {
-					t.Fatalf("%s intent column type = %q, want FixedString(8)", intentName, got)
+				if got := intent.Columns[1].Type; got != "FixedString(32)" {
+					t.Fatalf("%s intent column type = %q, want FixedString(32)", intentName, got)
 				}
 			}
 			unsafeDDL, safeDDL, promoteDDL, err := BuildDDL(goldenPinned(), schema)
@@ -263,8 +275,8 @@ func TestIntents_CanonicalizesAcceptedFixedStringSpellings(t *testing.T) {
 			for ddlName, ddl := range map[string]string{
 				"unsafe": unsafeDDL, "safe": safeDDL, "promote": promoteDDL,
 			} {
-				if !strings.Contains(ddl, "`v` FixedString(8)") {
-					t.Fatalf("%s DDL did not render canonical FixedString(8):\n%s", ddlName, ddl)
+				if !strings.Contains(ddl, "`v` FixedString(32)") {
+					t.Fatalf("%s DDL did not render canonical FixedString(32):\n%s", ddlName, ddl)
 				}
 			}
 		})
