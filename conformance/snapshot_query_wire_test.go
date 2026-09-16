@@ -12,7 +12,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/housegate/housegate/pkg/auth"
 	"github.com/housegate/housegate/pkg/replay"
 	"github.com/sentioxyz/arbiter-core/wire"
 	"google.golang.org/protobuf/proto"
@@ -274,26 +276,64 @@ func TestSnapshotQuerySignedInputPresence(t *testing.T) {
 	}
 }
 
-// These fixtures prove cryptographic identity and wire preservation only. They
-// intentionally do not implement the A2 verifier or C3/C4 admission decisions.
-func TestSnapshotQueryValidSignatureIdentityFixture(t *testing.T) {
+type snapshotIdentityFixture struct {
+	Account    string
+	Input      replay.SnapshotQueryInput
+	InputRoot  string `json:"input_root"`
+	Identities []struct {
+		Iat         int64
+		UserJWS     string `json:"user_jws"`
+		UserJWSHash string `json:"user_jws_hash"`
+	}
+}
+
+func loadSnapshotIdentityFixture(t *testing.T) snapshotIdentityFixture {
+	t.Helper()
 	raw, err := os.ReadFile("testdata/snapshot_query_identity_v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var f struct {
-		Account    string
-		Input      replay.SnapshotQueryInput
-		InputRoot  string `json:"input_root"`
-		Identities []struct {
-			Iat         int64
-			UserJWS     string `json:"user_jws"`
-			UserJWSHash string `json:"user_jws_hash"`
-		}
+	if fmt.Sprintf("%x", sha256.Sum256(raw)) != "fce47e90a772cbe648c657844bb10d04567ba6f9196718d596ffd6f557c7a23f" {
+		t.Fatal("immutable A1 identity fixture changed")
 	}
+	var f snapshotIdentityFixture
 	if err = json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
 	}
+	return f
+}
+
+func verifySnapshotQueryEnvelopeProduction(envelope replay.SnapshotQueryEnvelope) (string, error) {
+	if err := replay.ValidateSnapshotQueryInput(envelope.Input); err != nil {
+		return "", fmt.Errorf("validate complete input: %w", err)
+	}
+	root, err := replay.SnapshotQueryInputRoot(envelope.Input)
+	if err != nil {
+		return "", fmt.Errorf("recompute input root: %w", err)
+	}
+	if root != envelope.InputRoot {
+		return "", fmt.Errorf("input_root mismatch: got %s want %s", envelope.InputRoot, root)
+	}
+	want := auth.JWSStatementPayloadV3{
+		Purpose:   auth.StatementPurposeV3,
+		Binding:   envelope.Input.Binding,
+		InputRoot: root,
+	}
+	account, err := auth.VerifyStatementV3Signature(envelope.UserJWS, want)
+	if err != nil {
+		return "", err
+	}
+	if account != envelope.Input.Binding.ClientAccount {
+		return "", fmt.Errorf("client_account does not match signature")
+	}
+	return account, nil
+}
+
+// The independent payload projection and key recovery below remain fixture
+// provenance checks. The production API is then exercised after protobuf
+// transport, complete input validation and input-root recomputation.
+func TestSnapshotQueryValidSignatureIdentityFixture(t *testing.T) {
+	f := loadSnapshotIdentityFixture(t)
 	if len(f.Identities) != 2 {
 		t.Fatal("two identities required")
 	}
@@ -341,6 +381,10 @@ func TestSnapshotQueryValidSignatureIdentityFixture(t *testing.T) {
 		if got.UserJWS != id.UserJWS {
 			t.Fatal("original JWS changed")
 		}
+		account, err := verifySnapshotQueryEnvelopeProduction(got)
+		if err != nil || account != got.Input.Binding.ClientAccount || account != f.Account {
+			t.Fatalf("production verifier account=%q err=%v", account, err)
+		}
 		statementRoot, err := replay.SnapshotQueryStatementRoot(replay.SnapshotQueryStatement{StatementSeq: 101, Envelope: got})
 		if err != nil {
 			t.Fatal(err)
@@ -368,6 +412,132 @@ func TestSnapshotQueryValidSignatureIdentityFixture(t *testing.T) {
 	}
 }
 
+func TestSnapshotQueryProductionVerifierRejectsTransportTampering(t *testing.T) {
+	f := loadSnapshotIdentityFixture(t)
+	base := replay.SnapshotQueryEnvelope{Input: f.Input, InputRoot: f.InputRoot, UserJWS: f.Identities[0].UserJWS}
+	otherAccount := "0x1111111111111111111111111111111111111111"
+	tests := []struct {
+		name      string
+		wantError string
+		recompute bool
+		mutate    func(*replay.SnapshotQueryEnvelope)
+	}{
+		{"binding read root", "read_set_root", true, func(v *replay.SnapshotQueryEnvelope) {
+			v.Input.ReadSet.Tables = append(v.Input.ReadSet.Tables, replay.SnapshotReadTable{
+				Database:       "tampered",
+				Table:          "read_set",
+				TableID:        "tampered-read-set",
+				SchemaHash:     replay.DigestString("tampered read schema"),
+				PartitionRoots: []replay.PartitionCommitment{},
+				ActiveParts:    []replay.SnapshotReadPart{},
+			})
+			v.Input.Binding.ReadSetRoot, _ = replay.SnapshotQueryReadSetRoot(v.Input.ReadSet)
+		}},
+		{"pin snapshot", "read_snapshot.snapshot_id", true, func(v *replay.SnapshotQueryEnvelope) {
+			v.Input.Binding.ReadSnapshot.SnapshotID += "-tampered"
+			v.Input.ReadSet.ReadSnapshot.SnapshotID = v.Input.Binding.ReadSnapshot.SnapshotID
+			v.Input.Binding.ReadSetRoot, _ = replay.SnapshotQueryReadSetRoot(v.Input.ReadSet)
+		}},
+		{"schema", "read_snapshot.schema_root", true, func(v *replay.SnapshotQueryEnvelope) {
+			v.Input.Binding.ReadSnapshot.SchemaRoot = replay.DigestString("tampered schema")
+			v.Input.Binding.SchemaRoot = v.Input.Binding.ReadSnapshot.SchemaRoot
+			v.Input.ReadSet.ReadSnapshot.SchemaRoot = v.Input.Binding.ReadSnapshot.SchemaRoot
+			v.Input.Binding.ReadSetRoot, _ = replay.SnapshotQueryReadSetRoot(v.Input.ReadSet)
+		}},
+		{"account", "client_account", true, func(v *replay.SnapshotQueryEnvelope) {
+			v.Input.Binding.ClientAccount = otherAccount
+			v.Input.Binding.StatementID = otherAccount + ":1:fixture"
+		}},
+		{"query profile", "query_profile_id", true, func(v *replay.SnapshotQueryEnvelope) {
+			v.Input.Binding.QueryProfileID += "-active"
+		}},
+		{"executor profile", "executor_profile_id", true, func(v *replay.SnapshotQueryEnvelope) {
+			v.Input.Binding.ExecutorProfileID += "-active"
+		}},
+		{"history", "read_snapshot.safe_block_seq", true, func(v *replay.SnapshotQueryEnvelope) {
+			v.Input.Binding.ReadSnapshot.SafeBlockSeq++
+			v.Input.ReadSet.ReadSnapshot.SafeBlockSeq = v.Input.Binding.ReadSnapshot.SafeBlockSeq
+			v.Input.Binding.ReadSetRoot, _ = replay.SnapshotQueryReadSetRoot(v.Input.ReadSet)
+		}},
+		{"generation", "fencing_generation", true, func(v *replay.SnapshotQueryEnvelope) {
+			v.Input.Binding.FencingGeneration++
+		}},
+		{"input root", "input_root mismatch", false, func(v *replay.SnapshotQueryEnvelope) {
+			v.InputRoot = replay.DigestString("tampered input root")
+		}},
+		{"token", "statement v3", false, func(v *replay.SnapshotQueryEnvelope) {
+			v.UserJWS += "x"
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := throughPB(t, base, wire.SnapshotQueryEnvelopeToPB, wire.SnapshotQueryEnvelopeFromPB)
+			tc.mutate(&mutated)
+			if tc.recompute {
+				var err error
+				mutated.InputRoot, err = replay.SnapshotQueryInputRoot(mutated.Input)
+				if err != nil {
+					t.Fatalf("tamper must remain a structurally valid input: %v", err)
+				}
+			}
+			got := throughPB(t, mutated, wire.SnapshotQueryEnvelopeToPB, wire.SnapshotQueryEnvelopeFromPB)
+			if _, err := verifySnapshotQueryEnvelopeProduction(got); err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("expected %q refusal, got %v", tc.wantError, err)
+			}
+		})
+	}
+}
+
+func TestSnapshotQueryProductionVerifierSeparatesTokenDomains(t *testing.T) {
+	f := loadSnapshotIdentityFixture(t)
+	want := auth.JWSStatementPayloadV3{
+		Purpose:   auth.StatementPurposeV3,
+		Binding:   f.Input.Binding,
+		InputRoot: f.InputRoot,
+	}
+	signer, err := auth.NewRelaySigner(strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := signer.SignStatementV2(auth.JWSStatementPayloadV2{Iat: f.Identities[0].Iat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := signer.SignToken("SELECT 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := signer.SignPeerLogin("fixture-peer", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, token := range map[string]string{"v2": v2, "ordinary query": query, "peer": peer} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := auth.VerifyStatementV3Signature(token, want); err == nil {
+				t.Fatal("accepted token from another domain")
+			}
+		})
+	}
+}
+
+func TestSnapshotQueryHistoricalProfileSignatureIsNotCurrentAuthorization(t *testing.T) {
+	f := loadSnapshotIdentityFixture(t)
+	wantHistorical := auth.JWSStatementPayloadV3{
+		Purpose:   auth.StatementPurposeV3,
+		Binding:   f.Input.Binding,
+		InputRoot: f.InputRoot,
+	}
+	account, err := auth.VerifyStatementV3Signature(f.Identities[0].UserJWS, wantHistorical)
+	if err != nil || account != f.Account {
+		t.Fatalf("historical identity must verify independently of current time: %q, %v", account, err)
+	}
+	wantActive := wantHistorical
+	wantActive.Binding.QueryProfileID += "-active"
+	if _, err := auth.VerifyStatementV3Signature(f.Identities[0].UserJWS, wantActive); err == nil || !strings.Contains(err.Error(), "query_profile_id") {
+		t.Fatalf("historical signature granted different active profile: %v", err)
+	}
+}
+
 // The full ordered A2 payload is frozen independently of signature validity.
 type snapshotIdentityPayload struct {
 	Purpose   string                      `json:"purpose"`
@@ -388,20 +558,14 @@ func checkSnapshotIdentityPayload(payload []byte, expected snapshotIdentityPaylo
 }
 
 func TestSnapshotQueryIdentityPayloadRejectsIncompleteOrNoncanonical(t *testing.T) {
-	raw, err := os.ReadFile("testdata/snapshot_query_identity_v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fixture struct {
-		Input     replay.SnapshotQueryInput
-		InputRoot string `json:"input_root"`
-	}
-	if err = json.Unmarshal(raw, &fixture); err != nil {
+	fixture := loadSnapshotIdentityFixture(t)
+	if err := replay.ValidateSnapshotQueryInput(fixture.Input); err != nil {
 		t.Fatal(err)
 	}
 	root, err := replay.SnapshotQueryInputRoot(fixture.Input)
 	rootEqual(t, fixture.InputRoot, root, err)
 	expected := snapshotIdentityPayload{"housegate-statement-v3", 1789550000, fixture.Input.Binding, root}
+	want := auth.JWSStatementPayloadV3{Purpose: auth.StatementPurposeV3, Binding: fixture.Input.Binding, InputRoot: root}
 	canonical, err := json.Marshal(expected)
 	if err != nil {
 		t.Fatal(err)
@@ -449,6 +613,9 @@ func TestSnapshotQueryIdentityPayloadRejectsIncompleteOrNoncanonical(t *testing.
 			}
 			if err = checkSnapshotIdentityPayload(decoded, expected); err == nil {
 				t.Fatal("valid signature admitted malformed complete payload")
+			}
+			if _, err = auth.VerifyStatementV3Signature(token, want); err == nil {
+				t.Fatal("production verifier admitted validly signed malformed payload")
 			}
 		})
 	}
