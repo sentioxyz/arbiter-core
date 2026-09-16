@@ -316,16 +316,9 @@ func TestSnapshotQueryValidSignatureIdentityFixture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var claims struct {
-			Purpose string                      `json:"purpose"`
-			Iat     int64                       `json:"iat"`
-			Binding replay.SnapshotQueryBinding `json:"binding"`
-		}
-		if err = json.Unmarshal(payload, &claims); err != nil {
+		expected := snapshotIdentityPayload{"housegate-statement-v3", id.Iat, f.Input.Binding, root}
+		if err = checkSnapshotIdentityPayload(payload, expected); err != nil {
 			t.Fatal(err)
-		}
-		if claims.Purpose != "housegate-statement-v3" || claims.Iat != id.Iat || claims.Binding != f.Input.Binding {
-			t.Fatal("bound payload")
 		}
 		sig, err := base64.RawURLEncoding.DecodeString(pieces[2])
 		if err != nil || len(sig) != 65 || sig[64] < 27 || sig[64] > 28 {
@@ -370,6 +363,92 @@ func TestSnapshotQueryValidSignatureIdentityFixture(t *testing.T) {
 			got := throughPB(t, request, wire.GetSnapshotQueryStatusRequestToPB, wire.GetSnapshotQueryStatusRequestFromPB)
 			if got != request {
 				t.Fatal("lookup conflict/retry identity lost")
+			}
+		})
+	}
+}
+
+// The full ordered A2 payload is frozen independently of signature validity.
+type snapshotIdentityPayload struct {
+	Purpose   string                      `json:"purpose"`
+	Iat       int64                       `json:"iat"`
+	Binding   replay.SnapshotQueryBinding `json:"binding"`
+	InputRoot string                      `json:"input_root"`
+}
+
+func checkSnapshotIdentityPayload(payload []byte, expected snapshotIdentityPayload) error {
+	canonical, err := json.Marshal(expected)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(payload, canonical) {
+		return fmt.Errorf("complete four-field canonical payload differs (purpose, iat, binding, input_root)")
+	}
+	return nil
+}
+
+func TestSnapshotQueryIdentityPayloadRejectsIncompleteOrNoncanonical(t *testing.T) {
+	raw, err := os.ReadFile("testdata/snapshot_query_identity_v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Input     replay.SnapshotQueryInput
+		InputRoot string `json:"input_root"`
+	}
+	if err = json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	root, err := replay.SnapshotQueryInputRoot(fixture.Input)
+	rootEqual(t, fixture.InputRoot, root, err)
+	expected := snapshotIdentityPayload{"housegate-statement-v3", 1789550000, fixture.Input.Binding, root}
+	canonical, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing, _ := json.Marshal(struct {
+		Purpose string                      `json:"purpose"`
+		Iat     int64                       `json:"iat"`
+		Binding replay.SnapshotQueryBinding `json:"binding"`
+	}{expected.Purpose, expected.Iat, expected.Binding})
+	wrong := expected
+	wrong.InputRoot = "0xwrong"
+	wrongBytes, _ := json.Marshal(wrong)
+	reordered, _ := json.Marshal(struct {
+		Iat       int64                       `json:"iat"`
+		Purpose   string                      `json:"purpose"`
+		Binding   replay.SnapshotQueryBinding `json:"binding"`
+		InputRoot string                      `json:"input_root"`
+	}{expected.Iat, expected.Purpose, expected.Binding, expected.InputRoot})
+	extra := append(append([]byte{}, canonical[:len(canonical)-1]...), []byte(`,"extra":0}`)...)
+	key, err := crypto.HexToECDSA(strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, payload := range map[string][]byte{"missing input_root": missing, "wrong input_root": wrongBytes, "reordered fields": reordered, "extra field": extra} {
+		t.Run(name, func(t *testing.T) {
+			signing := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256K","typ":"JWT"}`)) + "." + base64.RawURLEncoding.EncodeToString(payload)
+			digest := crypto.Keccak256([]byte(signing))
+			sig, err := crypto.Sign(digest, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pub, err := crypto.SigToPub(digest, sig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.ToLower(crypto.PubkeyToAddress(*pub).Hex()) != fixture.Input.Binding.ClientAccount || !crypto.VerifySignature(crypto.FromECDSAPub(pub), digest, sig[:64]) {
+				t.Fatal("negative signature must remain cryptographically valid")
+			}
+			// Match the compact transport profile, then inspect its actual decoded bytes.
+			sig[64] += 27
+			token := signing + "." + base64.RawURLEncoding.EncodeToString(sig)
+			decoded, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = checkSnapshotIdentityPayload(decoded, expected); err == nil {
+				t.Fatal("valid signature admitted malformed complete payload")
 			}
 		})
 	}
