@@ -6,6 +6,7 @@ go_library(
         "command.go",
         "convert.go",
         "dispatch.go",
+        "snapshot_query.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/wire",
     visibility = ["//visibility:public"],
@@ -13,7 +14,9 @@ go_library(
         "//:arbiter-core",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/replay",
+        "@org_golang_google_protobuf//encoding/protowire",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 
@@ -22,11 +25,16 @@ go_test(
     srcs = [
         "convert_test.go",
         "dispatch_from_test.go",
+        "snapshot_query_test.go",
         "wire_test.go",
     ],
     embed = [":wire"],
     deps = [
         "//:arbiter-core",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/replay",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )

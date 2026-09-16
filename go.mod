@@ -11,7 +11,7 @@ replace github.com/ClickHouse/clickhouse-go/v2 => github.com/sentioxyz/clickhous
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/ethereum/go-ethereum v1.17.2
-	github.com/sentioxyz/arbiter-proto v0.6.0
+	github.com/sentioxyz/arbiter-proto v0.6.1-0.20260916151404-0bfd561d5f7a
 	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 )
@@ -28,7 +28,7 @@ require (
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
-	github.com/housegate/housegate v0.12.0
+	github.com/housegate/housegate v0.13.2-0.20260916150330-7ed1259a702f
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect
