@@ -203,13 +203,15 @@ func safePartMappingToPB(v arbiter.SafePartMapping) *pb.SafePartMapping {
 func PromotionAckFromPB(m *pb.PromotionAck) arbiter.PromotionAck {
 	return arbiter.PromotionAck{NodeID: m.GetNodeId(), PromotionSeq: m.GetPromotionSeq(), TableID: m.GetTableId(), PartitionID: m.GetPartitionId(),
 		PostPartitionCommitment: m.GetPostPartitionCommitment(), Parts: mapSlice(m.GetParts(), safePartMappingFromPB),
-		Applied: m.GetApplied(), Detail: m.GetDetail()}
+		SafePartitionParts: mapSlice(m.GetSafePartitionParts(), safePartMappingFromPB),
+		Applied:            m.GetApplied(), Detail: m.GetDetail()}
 }
 
 func PromotionAckToPB(v arbiter.PromotionAck) *pb.PromotionAck {
 	return &pb.PromotionAck{NodeId: v.NodeID, PromotionSeq: v.PromotionSeq, TableId: v.TableID, PartitionId: v.PartitionID,
 		PostPartitionCommitment: v.PostPartitionCommitment, Parts: mapSlice(v.Parts, safePartMappingToPB),
-		Applied: v.Applied, Detail: v.Detail}
+		SafePartitionParts: mapSlice(v.SafePartitionParts, safePartMappingToPB),
+		Applied:            v.Applied, Detail: v.Detail}
 }
 
 func CleanupAckFromPB(m *pb.CleanupAck) arbiter.CleanupAck {

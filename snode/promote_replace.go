@@ -20,30 +20,30 @@ import (
 // the pinned DDL and its drift detection.
 var ErrPromoteTableMissing = errors.New("snode: hg_promote table is missing; run the role with a create-capable schema source so EnsureProtocolTables can build it")
 
-func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafePartition) (string, []arbiter.SafePartMapping, error) {
+func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafePartition) (string, safePartMappings, error) {
 	if r.d.Conn == nil {
-		return "", nil, fmt.Errorf("snode: clickhouse connection is required")
+		return "", safePartMappings{}, fmt.Errorf("snode: clickhouse connection is required")
 	}
 	sch, err := r.schemaFor(cmd.TableID)
 	if err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	table := CHTableName(cmd.TableID)
 	safe := r.cfg.SafeDatabase + "." + table
 	promote := r.cfg.PromoteDatabase + "." + table
 	partition, err := quotePartition(sch, cmd.PartitionID)
 	if err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	if err := r.prepareShadow(ctx, cmd, sch, table, safe, promote, partition); err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	safeBefore, err := activeParts(ctx, r.d.Conn, r.cfg.SafeDatabase, table)
 	if err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	if err := r.attachCandidateParts(ctx, cmd, sch, table, promote, partition); err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	// Shadow closure gate (§8.2 / spec §5b): the shadow must hold EXACTLY
 	// base + candidates before it is published. Re-scan the shadow's target
@@ -58,30 +58,30 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 	// and attaches only the candidates — the gate then passes (self-healing).
 	post, err := lthashCombineHexAll(cmd.BasePartitionRoot, candidateHashes(cmd))
 	if err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	shadowRoot, err := r.partitionContentRoot(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID)
 	if err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	if shadowRoot != post {
 		_ = r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition)
-		return "", nil, fmt.Errorf("shadow closure mismatch: promote partition root %s != base+candidates %s (unverified or missing part in shadow)", shadowRoot, post)
+		return "", safePartMappings{}, fmt.Errorf("shadow closure mismatch: promote partition root %s != base+candidates %s (unverified or missing part in shadow)", shadowRoot, post)
 	}
 	safeBefore = partsInLogicalPartition(safeBefore, sch, cmd.PartitionID)
 	intent := promotionIntentFor(cmd, post, safeBefore)
 	if err := r.state.BeginPromotion(partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}, intent); err != nil {
-		return "", nil, fmt.Errorf("journal promotion intent: %w", err)
+		return "", safePartMappings{}, fmt.Errorf("journal promotion intent: %w", err)
 	}
 	if err := r.exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLACE PARTITION %s FROM %s", safe, partition, promote)); err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	if err := r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition); err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
-	mappings, err := r.safeMappings(ctx, safe, table, sch, safeBefore, cmd.CandidateParts)
+	mappings, err := r.safeMappings(ctx, safe, table, sch, cmd, post)
 	if err != nil {
-		return "", nil, err
+		return "", safePartMappings{}, err
 	}
 	return post, mappings, nil
 }
@@ -90,45 +90,45 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 // current content root distinguishes "intent persisted, REPLACE not run" from
 // "REPLACE visible, final ACK state not persisted" even when a content-neutral
 // part rewrite changed the base inventory. In the latter case the persisted
-// pre-publication inventory derives mappings without publishing candidates twice.
-func (r *Role) reconcilePromotionIntent(ctx context.Context, cmd arbiter.PromoteSafePartition, intent promotionIntent) (string, []arbiter.SafePartMapping, bool, error) {
+// complete current partition derives mappings without publishing candidates twice.
+func (r *Role) reconcilePromotionIntent(ctx context.Context, cmd arbiter.PromoteSafePartition, intent promotionIntent) (string, safePartMappings, bool, error) {
 	post, err := lthashCombineHexAll(cmd.BasePartitionRoot, candidateHashes(cmd))
 	if err != nil {
-		return "", nil, false, err
+		return "", safePartMappings{}, false, err
 	}
 	if !promotionIntentMatchesCommand(intent, cmd, post) {
-		return "", nil, false, fmt.Errorf("unresolved promotion intent seq %d does not match command seq %d", intent.PromotionSeq, cmd.PromotionSeq)
+		return "", safePartMappings{}, false, fmt.Errorf("unresolved promotion intent seq %d does not match command seq %d", intent.PromotionSeq, cmd.PromotionSeq)
 	}
 	sch, err := r.schemaFor(cmd.TableID)
 	if err != nil {
-		return "", nil, false, err
+		return "", safePartMappings{}, false, err
 	}
 	table := CHTableName(cmd.TableID)
 	safe := r.cfg.SafeDatabase + "." + table
 	partition, err := quotePartition(sch, cmd.PartitionID)
 	if err != nil {
-		return "", nil, false, err
+		return "", safePartMappings{}, false, err
 	}
 	currentRoot, err := r.partitionContentRoot(ctx, r.cfg.SafeDatabase, table, sch, cmd.PartitionID)
 	if err != nil {
-		return "", nil, false, err
+		return "", safePartMappings{}, false, err
 	}
 	baseRoot, err := lthashCombineHexAll(cmd.BasePartitionRoot, nil)
 	if err != nil {
-		return "", nil, false, err
+		return "", safePartMappings{}, false, err
 	}
 	if currentRoot == baseRoot {
-		return "", nil, false, nil
+		return "", safePartMappings{}, false, nil
 	}
 	if currentRoot != post {
-		return "", nil, false, fmt.Errorf("safe partition after unresolved promotion has root %s, expected base %s or post %s", currentRoot, baseRoot, post)
+		return "", safePartMappings{}, false, fmt.Errorf("safe partition after unresolved promotion has root %s, expected base %s or post %s", currentRoot, baseRoot, post)
 	}
 	if err := r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition); err != nil {
-		return "", nil, false, err
+		return "", safePartMappings{}, false, err
 	}
-	mappings, err := r.safeMappings(ctx, safe, table, sch, partInfosFromPromotionSnapshot(intent.SafePartsBefore), cmd.CandidateParts)
+	mappings, err := r.safeMappings(ctx, safe, table, sch, cmd, post)
 	if err != nil {
-		return "", nil, false, err
+		return "", safePartMappings{}, false, err
 	}
 	return post, mappings, true, nil
 }

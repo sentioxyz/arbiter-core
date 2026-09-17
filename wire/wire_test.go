@@ -91,7 +91,11 @@ func TestRoundTrip_PromotionAndManifest(t *testing.T) {
 		AuthorityJWS: "x.y.z"}})
 	mustRoundTrip(t, Command{RecordPromotionAck: &RecordPromotionAck{Ack: arbiter.PromotionAck{
 		NodeID: "s1", PromotionSeq: 1, TableID: "db.t", PartitionID: "p0", PostPartitionCommitment: "0xpost",
-		Parts: []arbiter.SafePartMapping{{PartRowLtHash: "0xffee", SafePartName: "all_2_2_0", PartPhysHash: "0x99"}}, Applied: true, Detail: "ok"}}})
+		Parts: []arbiter.SafePartMapping{{PartRowLtHash: "0xffee", SafePartName: "all_2_2_0", PartPhysHash: "0x99"}},
+		SafePartitionParts: []arbiter.SafePartMapping{
+			{PartRowLtHash: "0xaabb", SafePartName: "all_3_3_0", PartPhysHash: "0x88"},
+			{PartRowLtHash: "0xffee", SafePartName: "all_2_2_0", PartPhysHash: "0x99"},
+		}, Applied: true, Detail: "ok"}}})
 	mustRoundTrip(t, Command{ScheduleUnsafeCleanup: &ScheduleUnsafeCleanup{
 		Cleanup: arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "p0", PromotionSeq: 1, Parts: []arbiter.PartRef{{TableID: "db.t", PartitionID: "p0", PartRowLtHash: "0xffee"}}}, AuthorityJWS: "x.y.z"}})
 	mustRoundTrip(t, Command{RecordCleanupAck: &RecordCleanupAck{Ack: arbiter.CleanupAck{NodeID: "s1", PromotionSeq: 1, TableID: "db.t", PartitionID: "p0"}}})

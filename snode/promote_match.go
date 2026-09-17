@@ -4,64 +4,84 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/chexec"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
 )
 
-func (r *Role) safeMappings(ctx context.Context, safe, table string, sch payloadexec.TableSchema, before []partInfo, candidates []arbiter.PartRef) ([]arbiter.SafePartMapping, error) {
-	if len(candidates) == 0 {
-		return nil, nil
-	}
-	partitionID := candidates[0].PartitionID
-	before = partsInLogicalPartition(before, sch, partitionID)
+type safePartMappings struct {
+	Candidates []arbiter.SafePartMapping
+	Partition  []arbiter.SafePartMapping
+}
+
+// safeMappings scans the whole replaced partition. REPLACE may rename every
+// old part as well as every candidate, so a before/after name diff cannot serve
+// as the next manifest's complete physical inventory.
+func (r *Role) safeMappings(ctx context.Context, safe, table string, sch payloadexec.TableSchema, cmd arbiter.PromoteSafePartition, post string) (safePartMappings, error) {
 	after, err := activeParts(ctx, r.d.Conn, r.cfg.SafeDatabase, table)
 	if err != nil {
-		return nil, err
+		return safePartMappings{}, err
 	}
-	after = partsInLogicalPartition(after, sch, partitionID)
-	newSafe := diffParts(before, after)
-	names := make([]string, 0, len(newSafe))
-	infoByName := make(map[string]partInfo, len(newSafe))
-	for _, p := range newSafe {
+	after = partsInLogicalPartition(after, sch, cmd.PartitionID)
+	names := make([]string, 0, len(after))
+	infoByName := make(map[string]partInfo, len(after))
+	for _, p := range after {
 		names = append(names, p.Name)
 		infoByName[p.Name] = p
 	}
 	scans, err := chexec.ScanParts(ctx, r.d.Conn, safe, sch, names)
 	if err != nil {
-		return nil, err
+		return safePartMappings{}, err
 	}
-	want := make(map[string]arbiter.PartRef, len(candidates))
-	for _, cp := range candidates {
-		if cp.PartRowLtHash == "" {
-			return nil, fmt.Errorf("candidate part %s has empty part_row_lthash", cp.PartName)
-		}
-		if _, ok := want[cp.PartRowLtHash]; ok {
-			return nil, fmt.Errorf("duplicate candidate part_row_lthash %s", cp.PartRowLtHash)
-		}
-		want[cp.PartRowLtHash] = cp
-	}
-	matches := make(map[string][]arbiter.SafePartMapping, len(want))
+	out := safePartMappings{Partition: make([]arbiter.SafePartMapping, 0, len(after))}
+	byHash := make(map[string]arbiter.SafePartMapping, len(after))
+	sum := lthash.New()
 	for _, scan := range scans {
-		cp, ok := want[scan.RowLtHash]
-		if !ok {
-			continue
+		info, ok := infoByName[scan.PartName]
+		if !ok || info.PhysHash == "" {
+			return safePartMappings{}, fmt.Errorf("safe scan returned an unknown or incomplete physical part %s", scan.PartName)
 		}
-		info := infoByName[scan.PartName]
-		matches[cp.PartRowLtHash] = append(matches[cp.PartRowLtHash], arbiter.SafePartMapping{
-			PartRowLtHash: cp.PartRowLtHash,
-			SafePartName:  scan.PartName,
-			PartPhysHash:  info.PhysHash,
-		})
+		delete(infoByName, scan.PartName)
+		h, err := parseAccumulatorHex(scan.RowLtHash)
+		if err != nil || scan.RowLtHash == "" {
+			return safePartMappings{}, fmt.Errorf("safe part %s has invalid row LtHash", scan.PartName)
+		}
+		key := accumulatorHex(h)
+		if _, dup := byHash[key]; dup {
+			return safePartMappings{}, fmt.Errorf("safe partition has duplicate part row LtHash %s", key)
+		}
+		mapping := arbiter.SafePartMapping{PartRowLtHash: key, SafePartName: scan.PartName, PartPhysHash: info.PhysHash}
+		byHash[key] = mapping
+		out.Partition = append(out.Partition, mapping)
+		sum.AddHash(h)
 	}
-	out := make([]arbiter.SafePartMapping, 0, len(candidates))
-	for _, cp := range candidates {
-		ms := matches[cp.PartRowLtHash]
-		if len(ms) != 1 {
-			return nil, fmt.Errorf("candidate part %s matched %d safe parts after REPLACE", cp.PartRowLtHash, len(ms))
+	if len(infoByName) != 0 {
+		return safePartMappings{}, fmt.Errorf("safe scan omitted %d active parts", len(infoByName))
+	}
+	expected, err := parseAccumulatorHex(post)
+	if err != nil || !sum.Equal(expected) {
+		return safePartMappings{}, fmt.Errorf("safe inventory closure differs from the promoted partition root")
+	}
+	seenCandidates := make(map[string]bool, len(cmd.CandidateParts))
+	for _, cp := range cmd.CandidateParts {
+		h, err := parseAccumulatorHex(cp.PartRowLtHash)
+		if err != nil || cp.PartRowLtHash == "" {
+			return safePartMappings{}, fmt.Errorf("candidate part %s has invalid part_row_lthash", cp.PartName)
 		}
-		out = append(out, ms[0])
+		key := accumulatorHex(h)
+		if seenCandidates[key] {
+			return safePartMappings{}, fmt.Errorf("duplicate candidate part_row_lthash %s", cp.PartRowLtHash)
+		}
+		seenCandidates[key] = true
+		mapping, ok := byHash[key]
+		if !ok {
+			return safePartMappings{}, fmt.Errorf("candidate part %s is absent from the safe partition after REPLACE", cp.PartRowLtHash)
+		}
+		// Preserve the command's content representation in the legacy field.
+		mapping.PartRowLtHash = cp.PartRowLtHash
+		out.Candidates = append(out.Candidates, mapping)
 	}
 	return out, nil
 }
