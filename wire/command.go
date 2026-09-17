@@ -71,6 +71,10 @@ type EvictNode struct {
 	NodeID string
 	Reason string
 }
+type UpdateConsensusParams struct {
+	Update       arbiter.ConsensusParamsUpdate
+	AuthorityJWS string
+}
 
 // Command is the decoded RaftCommand: exactly one field is non-nil.
 type Command struct {
@@ -91,6 +95,7 @@ type Command struct {
 	RegisterNode          *RegisterNode
 	MarkActive            *MarkActive
 	EvictNode             *EvictNode
+	UpdateConsensusParams *UpdateConsensusParams
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -172,6 +177,11 @@ func Encode(c Command) ([]byte, error) {
 		set++
 		out.Cmd = &pb.RaftCommand_EvictNode{EvictNode: &pb.EvictNodeCmd{NodeId: c.EvictNode.NodeID, Reason: c.EvictNode.Reason}}
 	}
+	if c.UpdateConsensusParams != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_UpdateConsensusParams{UpdateConsensusParams: &pb.UpdateConsensusParamsCmd{
+			Update: ConsensusParamsUpdateToPB(c.UpdateConsensusParams.Update), AuthorityJws: c.UpdateConsensusParams.AuthorityJWS}}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -226,6 +236,9 @@ func Decode(b []byte) (Command, error) {
 		return Command{MarkActive: &MarkActive{NodeID: cmd.MarkActive.GetNodeId()}}, nil
 	case *pb.RaftCommand_EvictNode:
 		return Command{EvictNode: &EvictNode{NodeID: cmd.EvictNode.GetNodeId(), Reason: cmd.EvictNode.GetReason()}}, nil
+	case *pb.RaftCommand_UpdateConsensusParams:
+		return Command{UpdateConsensusParams: &UpdateConsensusParams{
+			Update: ConsensusParamsUpdateFromPB(cmd.UpdateConsensusParams.GetUpdate()), AuthorityJWS: cmd.UpdateConsensusParams.GetAuthorityJws()}}, nil
 	default:
 		return Command{}, fmt.Errorf("wire: RaftCommand has no command set")
 	}

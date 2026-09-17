@@ -18,9 +18,10 @@ type jwsHeader struct {
 	Typ string `json:"typ"`
 }
 
-// Signer holds the Arbiter authority secp256k1 key. The key is provisioned
-// to every Raft node but USED only by the verified leader (design §8.1,
-// §10.2) — that discipline lives in the orchestrator, not here.
+// Signer holds an Arbiter authority secp256k1 key. Runtime promotion/cleanup
+// signing is performed only by the verified leader (design §8.1, §10.2), as
+// enforced by the orchestrator. Administration clients may use an authorized
+// key to sign a consensus-parameter transition independently of that runtime.
 type Signer struct {
 	privateKey *ecdsa.PrivateKey
 	address    string
