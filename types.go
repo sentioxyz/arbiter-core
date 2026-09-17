@@ -239,8 +239,11 @@ type PromotionAck struct {
 	PartitionID             string            `json:"partition_id"`
 	PostPartitionCommitment string            `json:"post_partition_commitment"`
 	Parts                   []SafePartMapping `json:"parts"`
-	Applied                 bool              `json:"applied"`
-	Detail                  string            `json:"detail,omitempty"`
+	// SafePartitionParts is the complete active inventory after REPLACE,
+	// including previously-safe parts whose physical names may change.
+	SafePartitionParts []SafePartMapping `json:"safe_partition_parts,omitempty"`
+	Applied            bool              `json:"applied"`
+	Detail             string            `json:"detail,omitempty"`
 }
 
 // CleanupAck acknowledges a scheduled unsafe cleanup.
