@@ -1,9 +1,9 @@
 // Package authority implements the Arbiter's secp256k1 command-signing
-// scheme (design §8.1): the single authority key (shared across Raft nodes,
-// leader-only use) signs PromoteSafePartition / UnsafeCleanup as a JWS whose
-// payload is purpose-claim domain-separated from housegate's query and
-// peer-login JWS families; SNode authorizes by address recovery against an
-// allowlist (the pkg/auth EthValidator pattern).
+// scheme (design §8.1). The leader signs PromoteSafePartition / UnsafeCleanup
+// for SNode dispatch; administrators sign ConsensusParamsUpdate transitions
+// under a separate versioned purpose. Both JWS families are domain-separated
+// from housegate's query and peer-login tokens and authorize by address
+// recovery against the applicable allowlist (the pkg/auth EthValidator pattern).
 //
 // Seam-shape note: design §3.4 sketches PromotionSigner/PromotionValidator
 // with raw signature bytes ("Sign(cmd) (sig []byte, err)"). This package
@@ -41,6 +41,12 @@ type JWSCommandPayload struct {
 	Iat     int64  `json:"iat"`
 	Purpose string `json:"purpose"`
 	CmdHash string `json:"cmd_hash"`
+	// Context is carried by new promotion/cleanup audit tokens. Legacy
+	// tokens omit all three fields. The pointer preserves explicit epoch
+	// zero so snapshot audit can distinguish it from an absent legacy field.
+	NetworkID         string  `json:"network_id,omitempty"`
+	GenesisSnapshotID string  `json:"genesis_snapshot_id,omitempty"`
+	AuthorityEpoch    *uint64 `json:"authority_epoch,omitempty"`
 }
 
 // PromoteCommandHash is the canonical cmd-hash entry point for a

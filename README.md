@@ -11,8 +11,8 @@ named `arbiter` so domain types retain concise names such as
 
 | Package | Purpose |
 |---|---|
-| root | Canonical statement, result-claim, promotion, cleanup, and node types. |
-| `authority` | Domain-separated promotion and cleanup signing and validation. |
+| root | Canonical statement, result-claim, promotion, cleanup, consensus-update, and node types. |
+| `authority` | Domain-separated promotion, cleanup, and consensus-update signing and validation. |
 | `wire` | The canonical Go ↔ `arbiter-proto` conversion and Raft command encoding. |
 | `dataplane` | Leader-aware Arbiter clients, subscriptions, manifests, and payload stores. |
 | `snode` | Durable storage-node intake, crash convergence, promotion, and cleanup runtime. |
@@ -130,3 +130,10 @@ Tags are the version ledger; no version file is maintained in the repository.
 series, minor releases of this module may evolve its Go interface; protocol
 field numbering and canonical signing forms remain guarded by conformance
 tests.
+
+Consensus-parameter updates use the canonical `arbiter.ConsensusParamsUpdate`
+and Raft command slot 18. `(*authority.Validator).VerifyConsensusParamsUpdate`
+supports deterministic replay without clock checks; use
+`AuthorizeConsensusParamsUpdate` only at live API boundaries. Both fail closed
+for an empty authority allowlist. See the [protocol specification](docs/specs/2026-09-17-consensus-parameter-updates.md)
+for signed preconditions, address normalization, and the all-voters upgrade gate.
