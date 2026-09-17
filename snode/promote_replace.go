@@ -193,17 +193,6 @@ func samePromotionSafeParts(before []promotionSafePart, current []partInfo) bool
 	return true
 }
 
-func partInfosFromPromotionSnapshot(parts []promotionSafePart) []partInfo {
-	out := make([]partInfo, 0, len(parts))
-	for _, p := range parts {
-		out = append(out, partInfo{
-			Name: p.Name, PartitionID: p.PartitionID,
-			PartitionValue: p.PartitionValue, PhysHash: p.PhysHash,
-		})
-	}
-	return out
-}
-
 // partitionContentRoot sums the row-LtHash of every active part in one logical
 // partition of db.table, giving the partition's physical content commitment.
 // It uses the same chexec.ScanParts row derivation as the executor, so the

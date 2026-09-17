@@ -158,6 +158,28 @@ func assertExactSafePartMappings(t *testing.T, ctx context.Context, role *Role, 
 	}
 }
 
+func assertCompleteSafeInventory(t *testing.T, ctx context.Context, role *Role, schema payloadexec.TableSchema, partitionID string, mappings []arbiter.SafePartMapping) {
+	t.Helper()
+	parts := partsInLogicalPartition(activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, CHTableName(schema.TableID)), schema, partitionID)
+	if len(mappings) != len(parts) {
+		t.Fatalf("complete inventory has %d parts, active safe partition has %d", len(mappings), len(parts))
+	}
+	byName := make(map[string]partInfo, len(parts))
+	for _, part := range parts {
+		byName[part.Name] = part
+	}
+	for _, mapping := range mappings {
+		part, ok := byName[mapping.SafePartName]
+		if !ok || part.PhysHash != mapping.PartPhysHash {
+			t.Fatalf("mapping is not an active safe part: %+v", mapping)
+		}
+		delete(byName, mapping.SafePartName)
+	}
+	if len(byName) != 0 {
+		t.Fatal("complete inventory omitted an active safe part")
+	}
+}
+
 func assertNoPromotePartition(t *testing.T, ctx context.Context, role *Role, schema payloadexec.TableSchema, partitionID string) {
 	t.Helper()
 	parts := activePartsMust(t, ctx, role.d.Conn, role.cfg.PromoteDatabase, CHTableName(schema.TableID))
