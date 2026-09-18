@@ -10,6 +10,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay"
 	"github.com/housegate/housegate/pkg/replay/chexec"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/snapshotquery"
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
@@ -21,10 +22,16 @@ func NewReplayCore(cfg Config, conn clickhouse.Conn, manifests replay.SnapshotSt
 	if err != nil {
 		return nil, fmt.Errorf("verifier signer: %w", err)
 	}
+	payload := payloadexec.NewWithMaterializer(cfg.NetworkID, chexec.NewMaterializer(cfg.NetworkID, conn), cfg.Tables...)
+	// Query routes stay empty so the snapshot-query lane remains default-off.
+	dispatcher, err := snapshotquery.NewCompositeExecutor(payload, nil)
+	if err != nil {
+		return nil, fmt.Errorf("verifier dispatcher: %w", err)
+	}
 	return &replay.Verifier{
 		Snapshots:    manifests,
 		Payloads:     payloads,
-		Executor:     payloadexec.NewWithMaterializer(cfg.NetworkID, chexec.NewMaterializer(cfg.NetworkID, conn), cfg.Tables...),
+		Executor:     dispatcher,
 		Signer:       signer,
 		SchemaHashes: tableSchemaHashes{networkID: cfg.NetworkID, tables: cfg.Tables},
 	}, nil
