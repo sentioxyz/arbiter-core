@@ -40,6 +40,7 @@ type ArtifactDispositionActionV1 struct {
 	CloseUse          *ArtifactDispositionCloseUseV1
 	OpenChallenge     *ArtifactDispositionOpenChallengeV1
 	ResolveObligation *ArtifactDispositionResolveObligationV1
+	GrantReservation  *ArtifactDispositionGrantReservationV1
 }
 
 // canonicalSafeSnapshotManifest deliberately does not reuse replay's JSON
@@ -240,6 +241,10 @@ func (v ArtifactDispositionActionV1) MarshalJSON() ([]byte, error) {
 			Attestation canonicalSnapshotQueryAttestation `json:"attestation"`
 			ReplayUse   ArtifactDispositionUseV1          `json:"replay_use"`
 		}{Pin: o.Pin, Origin: o.Origin, Attestation: canonicalAttestation(o.Attestation), ReplayUse: o.ReplayUse}})
+	case v.GrantReservation != nil:
+		return json.Marshal(struct {
+			GrantReservation *ArtifactDispositionGrantReservationV1 `json:"grant_reservation"`
+		}{v.GrantReservation})
 	default:
 		return json.Marshal(struct {
 			ResolveObligation *ArtifactDispositionResolveObligationV1 `json:"resolve_obligation"`
@@ -334,6 +339,16 @@ type ArtifactDispositionOpenChallengeV1 struct {
 
 type ArtifactDispositionResolveObligationV1 struct {
 	ObligationSeq uint64 `json:"obligation_seq"`
+}
+
+// ArtifactDispositionGrantReservationV1 is deliberately limited to the
+// caller-owned, immutable query identity. Reservation IDs, fencing, pins,
+// profiles, assignments, obligations, capacity and allocator/barrier
+// decisions are server-owned transition results and have no wire fields.
+type ArtifactDispositionGrantReservationV1 struct {
+	ClientAccount        string `json:"client_account"`
+	StatementID          string `json:"statement_id"`
+	ControlBindingDigest string `json:"control_binding_digest"`
 }
 
 const artifactDispositionCommandDomain = "artifact-disposition-command-v1"
@@ -502,6 +517,10 @@ func ArtifactDispositionActionToPB(v ArtifactDispositionActionV1) *pb.ArtifactDi
 			Attestation: SnapshotQueryAttestationToPB(o.Attestation), ReplayUse: ArtifactDispositionUseToPB(o.ReplayUse)}}
 	case v.ResolveObligation != nil:
 		out.Action = &pb.ArtifactDispositionActionV1_ResolveObligation{ResolveObligation: &pb.ArtifactDispositionResolveObligationV1{ObligationSeq: v.ResolveObligation.ObligationSeq}}
+	case v.GrantReservation != nil:
+		out.Action = &pb.ArtifactDispositionActionV1_GrantReservation{GrantReservation: &pb.ArtifactDispositionGrantReservationV1{
+			ClientAccount: v.GrantReservation.ClientAccount, StatementId: v.GrantReservation.StatementID,
+			ControlBindingDigest: v.GrantReservation.ControlBindingDigest}}
 	}
 	return out
 }
@@ -547,6 +566,10 @@ func ArtifactDispositionActionFromPB(m *pb.ArtifactDispositionActionV1) Artifact
 			Attestation: SnapshotQueryAttestationFromPB(o.GetAttestation()), ReplayUse: ArtifactDispositionUseFromPB(o.GetReplayUse())}}
 	case *pb.ArtifactDispositionActionV1_ResolveObligation:
 		return ArtifactDispositionActionV1{ResolveObligation: &ArtifactDispositionResolveObligationV1{ObligationSeq: a.ResolveObligation.GetObligationSeq()}}
+	case *pb.ArtifactDispositionActionV1_GrantReservation:
+		return ArtifactDispositionActionV1{GrantReservation: &ArtifactDispositionGrantReservationV1{
+			ClientAccount: a.GrantReservation.GetClientAccount(), StatementID: a.GrantReservation.GetStatementId(),
+			ControlBindingDigest: a.GrantReservation.GetControlBindingDigest()}}
 	default:
 		return ArtifactDispositionActionV1{}
 	}
@@ -697,6 +720,9 @@ func countArtifactDispositionActions(v ArtifactDispositionActionV1) int {
 		n++
 	}
 	if v.ResolveObligation != nil {
+		n++
+	}
+	if v.GrantReservation != nil {
 		n++
 	}
 	return n

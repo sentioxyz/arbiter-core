@@ -11,7 +11,7 @@ replace github.com/ClickHouse/clickhouse-go/v2 => github.com/sentioxyz/clickhous
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/ethereum/go-ethereum v1.17.2
-	github.com/sentioxyz/arbiter-proto v0.7.2-0.20260918144306-a0df40388d5a
+	github.com/sentioxyz/arbiter-proto v0.7.2-0.20260918232855-1ac937bd4aaa
 	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 )
