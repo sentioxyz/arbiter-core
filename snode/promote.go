@@ -23,6 +23,27 @@ func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jw
 
 	if cmd.PromotionSeq <= r.state.Watermark(k) {
 		if ack, ok := r.state.LastAck(k); ok && ack.PromotionSeq == cmd.PromotionSeq {
+			// A pre-upgrade ACK may be durable locally but not yet consumed by
+			// Arbiter. Reconstruct its complete physical inventory without
+			// REPLACE or subtracting the candidates from UnpromotedSums again.
+			if ack.Applied && len(ack.SafePartitionParts) == 0 {
+				if err := legacyAckMatchesCommand(ack, cmd); err != nil {
+					return fmt.Errorf("refresh legacy promotion ack: %w", err)
+				}
+				sch, err := r.schemaFor(cmd.TableID)
+				if err != nil {
+					return err
+				}
+				table := CHTableName(cmd.TableID)
+				mappings, err := r.safeMappings(ctx, r.cfg.SafeDatabase+"."+table, table, sch, cmd, ack.PostPartitionCommitment)
+				if err != nil {
+					return fmt.Errorf("refresh legacy promotion ack: %w", err)
+				}
+				ack.Parts, ack.SafePartitionParts = mappings.Candidates, mappings.Partition
+				if err := r.state.RecordRefreshedAck(k, ack); err != nil {
+					return fmt.Errorf("journal refreshed promotion ack: %w", err)
+				}
+			}
 			return r.sendAck(ctx, ack)
 		}
 		r.d.Logger.Warn("stale promotion below watermark with no stored ack", "seq", cmd.PromotionSeq)
@@ -58,11 +79,41 @@ func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jw
 	return r.finishAppliedPromotion(ctx, k, cmd, post, mappings)
 }
 
-func (r *Role) finishAppliedPromotion(ctx context.Context, k partitionKey, cmd arbiter.PromoteSafePartition, post string, mappings []arbiter.SafePartMapping) error {
+func legacyAckMatchesCommand(ack arbiter.PromotionAck, cmd arbiter.PromoteSafePartition) error {
+	if ack.TableID != cmd.TableID || ack.PartitionID != cmd.PartitionID || ack.PromotionSeq != cmd.PromotionSeq {
+		return fmt.Errorf("persisted ACK identity differs from retried command")
+	}
+	if len(ack.Parts) != len(cmd.CandidateParts) {
+		return fmt.Errorf("persisted ACK candidate set differs from retried command")
+	}
+	hashes := make(map[string]bool, len(ack.Parts))
+	for _, part := range ack.Parts {
+		h, err := parseAccumulatorHex(part.PartRowLtHash)
+		if err != nil || part.PartRowLtHash == "" || hashes[accumulatorHex(h)] {
+			return fmt.Errorf("persisted ACK has invalid or duplicate candidate hashes")
+		}
+		hashes[accumulatorHex(h)] = true
+	}
+	for _, part := range cmd.CandidateParts {
+		h, err := parseAccumulatorHex(part.PartRowLtHash)
+		if err != nil || part.PartRowLtHash == "" || !hashes[accumulatorHex(h)] {
+			return fmt.Errorf("persisted ACK candidate set differs from retried command")
+		}
+		delete(hashes, accumulatorHex(h))
+	}
+	post, err := lthashCombineHexAll(cmd.BasePartitionRoot, candidateHashes(cmd))
+	if err != nil || post != ack.PostPartitionCommitment {
+		return fmt.Errorf("persisted ACK post root differs from retried command closure")
+	}
+	return nil
+}
+
+func (r *Role) finishAppliedPromotion(ctx context.Context, k partitionKey, cmd arbiter.PromoteSafePartition, post string, mappings safePartMappings) error {
 	ack := arbiter.PromotionAck{
 		NodeID: r.cfg.NodeID, PromotionSeq: cmd.PromotionSeq,
 		TableID: cmd.TableID, PartitionID: cmd.PartitionID,
-		PostPartitionCommitment: post, Applied: true, Parts: mappings,
+		PostPartitionCommitment: post, Applied: true, Parts: mappings.Candidates,
+		SafePartitionParts: mappings.Partition,
 	}
 	hashes := candidateHashes(cmd)
 	unsafeParts := make([]string, 0, len(cmd.CandidateParts))

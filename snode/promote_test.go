@@ -9,12 +9,57 @@ import (
 	"testing"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
+
+func TestLegacyAckMatchesCommandRejectsChangedHistory(t *testing.T) {
+	h := lthash.New()
+	h.Add([]byte("candidate"))
+	hash := accumulatorHex(h)
+	base := arbiter.PromoteSafePartition{TableID: "db.t", PartitionID: "p0", PromotionSeq: 2,
+		CandidateParts: []arbiter.PartRef{{TableID: "db.t", PartitionID: "p0", PartRowLtHash: hash}}}
+	good := arbiter.PromotionAck{TableID: "db.t", PartitionID: "p0", PromotionSeq: 2,
+		Applied: true, PostPartitionCommitment: hash, Parts: []arbiter.SafePartMapping{{PartRowLtHash: hash}}}
+	if err := legacyAckMatchesCommand(good, base); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		edit func(*arbiter.PromotionAck, *arbiter.PromoteSafePartition)
+	}{
+		{"table", func(a *arbiter.PromotionAck, _ *arbiter.PromoteSafePartition) { a.TableID = "other" }},
+		{"partition", func(a *arbiter.PromotionAck, _ *arbiter.PromoteSafePartition) { a.PartitionID = "other" }},
+		{"sequence", func(a *arbiter.PromotionAck, _ *arbiter.PromoteSafePartition) { a.PromotionSeq++ }},
+		{"post root", func(a *arbiter.PromotionAck, _ *arbiter.PromoteSafePartition) {
+			a.PostPartitionCommitment = accumulatorHexZero()
+		}},
+		{"command base", func(_ *arbiter.PromotionAck, c *arbiter.PromoteSafePartition) { c.BasePartitionRoot = hash }},
+		{"missing candidate", func(a *arbiter.PromotionAck, _ *arbiter.PromoteSafePartition) { a.Parts = nil }},
+		{"changed candidate", func(a *arbiter.PromotionAck, _ *arbiter.PromoteSafePartition) {
+			a.Parts[0].PartRowLtHash = accumulatorHexZero()
+		}},
+		{"malformed candidate", func(a *arbiter.PromotionAck, _ *arbiter.PromoteSafePartition) { a.Parts[0].PartRowLtHash = "malformed" }},
+		{"duplicate candidate", func(a *arbiter.PromotionAck, c *arbiter.PromoteSafePartition) {
+			a.Parts = append(a.Parts, a.Parts[0])
+			c.CandidateParts = append(c.CandidateParts, c.CandidateParts[0])
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ack, cmd := good, base
+			ack.Parts = append([]arbiter.SafePartMapping(nil), good.Parts...)
+			cmd.CandidateParts = append([]arbiter.PartRef(nil), base.CandidateParts...)
+			tt.edit(&ack, &cmd)
+			if err := legacyAckMatchesCommand(ack, cmd); err == nil {
+				t.Fatal("changed logical history accepted")
+			}
+		})
+	}
+}
 
 func TestPrepareShadow_FailsClearlyWhenPromoteTableIsAbsent(t *testing.T) {
 	ctx := context.Background()
@@ -73,6 +118,7 @@ func TestHandlePromote_HappyPath(t *testing.T) {
 		t.Fatalf("ack: %+v", ack)
 	}
 	assertExactSafePartMappings(t, ctx, role, schema, part, ack.Parts)
+	assertCompleteSafeInventory(t, ctx, role, schema, part.PartitionID, ack.SafePartitionParts)
 	pk := partitionKey{Table: schema.TableID, Partition: part.PartitionID}
 	if got := role.state.Watermark(pk); got != 1 {
 		t.Fatalf("watermark = %d", got)
@@ -233,6 +279,63 @@ func TestHandlePromote_PostReplaceFailureRestartRetryConverges(t *testing.T) {
 		t.Fatalf("promotion acks after recovery = %+v", acks)
 	}
 	assertExactSafePartMappings(t, ctx, restarted, schema, second, acks[1].Parts)
+	assertCompleteSafeInventory(t, ctx, restarted, schema, second.PartitionID, acks[1].SafePartitionParts)
+	if len(acks[1].SafePartitionParts) != 2 {
+		t.Fatalf("second ACK must include old and new parts: %+v", acks[1].SafePartitionParts)
+	}
+	oldName := acks[0].Parts[0].SafePartName
+	for _, mapping := range acks[1].SafePartitionParts {
+		if mapping.PartRowLtHash == first.PartRowLtHash && mapping.SafePartName == oldName {
+			t.Fatalf("REPLACE should remap first part %s to its current physical name", oldName)
+		}
+	}
+	assertLegacyAckRefresh(t, ctx, restarted, claims, schema, secondCmd, secondJWS)
+}
+
+// Simulate an older binary that journaled the latest applied ACK before Arbiter
+// consumed it. A restart/retry must upgrade its inventory without republishing
+// the partition or consuming the candidate hashes a second time.
+func assertLegacyAckRefresh(t *testing.T, ctx context.Context, role *Role, claims *sourceClaimsFake, schema payloadexec.TableSchema, cmd arbiter.PromoteSafePartition, jws string) {
+	t.Helper()
+	pk := partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}
+	ack, ok := role.state.LastAck(pk)
+	if !ok {
+		t.Fatal("missing persisted ACK")
+	}
+	ack.SafePartitionParts = nil
+	root, snapshot := role.state.BaseRoot(pk)
+	if err := role.state.RecordAck(pk, cmd.PromotionSeq, ack, root, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	beforeState := cloneLocalState(role.state.s)
+	beforeParts := activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, CHTableName(cmd.TableID))
+	restarted, err := New(role.cfg, role.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err != nil {
+		t.Fatalf("refresh legacy ACK: %v", err)
+	}
+	afterParts := activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, CHTableName(cmd.TableID))
+	if !reflect.DeepEqual(beforeParts, afterParts) {
+		t.Fatal("legacy ACK refresh republished safe data")
+	}
+	afterState := cloneLocalState(restarted.state.s)
+	afterState.LastAcks = beforeState.LastAcks
+	if !reflect.DeepEqual(beforeState, afterState) {
+		t.Fatal("legacy ACK refresh changed logical state or cleanup bookkeeping")
+	}
+	acks := claims.promotionAcks()
+	refreshed := acks[len(acks)-1]
+	assertCompleteSafeInventory(t, ctx, restarted, schema, cmd.PartitionID, refreshed.SafePartitionParts)
+	again, err := New(role.cfg, role.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, ok := again.state.LastAck(pk)
+	if !ok || !reflect.DeepEqual(persisted, refreshed) {
+		t.Fatal("refreshed ACK did not survive restart")
+	}
 }
 
 func TestHandlePromote_PreReplaceIntentRecoversAfterContentNeutralSafeRewrite(t *testing.T) {

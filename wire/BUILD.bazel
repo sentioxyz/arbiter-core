@@ -4,6 +4,7 @@ go_library(
     name = "wire",
     srcs = [
         "command.go",
+        "consensus.go",
         "convert.go",
         "dispatch.go",
         "snapshot_query.go",
@@ -23,6 +24,8 @@ go_library(
 go_test(
     name = "wire_test",
     srcs = [
+        "consensus_snapshot_test.go",
+        "consensus_test.go",
         "convert_test.go",
         "dispatch_from_test.go",
         "snapshot_query_test.go",

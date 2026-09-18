@@ -193,6 +193,24 @@ func (st *stateStore) RecordAck(k partitionKey, seq uint64, ack arbiter.Promotio
 	return st.persistStateLocked(next)
 }
 
+// RecordRefreshedAck upgrades only the physical inventory of the latest ACK.
+// Unlike recording an applied promotion, it must not advance a watermark or
+// subtract candidate hashes/modify cleanup bookkeeping a second time.
+func (st *stateStore) RecordRefreshedAck(k partitionKey, ack arbiter.PromotionAck) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	ks := key(k.Table, k.Partition)
+	previous, ok := st.s.LastAcks[ks]
+	if !ok || previous.PromotionSeq != ack.PromotionSeq || st.s.Watermarks[ks] != ack.PromotionSeq ||
+		previous.NodeID != ack.NodeID || previous.TableID != ack.TableID || previous.PartitionID != ack.PartitionID ||
+		previous.PostPartitionCommitment != ack.PostPartitionCommitment || previous.Applied != ack.Applied {
+		return fmt.Errorf("cannot refresh a different promotion ACK")
+	}
+	next := cloneLocalState(st.s)
+	next.LastAcks[ks] = ack
+	return st.persistStateLocked(next)
+}
+
 func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arbiter.PromotionAck, newBaseRoot, newBaseSnapshotID string, partLtHashHexes, unsafePartNames []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()

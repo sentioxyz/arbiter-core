@@ -39,6 +39,7 @@ func assertMirror(t *testing.T, goValue any, msg proto.Message) {
 }
 
 func TestArbiterMirrorsMatchProto(t *testing.T) {
+	assertMirror(t, arbiter.ConsensusParamsUpdate{}, &pb.ConsensusParamsUpdate{})
 	assertMirror(t, arbiter.StatementID{}, &pb.StatementID{})
 	assertMirror(t, arbiter.StatementEnvelope{}, &pb.StatementEnvelopeV2{})
 	assertMirror(t, arbiter.CandidatePart{}, &pb.CandidatePart{})

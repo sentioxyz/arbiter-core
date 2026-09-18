@@ -22,11 +22,11 @@ type Validator struct {
 	// AllowedAddresses is the lowercase, 0x-prefixed authority allowlist.
 	// Empty allowlist fails closed — every command is rejected.
 	AllowedAddresses map[string]bool
-	// MaxTokenAge caps iat age and MUST be positive: a non-positive value
-	// fails closed (every token rejected), the same shape as the empty
+	// MaxTokenAge caps iat age in Authorize methods and MUST be positive:
+	// a non-positive value fails closed, the same shape as the empty
 	// allowlist — a zero value must never silently mean "no expiry".
 	// Promotion re-sends after failover re-sign, so short ages are safe
-	// (§10.2).
+	// (§10.2). Deterministic Verify methods deliberately ignore this value.
 	MaxTokenAge time.Duration
 }
 
@@ -50,10 +50,14 @@ func (v *Validator) AuthorizeCleanup(cmd arbiter.UnsafeCleanup, token string) (s
 }
 
 func (v *Validator) authorize(wantCmdHash, token string) (string, error) {
+	return v.verify(wantCmdHash, PromotionPurpose, token, true)
+}
+
+func (v *Validator) verify(wantCmdHash, wantPurpose, token string, enforceAge bool) (string, error) {
 	if len(v.AllowedAddresses) == 0 {
 		return "", fmt.Errorf("authority allowlist is empty: refusing to authorize any command")
 	}
-	if v.MaxTokenAge <= 0 {
+	if enforceAge && v.MaxTokenAge <= 0 {
 		return "", fmt.Errorf("authority validator: MaxTokenAge must be positive (fail-closed; a zero value would mean never-expiring tokens)")
 	}
 	parts := strings.Split(token, ".")
@@ -82,18 +86,20 @@ func (v *Validator) authorize(wantCmdHash, token string) (string, error) {
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 		return "", fmt.Errorf("authority token payload: %w", err)
 	}
-	if payload.Purpose != PromotionPurpose {
-		return "", fmt.Errorf("authority token: unexpected purpose %q (want %q)", payload.Purpose, PromotionPurpose)
+	if payload.Purpose != wantPurpose {
+		return "", fmt.Errorf("authority token: unexpected purpose %q (want %q)", payload.Purpose, wantPurpose)
 	}
 	if !strings.EqualFold(payload.CmdHash, wantCmdHash) {
 		return "", fmt.Errorf("authority token: command hash mismatch")
 	}
-	now := time.Now().Unix()
-	if payload.Iat-now > clockSkewToleranceSeconds {
-		return "", fmt.Errorf("authority token issued in the future")
-	}
-	if now-payload.Iat > int64(v.MaxTokenAge.Seconds())+clockSkewToleranceSeconds {
-		return "", fmt.Errorf("authority token expired")
+	if enforceAge {
+		now := time.Now().Unix()
+		if payload.Iat-now > clockSkewToleranceSeconds {
+			return "", fmt.Errorf("authority token issued in the future")
+		}
+		if now-payload.Iat > int64(v.MaxTokenAge.Seconds())+clockSkewToleranceSeconds {
+			return "", fmt.Errorf("authority token expired")
+		}
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {

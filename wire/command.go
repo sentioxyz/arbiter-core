@@ -73,6 +73,11 @@ type EvictNode struct {
 	Reason string
 }
 
+type UpdateConsensusParams struct {
+	Update       arbiter.ConsensusParamsUpdate
+	AuthorityJWS string
+}
+
 // Command is the decoded RaftCommand: exactly one field is non-nil.
 type Command struct {
 	SubmitStatement                  *SubmitStatement
@@ -92,6 +97,7 @@ type Command struct {
 	RegisterNode                     *RegisterNode
 	MarkActive                       *MarkActive
 	EvictNode                        *EvictNode
+	UpdateConsensusParams            *UpdateConsensusParams            `json:",omitempty"`
 	BeginSnapshotQuery               *BeginSnapshotQuery               `json:",omitempty"`
 	GrantSnapshotQuery               *GrantSnapshotQuery               `json:",omitempty"`
 	ReleaseSnapshotQuery             *ReleaseSnapshotQuery             `json:",omitempty"`
@@ -183,6 +189,11 @@ func Encode(c Command) ([]byte, error) {
 		set++
 		out.Cmd = &pb.RaftCommand_EvictNode{EvictNode: &pb.EvictNodeCmd{NodeId: c.EvictNode.NodeID, Reason: c.EvictNode.Reason}}
 	}
+	if c.UpdateConsensusParams != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_UpdateConsensusParams{UpdateConsensusParams: &pb.UpdateConsensusParamsCmd{
+			Update: ConsensusParamsUpdateToPB(c.UpdateConsensusParams.Update), AuthorityJws: c.UpdateConsensusParams.AuthorityJWS}}
+	}
 	if c.BeginSnapshotQuery != nil {
 		set++
 		out.Cmd = &pb.RaftCommand_BeginSnapshotQuery{BeginSnapshotQuery: BeginSnapshotQueryToPB(*c.BeginSnapshotQuery)}
@@ -239,6 +250,9 @@ func Decode(b []byte) (Command, error) {
 		return Command{}, fmt.Errorf("wire: unmarshal RaftCommand: %w", err)
 	}
 	switch cmd := in.GetCmd().(type) {
+	case *pb.RaftCommand_UpdateConsensusParams:
+		return Command{UpdateConsensusParams: &UpdateConsensusParams{
+			Update: ConsensusParamsUpdateFromPB(cmd.UpdateConsensusParams.GetUpdate()), AuthorityJWS: cmd.UpdateConsensusParams.GetAuthorityJws()}}, nil
 	case *pb.RaftCommand_BeginSnapshotQuery:
 		v := BeginSnapshotQueryFromPB(cmd.BeginSnapshotQuery)
 		return Command{BeginSnapshotQuery: &v}, nil

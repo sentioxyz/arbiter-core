@@ -228,6 +228,7 @@ func TestSnapshotQueryCommands(t *testing.T) {
 		{PublishExecutorProfileTransition: &PublishExecutorProfileTransition{}},
 		{RecordSnapshotArtifactReady: &RecordSnapshotArtifactReady{}},
 	}
+	allocations := []protowire.Number{30, 19, 20, 21, 22, 23, 24, 25, 26, 27}
 	for i, c := range commands {
 		// Populate every command field and nested leaf with distinct values.
 		value := reflect.ValueOf(c)
@@ -242,7 +243,7 @@ func TestSnapshotQueryCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 		tag, _, _ := protowire.ConsumeTag(b)
-		if tag != protowire.Number(18+i) {
+		if tag != allocations[i] {
 			t.Fatalf("tag %d", tag)
 		}
 		got, err := Decode(b)
