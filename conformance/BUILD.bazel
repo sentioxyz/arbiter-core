@@ -5,12 +5,15 @@ go_test(
     srcs = [
         "arbiter_wire_test.go",
         "replay_wire_test.go",
+        "snapshot_query_wire_test.go",
         "statement_envelope_golden_test.go",
         "statement_kind_test.go",
     ],
     data = glob(["testdata/**"]),
     deps = [
         "//:arbiter-core",
+        "//wire",
+        "@com_github_ethereum_go_ethereum//crypto",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/auth",
         "@housegate//pkg/replay",

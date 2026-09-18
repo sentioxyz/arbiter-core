@@ -2,12 +2,13 @@
 // package consumes the decoded Command union and never imports gen/pb —
 // canonical hashing runs over the mirror types by construction (§4.3/§13).
 //
-// Frozen nil/empty rule: the canonical Go form uses nil for an empty
+// Frozen legacy nil/empty rule: the canonical Go form uses nil for an empty
 // repeated field and a nil pointer for an absent message. proto3 repeated
 // fields have no presence, so decoding yields nil naturally; a producer
 // that hashes a non-nil empty slice ([] vs null in canonical JSON) fails
 // its own hash recomputation and is rejected — a protocol conformance
-// rule, not a lenient normalization.
+// rule, not a lenient normalization. Separate snapshot-query records use []
+// for new canonical arrays through snapshotMap, without changing legacy hashes.
 package wire
 
 import (
@@ -71,6 +72,7 @@ type EvictNode struct {
 	NodeID string
 	Reason string
 }
+
 type UpdateConsensusParams struct {
 	Update       arbiter.ConsensusParamsUpdate
 	AuthorityJWS string
@@ -78,24 +80,34 @@ type UpdateConsensusParams struct {
 
 // Command is the decoded RaftCommand: exactly one field is non-nil.
 type Command struct {
-	SubmitStatement       *SubmitStatement
-	SealL3Block           *SealL3Block
-	MarkReplaying         *MarkReplaying
-	RegisterRC            *RegisterRC
-	RecordAttestation     *RecordAttestation
-	RecordByteSideScan    *RecordByteSideScan
-	RecordAnchorFinality  *RecordAnchorFinality
-	RecordPromotionIssued *RecordPromotionIssued
-	RecordPromotionAck    *RecordPromotionAck
-	PublishSafeSnapshot   *PublishSafeSnapshot
-	ScheduleUnsafeCleanup *ScheduleUnsafeCleanup
-	RecordCleanupAck      *RecordCleanupAck
-	OpenChallenge         *OpenChallenge
-	ResolveChallenge      *ResolveChallenge
-	RegisterNode          *RegisterNode
-	MarkActive            *MarkActive
-	EvictNode             *EvictNode
-	UpdateConsensusParams *UpdateConsensusParams
+	SubmitStatement                  *SubmitStatement
+	SealL3Block                      *SealL3Block
+	MarkReplaying                    *MarkReplaying
+	RegisterRC                       *RegisterRC
+	RecordAttestation                *RecordAttestation
+	RecordByteSideScan               *RecordByteSideScan
+	RecordAnchorFinality             *RecordAnchorFinality
+	RecordPromotionIssued            *RecordPromotionIssued
+	RecordPromotionAck               *RecordPromotionAck
+	PublishSafeSnapshot              *PublishSafeSnapshot
+	ScheduleUnsafeCleanup            *ScheduleUnsafeCleanup
+	RecordCleanupAck                 *RecordCleanupAck
+	OpenChallenge                    *OpenChallenge
+	ResolveChallenge                 *ResolveChallenge
+	RegisterNode                     *RegisterNode
+	MarkActive                       *MarkActive
+	EvictNode                        *EvictNode
+	UpdateConsensusParams            *UpdateConsensusParams            `json:",omitempty"`
+	BeginSnapshotQuery               *BeginSnapshotQuery               `json:",omitempty"`
+	GrantSnapshotQuery               *GrantSnapshotQuery               `json:",omitempty"`
+	ReleaseSnapshotQuery             *ReleaseSnapshotQuery             `json:",omitempty"`
+	SubmitSnapshotQuery              *SubmitSnapshotQuery              `json:",omitempty"`
+	AbortSnapshotQuery               *AbortSnapshotQuery               `json:",omitempty"`
+	ActivateQueryProfile             *ActivateQueryProfile             `json:",omitempty"`
+	RecordSnapshotQueryClaim         *RecordSnapshotQueryClaim         `json:",omitempty"`
+	RecordSnapshotQueryAttestation   *RecordSnapshotQueryAttestation   `json:",omitempty"`
+	PublishExecutorProfileTransition *PublishExecutorProfileTransition `json:",omitempty"`
+	RecordSnapshotArtifactReady      *RecordSnapshotArtifactReady      `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -182,6 +194,46 @@ func Encode(c Command) ([]byte, error) {
 		out.Cmd = &pb.RaftCommand_UpdateConsensusParams{UpdateConsensusParams: &pb.UpdateConsensusParamsCmd{
 			Update: ConsensusParamsUpdateToPB(c.UpdateConsensusParams.Update), AuthorityJws: c.UpdateConsensusParams.AuthorityJWS}}
 	}
+	if c.BeginSnapshotQuery != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_BeginSnapshotQuery{BeginSnapshotQuery: BeginSnapshotQueryToPB(*c.BeginSnapshotQuery)}
+	}
+	if c.GrantSnapshotQuery != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_GrantSnapshotQuery{GrantSnapshotQuery: GrantSnapshotQueryToPB(*c.GrantSnapshotQuery)}
+	}
+	if c.ReleaseSnapshotQuery != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_ReleaseSnapshotQuery{ReleaseSnapshotQuery: ReleaseSnapshotQueryToPB(*c.ReleaseSnapshotQuery)}
+	}
+	if c.SubmitSnapshotQuery != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_SubmitSnapshotQuery{SubmitSnapshotQuery: SubmitSnapshotQueryToPB(*c.SubmitSnapshotQuery)}
+	}
+	if c.AbortSnapshotQuery != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_AbortSnapshotQuery{AbortSnapshotQuery: AbortSnapshotQueryToPB(*c.AbortSnapshotQuery)}
+	}
+	if c.ActivateQueryProfile != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_ActivateQueryProfile{ActivateQueryProfile: ActivateQueryProfileToPB(*c.ActivateQueryProfile)}
+	}
+	if c.RecordSnapshotQueryClaim != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_RecordSnapshotQueryClaim{RecordSnapshotQueryClaim: RecordSnapshotQueryClaimToPB(*c.RecordSnapshotQueryClaim)}
+	}
+	if c.RecordSnapshotQueryAttestation != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_RecordSnapshotQueryAttestation{RecordSnapshotQueryAttestation: RecordSnapshotQueryAttestationToPB(*c.RecordSnapshotQueryAttestation)}
+	}
+	if c.PublishExecutorProfileTransition != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_PublishExecutorProfileTransition{PublishExecutorProfileTransition: PublishExecutorProfileTransitionToPB(*c.PublishExecutorProfileTransition)}
+	}
+	if c.RecordSnapshotArtifactReady != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_RecordSnapshotArtifactReady{RecordSnapshotArtifactReady: RecordSnapshotArtifactReadyToPB(*c.RecordSnapshotArtifactReady)}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -191,10 +243,47 @@ func Encode(c Command) ([]byte, error) {
 // Decode parses RaftCommand log-entry bytes into the Go union.
 func Decode(b []byte) (Command, error) {
 	var in pb.RaftCommand
+	if err := validateCommandBytes(b, in.ProtoReflect().Descriptor(), true); err != nil {
+		return Command{}, err
+	}
 	if err := proto.Unmarshal(b, &in); err != nil {
 		return Command{}, fmt.Errorf("wire: unmarshal RaftCommand: %w", err)
 	}
 	switch cmd := in.GetCmd().(type) {
+	case *pb.RaftCommand_UpdateConsensusParams:
+		return Command{UpdateConsensusParams: &UpdateConsensusParams{
+			Update: ConsensusParamsUpdateFromPB(cmd.UpdateConsensusParams.GetUpdate()), AuthorityJWS: cmd.UpdateConsensusParams.GetAuthorityJws()}}, nil
+	case *pb.RaftCommand_BeginSnapshotQuery:
+		v := BeginSnapshotQueryFromPB(cmd.BeginSnapshotQuery)
+		return Command{BeginSnapshotQuery: &v}, nil
+	case *pb.RaftCommand_GrantSnapshotQuery:
+		v := GrantSnapshotQueryFromPB(cmd.GrantSnapshotQuery)
+		return Command{GrantSnapshotQuery: &v}, nil
+	case *pb.RaftCommand_ReleaseSnapshotQuery:
+		v := ReleaseSnapshotQueryFromPB(cmd.ReleaseSnapshotQuery)
+		return Command{ReleaseSnapshotQuery: &v}, nil
+	case *pb.RaftCommand_SubmitSnapshotQuery:
+		v := SubmitSnapshotQueryFromPB(cmd.SubmitSnapshotQuery)
+		return Command{SubmitSnapshotQuery: &v}, nil
+	case *pb.RaftCommand_AbortSnapshotQuery:
+		v := AbortSnapshotQueryFromPB(cmd.AbortSnapshotQuery)
+		return Command{AbortSnapshotQuery: &v}, nil
+	case *pb.RaftCommand_ActivateQueryProfile:
+		v := ActivateQueryProfileFromPB(cmd.ActivateQueryProfile)
+		return Command{ActivateQueryProfile: &v}, nil
+	case *pb.RaftCommand_RecordSnapshotQueryClaim:
+		v := RecordSnapshotQueryClaimFromPB(cmd.RecordSnapshotQueryClaim)
+		return Command{RecordSnapshotQueryClaim: &v}, nil
+	case *pb.RaftCommand_RecordSnapshotQueryAttestation:
+		v := RecordSnapshotQueryAttestationFromPB(cmd.RecordSnapshotQueryAttestation)
+		return Command{RecordSnapshotQueryAttestation: &v}, nil
+	case *pb.RaftCommand_PublishExecutorProfileTransition:
+		v := PublishExecutorProfileTransitionFromPB(cmd.PublishExecutorProfileTransition)
+		return Command{PublishExecutorProfileTransition: &v}, nil
+	case *pb.RaftCommand_RecordSnapshotArtifactReady:
+		v := RecordSnapshotArtifactReadyFromPB(cmd.RecordSnapshotArtifactReady)
+		return Command{RecordSnapshotArtifactReady: &v}, nil
+
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{
 			Envelope: EnvelopeFromPB(cmd.SubmitStatement.GetEnvelope()), NonMembershipProof: cmd.SubmitStatement.GetNonMembershipProof()}}, nil
@@ -236,9 +325,6 @@ func Decode(b []byte) (Command, error) {
 		return Command{MarkActive: &MarkActive{NodeID: cmd.MarkActive.GetNodeId()}}, nil
 	case *pb.RaftCommand_EvictNode:
 		return Command{EvictNode: &EvictNode{NodeID: cmd.EvictNode.GetNodeId(), Reason: cmd.EvictNode.GetReason()}}, nil
-	case *pb.RaftCommand_UpdateConsensusParams:
-		return Command{UpdateConsensusParams: &UpdateConsensusParams{
-			Update: ConsensusParamsUpdateFromPB(cmd.UpdateConsensusParams.GetUpdate()), AuthorityJWS: cmd.UpdateConsensusParams.GetAuthorityJws()}}, nil
 	default:
 		return Command{}, fmt.Errorf("wire: RaftCommand has no command set")
 	}
