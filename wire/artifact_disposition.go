@@ -1,7 +1,9 @@
 package wire
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 
@@ -17,13 +19,13 @@ type ArtifactDispositionCmd struct {
 }
 
 type ArtifactDispositionCommandV1 struct {
-	Version          uint32
-	NetworkID        string
-	KeeperShardID    uint32
-	ActorID          string
-	RequestID        string
-	ExpectedRevision uint64
-	Action           ArtifactDispositionActionV1
+	Version          uint32                      `json:"version"`
+	NetworkID        string                      `json:"network_id"`
+	KeeperShardID    uint32                      `json:"keeper_shard_id"`
+	ActorID          string                      `json:"actor_id"`
+	RequestID        string                      `json:"request_id"`
+	ExpectedRevision uint64                      `json:"expected_revision"`
+	Action           ArtifactDispositionActionV1 `json:"action"`
 }
 
 type ArtifactDispositionActionV1 struct {
@@ -40,93 +42,353 @@ type ArtifactDispositionActionV1 struct {
 	ResolveObligation *ArtifactDispositionResolveObligationV1
 }
 
+// canonicalSafeSnapshotManifest deliberately does not reuse replay's JSON
+// encoding. The replay record predates C1 and uses omitempty for two ordinary
+// fields; a C1 command must retain those zero values and empty arrays in its
+// public root.
+type canonicalSafeSnapshotManifest struct {
+	SnapshotID        string                   `json:"snapshot_id"`
+	ParentSnapshotID  string                   `json:"parent_snapshot_id"`
+	SafeBlockSeq      uint64                   `json:"safe_block_seq"`
+	StateRoot         string                   `json:"state_root"`
+	SchemaSnapshotID  string                   `json:"schema_snapshot_id"`
+	SchemaRoot        string                   `json:"schema_root"`
+	ExecutorProfileID string                   `json:"executor_profile_id"`
+	DataRoot          string                   `json:"data_root"`
+	ManifestRoot      string                   `json:"manifest_root"`
+	Tables            []canonicalTableManifest `json:"tables"`
+}
+
+type canonicalTableManifest struct {
+	TableID        string                       `json:"table_id"`
+	SchemaHash     string                       `json:"schema_hash"`
+	PartitionRoots []replay.PartitionCommitment `json:"partition_roots"`
+	ActiveParts    []canonicalPartManifestEntry `json:"active_parts"`
+}
+
+type canonicalPartManifestEntry struct {
+	TableID       string   `json:"table_id"`
+	PartitionID   string   `json:"partition_id"`
+	PartName      string   `json:"part_name"`
+	PartPhysHash  string   `json:"part_phys_hash"`
+	PartRowLtHash string   `json:"part_row_lthash"`
+	RowCount      uint64   `json:"row_count"`
+	Bytes         uint64   `json:"bytes"`
+	StorageRefs   []string `json:"storage_refs"`
+}
+
+func canonicalManifest(v replay.SafeSnapshotManifest) canonicalSafeSnapshotManifest {
+	out := canonicalSafeSnapshotManifest{
+		SnapshotID: v.SnapshotID, ParentSnapshotID: v.ParentSnapshotID, SafeBlockSeq: v.SafeBlockSeq,
+		StateRoot: v.StateRoot, SchemaSnapshotID: v.SchemaSnapshotID, SchemaRoot: v.SchemaRoot,
+		ExecutorProfileID: v.ExecutorProfileID, DataRoot: v.DataRoot, ManifestRoot: v.ManifestRoot,
+		Tables: make([]canonicalTableManifest, len(v.Tables)),
+	}
+	for i, table := range v.Tables {
+		out.Tables[i] = canonicalTableManifest{
+			TableID: table.TableID, SchemaHash: table.SchemaHash, PartitionRoots: table.PartitionRoots,
+			ActiveParts: make([]canonicalPartManifestEntry, len(table.ActiveParts)),
+		}
+		for j, part := range table.ActiveParts {
+			out.Tables[i].ActiveParts[j] = canonicalPartManifestEntry{
+				TableID: part.TableID, PartitionID: part.PartitionID, PartName: part.PartName,
+				PartPhysHash: part.PartPhysHash, PartRowLtHash: part.PartRowLtHash, RowCount: part.RowCount,
+				Bytes: part.Bytes, StorageRefs: part.StorageRefs,
+			}
+		}
+	}
+	return out
+}
+
+type canonicalSnapshotQueryReceipt struct {
+	BlockSeq                  uint64                       `json:"block_seq"`
+	StatementRoot             string                       `json:"statement_root"`
+	InputRoot                 string                       `json:"input_root"`
+	ReadSetRoot               string                       `json:"read_set_root"`
+	ReadSnapshot              replay.SnapshotPin           `json:"read_snapshot"`
+	SchemaSnapshotID          string                       `json:"schema_snapshot_id"`
+	ExecutorProfileID         string                       `json:"executor_profile_id"`
+	QueryProfileID            string                       `json:"query_profile_id"`
+	ReservationID             string                       `json:"reservation_id"`
+	FencingGeneration         uint64                       `json:"fencing_generation"`
+	ExecutionOutcome          string                       `json:"execution_outcome"`
+	AbortRecordRoot           string                       `json:"abort_record_root"`
+	OutputRowCount            uint64                       `json:"output_row_count"`
+	OutputRowsRoot            string                       `json:"output_rows_root"`
+	SourceClaimRoot           string                       `json:"source_claim_root"`
+	ComputedStateRoot         string                       `json:"computed_state_root"`
+	MatchSourceRoot           bool                         `json:"match_source_root"`
+	PartitionCommitmentsAfter []replay.PartitionCommitment `json:"partition_commitments_after"`
+	AffectedParts             []canonicalPartManifestEntry `json:"affected_parts"`
+	ReplayLogHash             string                       `json:"replay_log_hash"`
+}
+
+type canonicalSnapshotQueryAttestation struct {
+	ReplicaID   string                        `json:"replica_id"`
+	Receipt     canonicalSnapshotQueryReceipt `json:"receipt"`
+	ReceiptHash string                        `json:"receipt_hash"`
+	Signature   string                        `json:"signature"`
+}
+
+func canonicalPart(v replay.PartManifestEntry) canonicalPartManifestEntry {
+	return canonicalPartManifestEntry{
+		TableID: v.TableID, PartitionID: v.PartitionID, PartName: v.PartName,
+		PartPhysHash: v.PartPhysHash, PartRowLtHash: v.PartRowLtHash, RowCount: v.RowCount,
+		Bytes: v.Bytes, StorageRefs: v.StorageRefs,
+	}
+}
+
+func canonicalAttestation(v replay.SnapshotQueryAttestation) canonicalSnapshotQueryAttestation {
+	r := v.Receipt
+	receipt := canonicalSnapshotQueryReceipt{
+		BlockSeq: r.BlockSeq, StatementRoot: r.StatementRoot, InputRoot: r.InputRoot, ReadSetRoot: r.ReadSetRoot,
+		ReadSnapshot: r.ReadSnapshot, SchemaSnapshotID: r.SchemaSnapshotID, ExecutorProfileID: r.ExecutorProfileID,
+		QueryProfileID: r.QueryProfileID, ReservationID: r.ReservationID, FencingGeneration: r.FencingGeneration,
+		ExecutionOutcome: r.ExecutionOutcome, AbortRecordRoot: r.AbortRecordRoot, OutputRowCount: r.OutputRowCount,
+		OutputRowsRoot: r.OutputRowsRoot, SourceClaimRoot: r.SourceClaimRoot, ComputedStateRoot: r.ComputedStateRoot,
+		MatchSourceRoot: r.MatchSourceRoot, PartitionCommitmentsAfter: r.PartitionCommitmentsAfter,
+		AffectedParts: make([]canonicalPartManifestEntry, len(r.AffectedParts)), ReplayLogHash: r.ReplayLogHash,
+	}
+	for i, part := range r.AffectedParts {
+		receipt.AffectedParts[i] = canonicalPart(part)
+	}
+	return canonicalSnapshotQueryAttestation{ReplicaID: v.ReplicaID, Receipt: receipt, ReceiptHash: v.ReceiptHash, Signature: v.Signature}
+}
+
+// MarshalJSON emits the action as an exact oneof object. This is deliberately
+// separate from the protobuf mirror: protobuf needs all eleven Go fields while
+// the command-root and administrator-JWS canonical form needs one member only.
+func (v ArtifactDispositionActionV1) MarshalJSON() ([]byte, error) {
+	if err := requireSingleDispositionAction(v); err != nil {
+		return nil, err
+	}
+	switch {
+	case v.BindPolicy != nil:
+		return json.Marshal(struct {
+			BindPolicy *ArtifactDispositionBindPolicyV1 `json:"bind_policy"`
+		}{v.BindPolicy})
+	case v.RegisterCandidate != nil:
+		r := v.RegisterCandidate
+		return json.Marshal(struct {
+			RegisterCandidate struct {
+				Pin                    replay.SnapshotPin            `json:"pin"`
+				Manifest               canonicalSafeSnapshotManifest `json:"manifest"`
+				PublisherID            string                        `json:"publisher_id"`
+				RetentionPolicyID      string                        `json:"retention_policy_id"`
+				PublicationReferenceID string                        `json:"publication_reference_id"`
+				Origin                 ArtifactDispositionOriginV1   `json:"origin"`
+			} `json:"register_candidate"`
+		}{RegisterCandidate: struct {
+			Pin                    replay.SnapshotPin            `json:"pin"`
+			Manifest               canonicalSafeSnapshotManifest `json:"manifest"`
+			PublisherID            string                        `json:"publisher_id"`
+			RetentionPolicyID      string                        `json:"retention_policy_id"`
+			PublicationReferenceID string                        `json:"publication_reference_id"`
+			Origin                 ArtifactDispositionOriginV1   `json:"origin"`
+		}{Pin: r.Pin, Manifest: canonicalManifest(r.Manifest), PublisherID: r.PublisherID, RetentionPolicyID: r.RetentionPolicyID, PublicationReferenceID: r.PublicationReferenceID, Origin: r.Origin}})
+	case v.RecordReady != nil:
+		return json.Marshal(struct {
+			RecordReady *ArtifactDispositionRecordReadyV1 `json:"record_ready"`
+		}{v.RecordReady})
+	case v.PublishCandidate != nil:
+		p := v.PublishCandidate
+		return json.Marshal(struct {
+			PublishCandidate struct {
+				CandidateSeq       uint64                                    `json:"candidate_seq"`
+				Manifest           canonicalSafeSnapshotManifest             `json:"manifest"`
+				Transition         replay.ExecutorProfileTransition          `json:"transition"`
+				TransitionReceipts []replay.ExecutorProfileTransitionReceipt `json:"transition_receipts"`
+			} `json:"publish_candidate"`
+		}{PublishCandidate: struct {
+			CandidateSeq       uint64                                    `json:"candidate_seq"`
+			Manifest           canonicalSafeSnapshotManifest             `json:"manifest"`
+			Transition         replay.ExecutorProfileTransition          `json:"transition"`
+			TransitionReceipts []replay.ExecutorProfileTransitionReceipt `json:"transition_receipts"`
+		}{CandidateSeq: p.CandidateSeq, Manifest: canonicalManifest(p.Manifest), Transition: p.Transition, TransitionReceipts: p.TransitionReceipts}})
+	case v.CancelCandidate != nil:
+		return json.Marshal(struct {
+			CancelCandidate *ArtifactDispositionCancelCandidateV1 `json:"cancel_candidate"`
+		}{v.CancelCandidate})
+	case v.BeginRetirement != nil:
+		return json.Marshal(struct {
+			BeginRetirement *ArtifactDispositionRetirementTargetV1 `json:"begin_retirement"`
+		}{v.BeginRetirement})
+	case v.FinishRetirement != nil:
+		return json.Marshal(struct {
+			FinishRetirement *ArtifactDispositionRetirementTargetV1 `json:"finish_retirement"`
+		}{v.FinishRetirement})
+	case v.AdmitUse != nil:
+		return json.Marshal(struct {
+			AdmitUse *ArtifactDispositionAdmitUseV1 `json:"admit_use"`
+		}{v.AdmitUse})
+	case v.CloseUse != nil:
+		return json.Marshal(struct {
+			CloseUse *ArtifactDispositionCloseUseV1 `json:"close_use"`
+		}{v.CloseUse})
+	case v.OpenChallenge != nil:
+		o := v.OpenChallenge
+		return json.Marshal(struct {
+			OpenChallenge struct {
+				Pin         replay.SnapshotPin                `json:"pin"`
+				Origin      ArtifactDispositionOriginV1       `json:"origin"`
+				Attestation canonicalSnapshotQueryAttestation `json:"attestation"`
+				ReplayUse   ArtifactDispositionUseV1          `json:"replay_use"`
+			} `json:"open_challenge"`
+		}{OpenChallenge: struct {
+			Pin         replay.SnapshotPin                `json:"pin"`
+			Origin      ArtifactDispositionOriginV1       `json:"origin"`
+			Attestation canonicalSnapshotQueryAttestation `json:"attestation"`
+			ReplayUse   ArtifactDispositionUseV1          `json:"replay_use"`
+		}{Pin: o.Pin, Origin: o.Origin, Attestation: canonicalAttestation(o.Attestation), ReplayUse: o.ReplayUse}})
+	default:
+		return json.Marshal(struct {
+			ResolveObligation *ArtifactDispositionResolveObligationV1 `json:"resolve_obligation"`
+		}{v.ResolveObligation})
+	}
+}
+
 type ArtifactDispositionPolicyV1 struct {
-	PolicyID               string
-	Kind                   string
-	AdministratorAddresses []string
+	PolicyID               string   `json:"policy_id"`
+	Kind                   string   `json:"kind"`
+	AdministratorAddresses []string `json:"administrator_addresses"`
 }
 
 type ArtifactDispositionBindPolicyV1 struct {
-	Policy ArtifactDispositionPolicyV1
+	Policy ArtifactDispositionPolicyV1 `json:"policy"`
 }
 
 type ArtifactDispositionOriginV1 struct {
-	Kind              string
-	ParentSnapshotID  string
-	SafeBlockSeq      uint64
-	ActivationID      string
-	TransitionRoot    string
-	ClientAccount     string
-	StatementID       string
-	RequestID         string
-	ReservationID     string
-	FencingGeneration uint64
-	BlockSeq          uint64
-	StatementSeq      uint64
-	StatementRoot     string
-	InputRoot         string
-	UserJWSHash       string
-	ExecutionOutcome  string
-	CandidateSeq      uint64
+	Kind              string `json:"kind"`
+	ParentSnapshotID  string `json:"parent_snapshot_id"`
+	SafeBlockSeq      uint64 `json:"safe_block_seq"`
+	ActivationID      string `json:"activation_id"`
+	TransitionRoot    string `json:"transition_root"`
+	ClientAccount     string `json:"client_account"`
+	StatementID       string `json:"statement_id"`
+	RequestID         string `json:"request_id"`
+	ReservationID     string `json:"reservation_id"`
+	FencingGeneration uint64 `json:"fencing_generation"`
+	BlockSeq          uint64 `json:"block_seq"`
+	StatementSeq      uint64 `json:"statement_seq"`
+	StatementRoot     string `json:"statement_root"`
+	InputRoot         string `json:"input_root"`
+	UserJWSHash       string `json:"user_jws_hash"`
+	ExecutionOutcome  string `json:"execution_outcome"`
+	CandidateSeq      uint64 `json:"candidate_seq"`
 }
 
 type ArtifactDispositionUseV1 struct {
-	ReferenceID               string
-	Pin                       replay.SnapshotPin
-	PrincipalID               string
-	Origin                    ArtifactDispositionOriginV1
-	ContinuationObligationSeq uint64
+	ReferenceID               string                      `json:"reference_id"`
+	Pin                       replay.SnapshotPin          `json:"pin"`
+	PrincipalID               string                      `json:"principal_id"`
+	Origin                    ArtifactDispositionOriginV1 `json:"origin"`
+	ContinuationObligationSeq uint64                      `json:"continuation_obligation_seq"`
 }
 
 type ArtifactDispositionRegisterCandidateV1 struct {
-	Pin                    replay.SnapshotPin
-	Manifest               replay.SafeSnapshotManifest
-	PublisherID            string
-	RetentionPolicyID      string
-	PublicationReferenceID string
-	Origin                 ArtifactDispositionOriginV1
+	Pin                    replay.SnapshotPin          `json:"pin"`
+	Manifest               replay.SafeSnapshotManifest `json:"manifest"`
+	PublisherID            string                      `json:"publisher_id"`
+	RetentionPolicyID      string                      `json:"retention_policy_id"`
+	PublicationReferenceID string                      `json:"publication_reference_id"`
+	Origin                 ArtifactDispositionOriginV1 `json:"origin"`
 }
 
 type ArtifactDispositionRecordReadyV1 struct {
-	CandidateSeq uint64
-	Submission   replay.SnapshotArtifactReadySubmission
+	CandidateSeq uint64                                 `json:"candidate_seq"`
+	Submission   replay.SnapshotArtifactReadySubmission `json:"submission"`
 }
 
 type ArtifactDispositionPublishCandidateV1 struct {
-	CandidateSeq       uint64
-	Manifest           replay.SafeSnapshotManifest
-	Transition         replay.ExecutorProfileTransition
-	TransitionReceipts []replay.ExecutorProfileTransitionReceipt
+	CandidateSeq       uint64                                    `json:"candidate_seq"`
+	Manifest           replay.SafeSnapshotManifest               `json:"manifest"`
+	Transition         replay.ExecutorProfileTransition          `json:"transition"`
+	TransitionReceipts []replay.ExecutorProfileTransitionReceipt `json:"transition_receipts"`
 }
 
 type ArtifactDispositionCancelCandidateV1 struct {
-	CandidateSeq uint64
-	ReasonCode   string
+	CandidateSeq uint64 `json:"candidate_seq"`
+	ReasonCode   string `json:"reason_code"`
 }
 
 type ArtifactDispositionRetirementTargetV1 struct {
-	Pin               replay.SnapshotPin
-	RetentionPolicyID string
+	Pin               replay.SnapshotPin `json:"pin"`
+	RetentionPolicyID string             `json:"retention_policy_id"`
 }
 
 type ArtifactDispositionAdmitUseV1 struct {
-	Use ArtifactDispositionUseV1
+	Use ArtifactDispositionUseV1 `json:"use"`
 }
 
 type ArtifactDispositionCloseUseV1 struct {
-	Use                      ArtifactDispositionUseV1
-	ExpectedRegistryRevision uint64
+	Use                      ArtifactDispositionUseV1 `json:"use"`
+	ExpectedRegistryRevision uint64                   `json:"expected_registry_revision"`
 }
 
 type ArtifactDispositionOpenChallengeV1 struct {
-	Pin         replay.SnapshotPin
-	Origin      ArtifactDispositionOriginV1
-	Attestation replay.SnapshotQueryAttestation
-	ReplayUse   ArtifactDispositionUseV1
+	Pin         replay.SnapshotPin              `json:"pin"`
+	Origin      ArtifactDispositionOriginV1     `json:"origin"`
+	Attestation replay.SnapshotQueryAttestation `json:"attestation"`
+	ReplayUse   ArtifactDispositionUseV1        `json:"replay_use"`
 }
 
 type ArtifactDispositionResolveObligationV1 struct {
-	ObligationSeq uint64
+	ObligationSeq uint64 `json:"obligation_seq"`
+}
+
+const artifactDispositionCommandDomain = "artifact-disposition-command-v1"
+
+// ArtifactDispositionCommandRoot returns the public commitment for a
+// disposition command. The enclosing AdministratorJWS and private Validation
+// are intentionally absent from this type and can never affect its root.
+func ArtifactDispositionCommandRoot(command ArtifactDispositionCommandV1) (string, error) {
+	if err := requireSingleDispositionAction(command.Action); err != nil {
+		return "", err
+	}
+	if err := rejectNilSlices(reflect.ValueOf(command)); err != nil {
+		return "", fmt.Errorf("wire: artifact disposition canonical command: %w", err)
+	}
+	h, err := replay.CanonicalDigest(artifactDispositionCommandDomain, command)
+	if err != nil {
+		return "", fmt.Errorf("wire: hash artifact disposition command: %w", err)
+	}
+	return h, nil
+}
+
+// rejectNilSlices makes the command-root DTO unambiguous: all arrays have a
+// concrete [] representation, never JSON null. It walks embedded replay
+// records too, so a future action cannot silently reintroduce null arrays.
+func rejectNilSlices(v reflect.Value) error {
+	if !v.IsValid() {
+		return nil
+	}
+	if v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
+		return rejectNilSlices(v.Elem())
+	}
+	switch v.Kind() {
+	case reflect.Slice:
+		if v.IsNil() {
+			return fmt.Errorf("array %s must be non-nil", v.Type())
+		}
+		for i := 0; i < v.Len(); i++ {
+			if err := rejectNilSlices(v.Index(i)); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).PkgPath != "" {
+				continue
+			}
+			if err := rejectNilSlices(v.Field(i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type ArtifactDispositionRegistryObservationV1 struct {
