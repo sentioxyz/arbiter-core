@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -8,7 +9,9 @@ import (
 
 	"github.com/housegate/housegate/pkg/replay"
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func dispositionCommand(action ArtifactDispositionActionV1) ArtifactDispositionCommandV1 {
@@ -28,6 +31,7 @@ func TestArtifactDispositionCommandRootBindsEveryAction(t *testing.T) {
 		{CloseUse: &ArtifactDispositionCloseUseV1{}},
 		{OpenChallenge: &ArtifactDispositionOpenChallengeV1{}},
 		{ResolveObligation: &ArtifactDispositionResolveObligationV1{}},
+		{GrantReservation: &ArtifactDispositionGrantReservationV1{}},
 	}
 	seen := map[string]bool{}
 	for i, action := range actions {
@@ -240,5 +244,122 @@ func TestArtifactDispositionRejectsMixedActions(t *testing.T) {
 	}}})
 	if err == nil {
 		t.Fatal("mixed actions encoded")
+	}
+}
+
+func TestArtifactDispositionGrantReservationRoundTripAndRoot(t *testing.T) {
+	grant := &ArtifactDispositionGrantReservationV1{
+		ClientAccount: "0xclient", StatementID: "statement-1", ControlBindingDigest: "0xcontrol",
+	}
+	command := dispositionCommand(ArtifactDispositionActionV1{GrantReservation: grant})
+	root, err := ArtifactDispositionCommandRoot(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(){
+		func() { command.Action.GrantReservation.ClientAccount = "0xother" },
+		func() { command.Action.GrantReservation.StatementID = "statement-2" },
+		func() { command.Action.GrantReservation.ControlBindingDigest = "0xother-control" },
+	} {
+		copy := command
+		copy.Action.GrantReservation = &ArtifactDispositionGrantReservationV1{
+			ClientAccount: grant.ClientAccount, StatementID: grant.StatementID, ControlBindingDigest: grant.ControlBindingDigest,
+		}
+		command = copy
+		mutate()
+		changed, err := ArtifactDispositionCommandRoot(command)
+		if err != nil || changed == root {
+			t.Fatalf("grant field did not bind root: %q %v", changed, err)
+		}
+	}
+
+	in := Command{ArtifactDisposition: &ArtifactDispositionCmd{Command: dispositionCommand(ArtifactDispositionActionV1{
+		GrantReservation: grant,
+	})}}
+	raw, err := Encode(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope pb.RaftCommand
+	if err := proto.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	action := envelope.GetArtifactDisposition().GetCommand().GetAction()
+	if action.GetGrantReservation() == nil {
+		t.Fatal("grant reservation action missing")
+	}
+	actionRaw, err := proto.Marshal(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	num, typ, n := protowire.ConsumeTag(actionRaw)
+	if n < 0 || num != 12 || typ != protowire.BytesType {
+		t.Fatalf("grant action wire tag = (%d, %d, %d), want (12, bytes, positive)", num, typ, n)
+	}
+	out, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.ArtifactDisposition.Command.Action.GrantReservation
+	if !reflect.DeepEqual(grant, got) {
+		t.Fatalf("round trip changed grant: got %+v want %+v", got, grant)
+	}
+}
+
+func TestArtifactDispositionGrantReservationRejectsNilAndMixedActions(t *testing.T) {
+	if _, err := Encode(Command{ArtifactDisposition: &ArtifactDispositionCmd{Command: dispositionCommand(ArtifactDispositionActionV1{})}}); err == nil {
+		t.Fatal("nil action encoded")
+	}
+	if _, err := Encode(Command{ArtifactDisposition: &ArtifactDispositionCmd{Command: dispositionCommand(ArtifactDispositionActionV1{
+		GrantReservation: &ArtifactDispositionGrantReservationV1{},
+		AdmitUse:         &ArtifactDispositionAdmitUseV1{},
+	})}}); err == nil {
+		t.Fatal("mixed grant action encoded")
+	}
+}
+
+func TestArtifactDispositionGrantReservationCallerSurfaceIsPinned(t *testing.T) {
+	// This is a hard boundary: server-owned grant outcomes must not gain caller
+	// wire fields. Adding a field requires a deliberate protocol review.
+	fields := (&pb.ArtifactDispositionGrantReservationV1{}).ProtoReflect().Descriptor().Fields()
+	want := map[protoreflect.FieldNumber]string{
+		1: "client_account", 2: "statement_id", 3: "control_binding_digest",
+	}
+	if fields.Len() != len(want) {
+		t.Fatalf("grant caller surface has %d fields, want %d", fields.Len(), len(want))
+	}
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		if name, ok := want[field.Number()]; !ok || string(field.Name()) != name || field.Kind() != protoreflect.StringKind {
+			t.Fatalf("unexpected grant caller field %d %q %s", field.Number(), field.Name(), field.Kind())
+		}
+	}
+
+	grantVariant := (&pb.ArtifactDispositionActionV1{}).ProtoReflect().Descriptor().Oneofs().ByName("action").Fields().ByNumber(12)
+	if grantVariant == nil || grantVariant.Kind() != protoreflect.MessageKind || string(grantVariant.Message().Name()) != "ArtifactDispositionGrantReservationV1" {
+		t.Fatalf("grant action oneof descriptor changed: %v", grantVariant)
+	}
+}
+
+func TestArtifactDispositionGrantReservationDoesNotChangeLegacyCommandVector(t *testing.T) {
+	// This command contains only the pre-existing bind_policy action. Its outer
+	// Raft tag remains 28 and its bytes must stay stable after adding action 12.
+	in := Command{ArtifactDisposition: &ArtifactDispositionCmd{Command: ArtifactDispositionCommandV1{
+		Version: 1, NetworkID: "net", KeeperShardID: 1, ActorID: "actor", RequestID: "request",
+		Action: ArtifactDispositionActionV1{BindPolicy: &ArtifactDispositionBindPolicyV1{
+			Policy: ArtifactDispositionPolicyV1{PolicyID: "policy", AdministratorAddresses: []string{}},
+		}},
+	}}}
+	raw, err := Encode(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	num, typ, n := protowire.ConsumeTag(raw)
+	if n < 0 || num != 28 || typ != protowire.BytesType {
+		t.Fatalf("outer command wire tag = (%d, %d, %d), want (28, bytes, positive)", num, typ, n)
+	}
+	const want = "e2012b0a27080112036e6574180122056163746f722a07726571756573743a0c0a0a0a080a06706f6c6963791a00"
+	if got := hex.EncodeToString(raw); got != want {
+		t.Fatalf("legacy command bytes changed:\n got %s\nwant %s", got, want)
 	}
 }
