@@ -19,6 +19,7 @@ go_library(
         "@housegate//pkg/replay",
         "@housegate//pkg/replay/chexec",
         "@housegate//pkg/replay/payloadexec",
+        "@housegate//pkg/replay/snapshotquery",
         "@org_golang_google_grpc//:grpc",
     ],
 )
@@ -44,6 +45,7 @@ go_test(
         "@housegate//pkg/lthash",
         "@housegate//pkg/replay",
         "@housegate//pkg/replay/payloadexec",
+        "@housegate//pkg/replay/snapshotquery",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",

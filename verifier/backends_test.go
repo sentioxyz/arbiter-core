@@ -1,10 +1,13 @@
 package verifier
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/housegate/housegate/pkg/replay"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
+	"github.com/housegate/housegate/pkg/replay/snapshotquery"
 
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
@@ -20,6 +23,27 @@ func TestNewReplayCore_AssemblesVerifier(t *testing.T) {
 	}
 	if core.Snapshots != snapshots || core.Payloads != payloads || core.Executor == nil || core.Signer == nil {
 		t.Fatalf("incomplete replay core: %+v", core)
+	}
+	if _, ok := core.Executor.(*snapshotquery.CompositeExecutor); !ok {
+		t.Fatalf("replay core executor %T is not the query dispatcher", core.Executor)
+	}
+}
+
+func TestNewReplayCore_QueryDispatchStaysDefaultOff(t *testing.T) {
+	cfg := testConfigV()
+	core, err := NewReplayCore(cfg, nil, payloadexec.NewMemSnapshotStore(), payloadexec.NewMemPayloadStore())
+	if err != nil {
+		t.Fatalf("NewReplayCore: %v", err)
+	}
+	_, err = core.Executor.Replay(context.Background(), replay.ExecutionRequest{
+		SnapshotQuery: &replay.SnapshotQueryJob{
+			ExecutorProfileID: "executor-b5",
+			QueryProfileID:    "0x" + strings.Repeat("ab", 32),
+		},
+		SnapshotQueryReferenceID: "replay:ns:1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "snapshot query profile route unavailable") {
+		t.Fatalf("default-off query dispatch: %v", err)
 	}
 }
 
