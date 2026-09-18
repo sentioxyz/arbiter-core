@@ -4,3 +4,10 @@
 # uninstrumented unless a dedicated sanitizer build opts in explicitly.
 build --copt=-fno-sanitize=undefined
 build --host_copt=-fno-sanitize=undefined
+
+# Public housegate Go modules are fetched as 12-character pseudo-versions.
+# Host GOPRIVATE=github.com/housegate makes gazelle fetch_repo use git with
+# that short revision, which GitHub rejects. Keep sentioxyz private.
+common --repo_env=GOPRIVATE=github.com/sentioxyz
+common --repo_env=GONOPROXY=github.com/sentioxyz
+common --repo_env=GOPROXY=https://proxy.golang.org,direct
