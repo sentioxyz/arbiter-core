@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "authority",
     srcs = [
+        "artifact_disposition.go",
         "consensus.go",
         "context.go",
         "payload.go",
@@ -13,6 +14,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//:arbiter-core",
+        "//wire",
         "@com_github_ethereum_go_ethereum//crypto",
         "@housegate//pkg/replay",
     ],
@@ -21,6 +23,7 @@ go_library(
 go_test(
     name = "authority_test",
     srcs = [
+        "artifact_disposition_test.go",
         "authority_test.go",
         "consensus_test.go",
         "context_test.go",
@@ -28,6 +31,8 @@ go_test(
     embed = [":authority"],
     deps = [
         "//:arbiter-core",
+        "//wire",
+        "@com_github_ethereum_go_ethereum//crypto",
         "@housegate//pkg/replay",
     ],
 )
