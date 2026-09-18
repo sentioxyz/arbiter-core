@@ -108,6 +108,7 @@ type Command struct {
 	RecordSnapshotQueryAttestation   *RecordSnapshotQueryAttestation   `json:",omitempty"`
 	PublishExecutorProfileTransition *PublishExecutorProfileTransition `json:",omitempty"`
 	RecordSnapshotArtifactReady      *RecordSnapshotArtifactReady      `json:",omitempty"`
+	ArtifactDisposition              *ArtifactDispositionCmd           `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -234,6 +235,13 @@ func Encode(c Command) ([]byte, error) {
 		set++
 		out.Cmd = &pb.RaftCommand_RecordSnapshotArtifactReady{RecordSnapshotArtifactReady: RecordSnapshotArtifactReadyToPB(*c.RecordSnapshotArtifactReady)}
 	}
+	if c.ArtifactDisposition != nil {
+		set++
+		if err := requireSingleDispositionAction(c.ArtifactDisposition.Command.Action); err != nil {
+			return nil, err
+		}
+		out.Cmd = &pb.RaftCommand_ArtifactDisposition{ArtifactDisposition: ArtifactDispositionCmdToPB(*c.ArtifactDisposition)}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -283,6 +291,12 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_RecordSnapshotArtifactReady:
 		v := RecordSnapshotArtifactReadyFromPB(cmd.RecordSnapshotArtifactReady)
 		return Command{RecordSnapshotArtifactReady: &v}, nil
+	case *pb.RaftCommand_ArtifactDisposition:
+		v := ArtifactDispositionCmdFromPB(cmd.ArtifactDisposition)
+		if err := requireSingleDispositionAction(v.Command.Action); err != nil {
+			return Command{}, err
+		}
+		return Command{ArtifactDisposition: &v}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{
