@@ -7,6 +7,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 # gazelle:resolve go github.com/housegate/housegate/pkg/replay/chexec @housegate//pkg/replay/chexec
 # gazelle:resolve go github.com/housegate/housegate/pkg/replay/nativepayload @housegate//pkg/replay/nativepayload
 # gazelle:resolve go github.com/housegate/housegate/pkg/replay/payloadexec @housegate//pkg/replay/payloadexec
+# gazelle:resolve go github.com/housegate/housegate/pkg/replay/snapshotquery @housegate//pkg/replay/snapshotquery
 # gazelle:resolve go github.com/housegate/housegate/pkg/auth @housegate//pkg/auth
 
 gazelle(name = "gazelle")
