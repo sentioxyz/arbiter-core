@@ -14,13 +14,13 @@ import (
 
 type historicalProjectionSourceFake struct {
 	mu         sync.Mutex
-	projection historicalSnapshotQueryProjection
+	projection historicalSnapshotQueryAuthenticatedRecord
 	err        error
 	jobs       []replay.SnapshotQueryJob
 	mutate     func(*replay.SnapshotQueryJob)
 }
 
-func (f *historicalProjectionSourceFake) SnapshotQueryHistoricalReservation(_ context.Context, job replay.SnapshotQueryJob) (historicalSnapshotQueryProjection, error) {
+func (f *historicalProjectionSourceFake) SnapshotQueryHistoricalReservation(_ context.Context, job replay.SnapshotQueryJob) (historicalSnapshotQueryAuthenticatedRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.jobs = append(f.jobs, cloneSnapshotQueryJob(job))
@@ -40,20 +40,20 @@ type historicalReferenceFake struct {
 	mu          sync.Mutex
 	referenceID string
 	err         error
-	projections []historicalSnapshotQueryProjection
+	projections []historicalSnapshotQueryAuthenticatedRecord
 }
 
-func (f *historicalReferenceFake) SnapshotQueryHistoricalReference(_ context.Context, projection historicalSnapshotQueryProjection) (string, error) {
+func (f *historicalReferenceFake) SnapshotQueryHistoricalReference(_ context.Context, projection historicalSnapshotQueryAuthenticatedRecord) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.projections = append(f.projections, projection)
 	return f.referenceID, f.err
 }
 
-func (f *historicalReferenceFake) snapshot() []historicalSnapshotQueryProjection {
+func (f *historicalReferenceFake) snapshot() []historicalSnapshotQueryAuthenticatedRecord {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]historicalSnapshotQueryProjection(nil), f.projections...)
+	return append([]historicalSnapshotQueryAuthenticatedRecord(nil), f.projections...)
 }
 
 func historicalJob() replay.SnapshotQueryJob {
@@ -68,8 +68,8 @@ func historicalJob() replay.SnapshotQueryJob {
 	}
 }
 
-func historicalProjectionFor(job replay.SnapshotQueryJob) historicalSnapshotQueryProjection {
-	return historicalSnapshotQueryProjection{
+func historicalProjectionFor(job replay.SnapshotQueryJob) historicalSnapshotQueryAuthenticatedRecord {
+	return historicalSnapshotQueryAuthenticatedRecord{
 		Found: true, NetworkID: job.Reservation.ReadSnapshot.NetworkID, RequestID: "request-1", ClientAccount: job.Reservation.ClientAccount,
 		StatementID: job.Reservation.StatementID, ReservationID: job.Reservation.ReservationID, FencingGeneration: job.Reservation.FencingGeneration,
 	}
@@ -81,15 +81,15 @@ func newHistoricalAdapterForTest(core SnapshotQueryCore, source *historicalProje
 
 func TestHistoricalSnapshotQueryAdapter_GatesProjectionBeforeReferenceOrSubmission(t *testing.T) {
 	job := historicalJob()
-	for name, mutate := range map[string]func(*historicalSnapshotQueryProjection){
-		"not found":   func(p *historicalSnapshotQueryProjection) { p.Found = false },
-		"terminal":    func(p *historicalSnapshotQueryProjection) { p.Terminal = true },
-		"network":     func(p *historicalSnapshotQueryProjection) { p.NetworkID = "wrong" },
-		"request":     func(p *historicalSnapshotQueryProjection) { p.RequestID = "" },
-		"account":     func(p *historicalSnapshotQueryProjection) { p.ClientAccount = "wrong" },
-		"statement":   func(p *historicalSnapshotQueryProjection) { p.StatementID = "wrong" },
-		"reservation": func(p *historicalSnapshotQueryProjection) { p.ReservationID = "wrong" },
-		"fence":       func(p *historicalSnapshotQueryProjection) { p.FencingGeneration++ },
+	for name, mutate := range map[string]func(*historicalSnapshotQueryAuthenticatedRecord){
+		"not found":   func(p *historicalSnapshotQueryAuthenticatedRecord) { p.Found = false },
+		"terminal":    func(p *historicalSnapshotQueryAuthenticatedRecord) { p.Terminal = true },
+		"network":     func(p *historicalSnapshotQueryAuthenticatedRecord) { p.NetworkID = "wrong" },
+		"request":     func(p *historicalSnapshotQueryAuthenticatedRecord) { p.RequestID = "" },
+		"account":     func(p *historicalSnapshotQueryAuthenticatedRecord) { p.ClientAccount = "wrong" },
+		"statement":   func(p *historicalSnapshotQueryAuthenticatedRecord) { p.StatementID = "wrong" },
+		"reservation": func(p *historicalSnapshotQueryAuthenticatedRecord) { p.ReservationID = "wrong" },
+		"fence":       func(p *historicalSnapshotQueryAuthenticatedRecord) { p.FencingGeneration++ },
 	} {
 		t.Run(name, func(t *testing.T) {
 			projection := historicalProjectionFor(job)
@@ -114,6 +114,21 @@ func TestHistoricalSnapshotQueryAdapter_GatesProjectionBeforeReferenceOrSubmissi
 				t.Fatalf("unexpected submission: %+v", got)
 			}
 		})
+	}
+}
+
+func TestHistoricalSnapshotQueryAuthenticatedRecord_RequestIDIsSourceBoundNotJobComparable(t *testing.T) {
+	job := historicalJob()
+	// SnapshotQueryJob v2 deliberately has no RequestID. These two complete
+	// records differ only in request identity, so this adapter boundary cannot
+	// choose between them. A real source must authenticate and resolve that
+	// association before it injects either record.
+	for _, requestID := range []string{"request-a", "unrelated-request-b"} {
+		record := historicalProjectionFor(job)
+		record.RequestID = requestID
+		if err := record.checkJob(job); err != nil {
+			t.Fatalf("request %q rejected despite no job-addressable comparison: %v", requestID, err)
+		}
 	}
 }
 

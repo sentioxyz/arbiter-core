@@ -9,13 +9,17 @@ import (
 	"github.com/housegate/housegate/pkg/replay/snapshotquery"
 )
 
-// historicalSnapshotQueryProjection is the narrow, detached view of an
-// already authenticated private reservation record. It deliberately has no
-// Arbiter FSM dependency and is not a wire or runtime configuration type.
+// historicalSnapshotQueryAuthenticatedRecord is the narrow, detached view of
+// one complete, source-authenticated private reservation record. It
+// deliberately has no Arbiter FSM dependency and is not a wire or runtime
+// configuration type.
 //
-// RequestID is retained as an historical identity: a source must not return a
-// projection without the request which originally created the reservation.
-type historicalSnapshotQueryProjection struct {
+// SnapshotQueryJob v2 has no RequestID. The source must resolve and
+// authenticate the complete historical record, including that request
+// identity, before returning this value. The adapter can only require a
+// nonempty RequestID as a record-completeness guard; it cannot compare the
+// RequestID to the job at this boundary.
+type historicalSnapshotQueryAuthenticatedRecord struct {
 	Found             bool
 	Terminal          bool
 	NetworkID         string
@@ -26,19 +30,21 @@ type historicalSnapshotQueryProjection struct {
 	FencingGeneration uint64
 }
 
-// historicalSnapshotQueryProjectionSource is a private C5 injection point.
-// Implementations authenticate their records before returning them; this
-// adapter only checks that the detached result still binds exactly to the job.
-type historicalSnapshotQueryProjectionSource interface {
-	SnapshotQueryHistoricalReservation(context.Context, replay.SnapshotQueryJob) (historicalSnapshotQueryProjection, error)
+// historicalSnapshotQueryAuthenticatedRecordSource is a private C5 injection
+// point. Implementations must use the job-addressable identity to resolve and
+// authenticate one complete historical record, including its RequestID,
+// before returning it. The adapter independently compares only fields that
+// SnapshotQueryJob exposes; it does not authenticate or bind RequestID.
+type historicalSnapshotQueryAuthenticatedRecordSource interface {
+	SnapshotQueryHistoricalReservation(context.Context, replay.SnapshotQueryJob) (historicalSnapshotQueryAuthenticatedRecord, error)
 }
 
 // historicalSnapshotQueryTrustedReference supplies the registered external
-// reference after the historical projection has passed every local gate. Its
+// reference after the historical record has passed every local gate. Its
 // output is passed through verbatim and is never derived from a job or a
 // reservation field.
 type historicalSnapshotQueryTrustedReference interface {
-	SnapshotQueryHistoricalReference(context.Context, historicalSnapshotQueryProjection) (string, error)
+	SnapshotQueryHistoricalReference(context.Context, historicalSnapshotQueryAuthenticatedRecord) (string, error)
 }
 
 // historicalSnapshotQueryAdapter is intentionally injection-only. A caller
@@ -46,13 +52,13 @@ type historicalSnapshotQueryTrustedReference interface {
 // SnapshotQueryReference dependencies; New never installs it by default.
 type historicalSnapshotQueryAdapter struct {
 	core       SnapshotQueryCore
-	source     historicalSnapshotQueryProjectionSource
+	source     historicalSnapshotQueryAuthenticatedRecordSource
 	references historicalSnapshotQueryTrustedReference
 }
 
 func newHistoricalSnapshotQueryAdapter(
 	v *snapshotquery.Verifier,
-	source historicalSnapshotQueryProjectionSource,
+	source historicalSnapshotQueryAuthenticatedRecordSource,
 	references historicalSnapshotQueryTrustedReference,
 ) (*historicalSnapshotQueryAdapter, error) {
 	core, err := NewSnapshotQueryReplayCore(v)
@@ -60,7 +66,7 @@ func newHistoricalSnapshotQueryAdapter(
 		return nil, err
 	}
 	if source == nil || references == nil {
-		return nil, fmt.Errorf("snapshot query historical projection source and trusted reference are required")
+		return nil, fmt.Errorf("snapshot query authenticated historical record source and trusted reference are required")
 	}
 	return &historicalSnapshotQueryAdapter{core: core, source: source, references: references}, nil
 }
@@ -80,17 +86,17 @@ func (a *historicalSnapshotQueryAdapter) SnapshotQueryReference(ctx context.Cont
 		return "", fmt.Errorf("snapshot query historical adapter is not configured")
 	}
 	job = cloneSnapshotQueryJob(job)
-	projection, err := a.source.SnapshotQueryHistoricalReservation(ctx, job)
+	record, err := a.source.SnapshotQueryHistoricalReservation(ctx, job)
 	if err != nil {
 		return "", fmt.Errorf("snapshot query historical reservation: %w", err)
 	}
-	if err := projection.checkJob(job); err != nil {
+	if err := record.checkJob(job); err != nil {
 		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	referenceID, err := a.references.SnapshotQueryHistoricalReference(ctx, projection)
+	referenceID, err := a.references.SnapshotQueryHistoricalReference(ctx, record)
 	if err != nil {
 		return "", fmt.Errorf("snapshot query trusted reference: %w", err)
 	}
@@ -100,7 +106,10 @@ func (a *historicalSnapshotQueryAdapter) SnapshotQueryReference(ctx context.Cont
 	return referenceID, nil
 }
 
-func (p historicalSnapshotQueryProjection) checkJob(job replay.SnapshotQueryJob) error {
+// checkJob compares the record fields which SnapshotQueryJob v2 exposes. Its
+// RequestID check deliberately establishes presence only; source-side record
+// authentication establishes the request-to-record association.
+func (p historicalSnapshotQueryAuthenticatedRecord) checkJob(job replay.SnapshotQueryJob) error {
 	if !p.Found {
 		return fmt.Errorf("snapshot query historical reservation was not found")
 	}
@@ -110,7 +119,7 @@ func (p historicalSnapshotQueryProjection) checkJob(job replay.SnapshotQueryJob)
 	if strings.TrimSpace(p.NetworkID) == "" || strings.TrimSpace(p.RequestID) == "" ||
 		strings.TrimSpace(p.ClientAccount) == "" || strings.TrimSpace(p.StatementID) == "" ||
 		strings.TrimSpace(p.ReservationID) == "" {
-		return fmt.Errorf("snapshot query historical reservation projection is incomplete")
+		return fmt.Errorf("snapshot query historical reservation record is incomplete")
 	}
 	r := job.Reservation
 	if p.NetworkID != r.ReadSnapshot.NetworkID {
