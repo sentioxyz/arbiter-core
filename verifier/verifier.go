@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -25,16 +26,32 @@ type replayCore interface {
 	Verify(ctx context.Context, job replay.ReplayJob) (replay.ReplayAttestation, error)
 }
 
+// SnapshotQueryCore is deliberately separate from replayCore. Query replay has
+// a different receipt, a protected invocation reference, and no legacy fallback.
+// The reference is supplied only by the trusted outer lifecycle owner.
+type SnapshotQueryCore interface {
+	VerifySnapshotQuery(ctx context.Context, job replay.SnapshotQueryJob, referenceID string) (replay.SnapshotQueryAttestation, error)
+}
+
+// SnapshotQueryReferenceProvider returns the exact, already registered
+// invocation reference for this job. It is an in-process capability selector;
+// it is neither a wire value nor derived from any job field.
+type SnapshotQueryReferenceProvider interface {
+	SnapshotQueryReference(ctx context.Context, job replay.SnapshotQueryJob) (string, error)
+}
+
 type scanner interface {
 	Scan(ctx context.Context, parts []arbiter.PartRef) ([]arbiter.PartScan, error)
 }
 
 type Deps struct {
-	Client  *dataplane.Client
-	Replay  replayCore
-	Scanner scanner
-	Conn    clickhouse.Conn
-	Logger  *slog.Logger
+	Client                 *dataplane.Client
+	Replay                 replayCore
+	SnapshotQuery          SnapshotQueryCore
+	SnapshotQueryReference SnapshotQueryReferenceProvider
+	Scanner                scanner
+	Conn                   clickhouse.Conn
+	Logger                 *slog.Logger
 }
 
 type Role struct {
@@ -102,6 +119,8 @@ func (r *Role) Run(ctx context.Context) error {
 			switch msg := d.GetDispatch().(type) {
 			case *pb.VerifierDispatch_ReplayJob:
 				return r.handleReplayJob(ctx, msg.ReplayJob)
+			case *pb.VerifierDispatch_SnapshotQueryJob:
+				return r.handleSnapshotQueryJob(ctx, msg.SnapshotQueryJob)
 			case *pb.VerifierDispatch_ByteSideScan:
 				return r.handleScanRequest(ctx, msg.ByteSideScan)
 			default:
@@ -235,6 +254,49 @@ func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {
 	}
 	return r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		_, err := pb.NewVerifierGatewayClient(conn).SubmitAttestation(ctx, wire.AttestationToPB(att))
+		return err
+	})
+}
+
+func (r *Role) handleSnapshotQueryJob(ctx context.Context, m *pb.SnapshotQueryJob) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m == nil {
+		return fmt.Errorf("snapshot query job is required")
+	}
+	// Both dependencies are optional by design. Leaving either nil retains the
+	// existing default-disabled runtime behaviour and refuses before submission.
+	if r.d.SnapshotQuery == nil || r.d.SnapshotQueryReference == nil {
+		return fmt.Errorf("snapshot query verifier is not configured")
+	}
+	job := wire.SnapshotQueryJobFromPB(m)
+	referenceID, err := r.d.SnapshotQueryReference.SnapshotQueryReference(ctx, job)
+	if err != nil {
+		r.d.Logger.Warn("snapshot query reference rejected; refusing to attest", "block", m.GetBlockSeq(), "err", err)
+		return err
+	}
+	// Preserve valid bytes exactly. TrimSpace is only a blankness test, never a
+	// normalisation or a substitute derived from reservation/statement/context.
+	if strings.TrimSpace(referenceID) == "" {
+		return fmt.Errorf("snapshot query reference is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	att, err := r.d.SnapshotQuery.VerifySnapshotQuery(ctx, job, referenceID)
+	if err != nil {
+		r.d.Logger.Warn("snapshot query verify failed; refusing to attest", "block", m.GetBlockSeq(), "err", err)
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err := pb.NewVerifierGatewayClient(conn).SubmitSnapshotQueryAttestation(ctx, wire.SnapshotQueryAttestationToPB(att))
 		return err
 	})
 }

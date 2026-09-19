@@ -29,6 +29,12 @@ func TestNewReplayCore_AssemblesVerifier(t *testing.T) {
 	}
 }
 
+func TestNewSnapshotQueryReplayCore_RejectsMissingVerifier(t *testing.T) {
+	if _, err := NewSnapshotQueryReplayCore(nil); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("missing query verifier must fail, got %v", err)
+	}
+}
+
 func TestNewReplayCore_QueryDispatchStaysDefaultOff(t *testing.T) {
 	cfg := testConfigV()
 	core, err := NewReplayCore(cfg, nil, payloadexec.NewMemSnapshotStore(), payloadexec.NewMemPayloadStore())

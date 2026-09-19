@@ -37,6 +37,33 @@ func NewReplayCore(cfg Config, conn clickhouse.Conn, manifests replay.SnapshotSt
 	}, nil
 }
 
+// SnapshotQueryReplayCore adapts the query-only verifier to the role's
+// dispatch port. Construction is explicit: callers that do not install a
+// verified query route and historical policy leave the role default-off.
+type SnapshotQueryReplayCore struct {
+	verifier *snapshotquery.Verifier
+}
+
+// NewSnapshotQueryReplayCore installs no routes or authority itself. The
+// caller must construct snapshotquery.Verifier with its immutable dispatcher,
+// signer, and authenticated historical policy before injecting this core.
+func NewSnapshotQueryReplayCore(v *snapshotquery.Verifier) (*SnapshotQueryReplayCore, error) {
+	if v == nil {
+		return nil, fmt.Errorf("snapshot query verifier is required")
+	}
+	return &SnapshotQueryReplayCore{verifier: v}, nil
+}
+
+// VerifySnapshotQuery forwards the exact trusted reference without deriving
+// or normalising it. snapshotquery.Verifier owns the query-specific validation
+// and receipt signing order.
+func (c *SnapshotQueryReplayCore) VerifySnapshotQuery(ctx context.Context, job replay.SnapshotQueryJob, referenceID string) (replay.SnapshotQueryAttestation, error) {
+	if c == nil || c.verifier == nil {
+		return replay.SnapshotQueryAttestation{}, fmt.Errorf("snapshot query verifier is not configured")
+	}
+	return c.verifier.Verify(ctx, snapshotquery.VerifyRequest{Job: job, ReferenceID: referenceID})
+}
+
 // tableSchemaHashes implements replay.SchemaHashSource over the verifier's
 // configured tables (Phase-B hashes under this network id).
 type tableSchemaHashes struct {
