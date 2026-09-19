@@ -35,7 +35,7 @@ func newRoleHarnessV(t *testing.T, core *fakeReplayCore, scanner *fakeScanner) (
 	return role, server
 }
 
-func newRoleHarnessVWithSnapshotQuery(t *testing.T, core *fakeSnapshotQueryCore, references *fakeSnapshotQueryReferenceProvider) (*Role, *verifierFakeServer) {
+func newRoleHarnessVWithSnapshotQuery(t *testing.T, core SnapshotQueryCore, references SnapshotQueryReferenceProvider) (*Role, *verifierFakeServer) {
 	t.Helper()
 	server := newVerifierFakeServer()
 	addr := startVerifierFakeServer(t, server)
