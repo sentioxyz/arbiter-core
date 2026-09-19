@@ -35,6 +35,22 @@ func newRoleHarnessV(t *testing.T, core *fakeReplayCore, scanner *fakeScanner) (
 	return role, server
 }
 
+func newRoleHarnessVWithSnapshotQuery(t *testing.T, core *fakeSnapshotQueryCore, references *fakeSnapshotQueryReferenceProvider) (*Role, *verifierFakeServer) {
+	t.Helper()
+	server := newVerifierFakeServer()
+	addr := startVerifierFakeServer(t, server)
+	client, err := dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: addr}}})
+	if err != nil {
+		t.Fatalf("new dataplane client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	role, err := New(testConfigV(), Deps{Client: client, Replay: &fakeReplayCore{}, Scanner: &fakeScanner{}, SnapshotQuery: core, SnapshotQueryReference: references})
+	if err != nil {
+		t.Fatalf("new role: %v", err)
+	}
+	return role, server
+}
+
 func TestNew_AssertsSchemaRoot(t *testing.T) {
 	// Given
 	cfg := testConfigV()
@@ -148,6 +164,93 @@ func TestRun_ReplayCoreErrorMeansNoAttestationAndLoopSurvives(t *testing.T) {
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("run exit: %v", err)
+	}
+}
+
+func TestRun_SnapshotQueryJobUsesTrustedReferenceAndSubmitsOnce(t *testing.T) {
+	job := replay.SnapshotQueryJob{BlockSeq: 19, Reservation: replay.SnapshotQueryReservation{ReservationID: "must-not-be-reference"}, Statement: replay.SnapshotQueryStatement{StatementSeq: 71}}
+	att := replay.SnapshotQueryAttestation{ReplicaID: "v1", ReceiptHash: "0xquery", Signature: "sig"}
+	core := &fakeSnapshotQueryCore{results: []replay.SnapshotQueryAttestation{att}}
+	references := &fakeSnapshotQueryReferenceProvider{references: []string{" registered/reference "}}
+	role, server := newRoleHarnessVWithSnapshotQuery(t, core, references)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- role.Run(ctx) }()
+
+	server.push(wire.SnapshotQueryJobDispatch(job))
+	waitVerifier(t, "snapshot query attestation submission", func() bool { return len(server.queryAttestationsSnapshot()) == 1 })
+	jobs, gotReferences := core.snapshot()
+	wantJob := wire.SnapshotQueryJobFromPB(wire.SnapshotQueryJobToPB(job))
+	if len(jobs) != 1 || !reflect.DeepEqual(jobs[0], wantJob) || !reflect.DeepEqual(gotReferences, []string{" registered/reference "}) {
+		t.Fatalf("core calls jobs=%+v references=%q", jobs, gotReferences)
+	}
+	if providerJobs := references.snapshot(); len(providerJobs) != 1 || !reflect.DeepEqual(providerJobs[0], wantJob) {
+		t.Fatalf("reference provider jobs=%+v", providerJobs)
+	}
+	got := server.queryAttestationsSnapshot()[0]
+	if got.GetReplicaId() != att.ReplicaID || got.GetReceiptHash() != att.ReceiptHash || got.GetSignature() != att.Signature {
+		t.Fatalf("query attestation got=%+v want=%+v", got, wire.SnapshotQueryAttestationToPB(att))
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("run exit: %v", err)
+	}
+}
+
+func TestRun_SnapshotQueryJobRejectsMissingDependenciesWithoutSubmission(t *testing.T) {
+	role, server := newRoleHarnessV(t, &fakeReplayCore{}, &fakeScanner{})
+	err := role.handleSnapshotQueryJob(context.Background(), wire.SnapshotQueryJobToPB(replay.SnapshotQueryJob{BlockSeq: 3}))
+	if err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("missing dependencies error: %v", err)
+	}
+	if got := server.queryAttestationsSnapshot(); len(got) != 0 {
+		t.Fatalf("unexpected query attestations: %+v", got)
+	}
+}
+
+func TestRun_SnapshotQueryJobReferenceOrCoreFailuresSubmitNothingAndLoopSurvives(t *testing.T) {
+	core := &fakeSnapshotQueryCore{errs: []error{errors.New("core failed")}}
+	references := &fakeSnapshotQueryReferenceProvider{references: []string{"", "good-reference"}, errs: []error{nil, nil, errors.New("reference failed")}}
+	role, server := newRoleHarnessVWithSnapshotQuery(t, core, references)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- role.Run(ctx) }()
+	server.push(wire.SnapshotQueryJobDispatch(replay.SnapshotQueryJob{BlockSeq: 1}))
+	server.push(wire.SnapshotQueryJobDispatch(replay.SnapshotQueryJob{BlockSeq: 2}))
+	server.push(wire.SnapshotQueryJobDispatch(replay.SnapshotQueryJob{BlockSeq: 3}))
+	waitVerifier(t, "all snapshot query reference checks", func() bool { return len(references.snapshot()) == 3 })
+	if jobs, _ := core.snapshot(); len(jobs) != 1 {
+		t.Fatalf("snapshot query core calls=%d want=1", len(jobs))
+	}
+	if got := server.queryAttestationsSnapshot(); len(got) != 0 {
+		t.Fatalf("query failures submitted attestations: %+v", got)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("run exit: %v", err)
+	}
+}
+
+func TestHandleSnapshotQueryJobCanceledDoesNotUseDependenciesOrSubmit(t *testing.T) {
+	core := &fakeSnapshotQueryCore{}
+	references := &fakeSnapshotQueryReferenceProvider{references: []string{"reference"}}
+	role, server := newRoleHarnessVWithSnapshotQuery(t, core, references)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := role.handleSnapshotQueryJob(ctx, wire.SnapshotQueryJobToPB(replay.SnapshotQueryJob{BlockSeq: 4}))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled handler error: %v", err)
+	}
+	if got := references.snapshot(); len(got) != 0 {
+		t.Fatalf("canceled handler called reference provider: %+v", got)
+	}
+	if jobs, refs := core.snapshot(); len(jobs) != 0 || len(refs) != 0 {
+		t.Fatalf("canceled handler called query core: jobs=%+v refs=%q", jobs, refs)
+	}
+	if got := server.queryAttestationsSnapshot(); len(got) != 0 {
+		t.Fatalf("canceled handler submitted attestations: %+v", got)
 	}
 }
 

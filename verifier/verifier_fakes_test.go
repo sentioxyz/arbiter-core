@@ -60,6 +60,7 @@ type verifierFakeServer struct {
 	registrations       []*pb.NodeRegistration
 	active              []string
 	attestations        []*pb.ReplayAttestation
+	queryAttestations   []*pb.SnapshotQueryAttestation
 	scans               []*pb.ByteSideScanMsg
 	subscriptionStarts  int
 	activeSubscriptions int
@@ -126,11 +127,24 @@ func (s *verifierFakeServer) SubmitAttestation(_ context.Context, att *pb.Replay
 	return &pb.Ack{}, nil
 }
 
+func (s *verifierFakeServer) SubmitSnapshotQueryAttestation(_ context.Context, att *pb.SnapshotQueryAttestation) (*pb.Ack, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queryAttestations = append(s.queryAttestations, att)
+	return &pb.Ack{}, nil
+}
+
 func (s *verifierFakeServer) SubmitByteSideScan(_ context.Context, scan *pb.ByteSideScanMsg) (*pb.Ack, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scans = append(s.scans, scan)
 	return &pb.Ack{}, nil
+}
+
+func (s *verifierFakeServer) queryAttestationsSnapshot() []*pb.SnapshotQueryAttestation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*pb.SnapshotQueryAttestation(nil), s.queryAttestations...)
 }
 
 func (s *verifierFakeServer) RegisterNode(_ context.Context, reg *pb.NodeRegistration) (*pb.Ack, error) {
@@ -187,6 +201,62 @@ type fakeReplayCore struct {
 	jobs    []replay.ReplayJob
 	results []replay.ReplayAttestation
 	errs    []error
+}
+
+type fakeSnapshotQueryCore struct {
+	mu         sync.Mutex
+	jobs       []replay.SnapshotQueryJob
+	references []string
+	results    []replay.SnapshotQueryAttestation
+	errs       []error
+}
+
+func (c *fakeSnapshotQueryCore) VerifySnapshotQuery(_ context.Context, job replay.SnapshotQueryJob, reference string) (replay.SnapshotQueryAttestation, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	idx := len(c.jobs)
+	c.jobs = append(c.jobs, job)
+	c.references = append(c.references, reference)
+	if idx < len(c.errs) && c.errs[idx] != nil {
+		return replay.SnapshotQueryAttestation{}, c.errs[idx]
+	}
+	if idx < len(c.results) {
+		return c.results[idx], nil
+	}
+	return replay.SnapshotQueryAttestation{ReplicaID: "v1", ReceiptHash: fmt.Sprintf("0xqueryreceipt%d", idx+1), Signature: "sig"}, nil
+}
+
+func (c *fakeSnapshotQueryCore) snapshot() ([]replay.SnapshotQueryJob, []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]replay.SnapshotQueryJob(nil), c.jobs...), append([]string(nil), c.references...)
+}
+
+type fakeSnapshotQueryReferenceProvider struct {
+	mu         sync.Mutex
+	jobs       []replay.SnapshotQueryJob
+	references []string
+	errs       []error
+}
+
+func (p *fakeSnapshotQueryReferenceProvider) SnapshotQueryReference(_ context.Context, job replay.SnapshotQueryJob) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	idx := len(p.jobs)
+	p.jobs = append(p.jobs, job)
+	if idx < len(p.errs) && p.errs[idx] != nil {
+		return "", p.errs[idx]
+	}
+	if idx < len(p.references) {
+		return p.references[idx], nil
+	}
+	return "", nil
+}
+
+func (p *fakeSnapshotQueryReferenceProvider) snapshot() []replay.SnapshotQueryJob {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]replay.SnapshotQueryJob(nil), p.jobs...)
 }
 
 func (c *fakeReplayCore) Verify(_ context.Context, job replay.ReplayJob) (replay.ReplayAttestation, error) {
