@@ -308,7 +308,9 @@ func (r *Role) handleSnapshotQueryJob(ctx context.Context, m *pb.SnapshotQueryJo
 
 // verifySnapshotQueryEnvelope authenticates the user's v3 envelope before any
 // historical record, reference or funding decision runs (plan B5: signature
-// and roots first, then history).
+// and roots first, then history). It stays a named function, not an inline
+// call at the site below, so that ordering is visible at a glance: the gate
+// runs before any trusted reference provider is consulted.
 // envelope-internal: does not bind the envelope to the job's reservation; the
 // housegate verifier core does that
 func verifySnapshotQueryEnvelope(envelope replay.SnapshotQueryEnvelope) (string, error) {
