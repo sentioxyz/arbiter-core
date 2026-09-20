@@ -80,6 +80,16 @@ type canonicalPartManifestEntry struct {
 	Bytes         uint64 `json:"bytes"`
 }
 
+// canonicalProjectionOmits names raw-record fields that the canonical DTOs
+// above drop before hashing. rejectNilSlices walks the raw command, so without
+// this it would police an array that cannot reach the root: partManifestEntryFromPB
+// appends onto a nil slice, so every part decoded from protobuf with no storage
+// refs carries nil, and such a command must still hash to the root its sender
+// computed. Keep an entry only while the canonical DTO really omits the field.
+var canonicalProjectionOmits = map[reflect.Type]map[string]bool{
+	reflect.TypeOf(replay.PartManifestEntry{}): {"StorageRefs": true},
+}
+
 func canonicalManifest(v replay.SafeSnapshotManifest) canonicalSafeSnapshotManifest {
 	out := canonicalSafeSnapshotManifest{
 		SnapshotID: v.SnapshotID, ParentSnapshotID: v.ParentSnapshotID, SafeBlockSeq: v.SafeBlockSeq,
@@ -372,9 +382,11 @@ func ArtifactDispositionCommandRoot(command ArtifactDispositionCommandV1) (strin
 	return h, nil
 }
 
-// rejectNilSlices makes the command-root DTO unambiguous: all arrays have a
-// concrete [] representation, never JSON null. It walks embedded replay
-// records too, so a future action cannot silently reintroduce null arrays.
+// rejectNilSlices makes the command-root DTO unambiguous: every array the root
+// hashes has a concrete [] representation, never JSON null. It walks embedded
+// replay records too, so a future action cannot silently reintroduce null
+// arrays, and skips the fields canonicalProjectionOmits excludes from the
+// hashed projection so a nil there cannot reject an otherwise valid command.
 func rejectNilSlices(v reflect.Value) error {
 	if !v.IsValid() {
 		return nil
@@ -396,8 +408,10 @@ func rejectNilSlices(v reflect.Value) error {
 			}
 		}
 	case reflect.Struct:
+		omitted := canonicalProjectionOmits[v.Type()]
 		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).PkgPath != "" {
+			field := v.Type().Field(i)
+			if field.PkgPath != "" || omitted[field.Name] {
 				continue
 			}
 			if err := rejectNilSlices(v.Field(i)); err != nil {

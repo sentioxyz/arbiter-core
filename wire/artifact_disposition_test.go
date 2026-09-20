@@ -131,6 +131,101 @@ func TestArtifactDispositionManifestCanonicalJSONAndRootGolden(t *testing.T) {
 	}
 }
 
+func TestArtifactDispositionCommandRootAcceptsEveryStorageRefShape(t *testing.T) {
+	newRegister := func(refs []string) ArtifactDispositionCommandV1 {
+		return dispositionCommand(ArtifactDispositionActionV1{RegisterCandidate: &ArtifactDispositionRegisterCandidateV1{
+			Manifest: replay.SafeSnapshotManifest{SnapshotID: "snapshot", Tables: []replay.TableManifest{{
+				TableID:        "db.t",
+				PartitionRoots: []replay.PartitionCommitment{{TableID: "db.t", PartitionID: "p", Root: "0xroot"}},
+				ActiveParts: []replay.PartManifestEntry{{
+					TableID: "db.t", PartitionID: "p", PartName: "part", StorageRefs: refs,
+				}},
+			}}},
+		}})
+	}
+	// nil is not a hypothetical shape: partManifestEntryFromPB appends onto a
+	// nil slice, so every part decoded from protobuf without refs carries nil.
+	shapes := []struct {
+		name string
+		refs []string
+	}{{"empty", []string{}}, {"populated", []string{"s3://bucket/object", "gs://other/object"}}}
+
+	registerRoot, err := ArtifactDispositionCommandRoot(newRegister(nil))
+	if err != nil {
+		t.Fatalf("nil storage refs rejected: %v", err)
+	}
+	for _, shape := range shapes {
+		got, err := ArtifactDispositionCommandRoot(newRegister(shape.refs))
+		if err != nil {
+			t.Fatalf("%s storage refs rejected: %v", shape.name, err)
+		}
+		if got != registerRoot {
+			t.Fatalf("%s storage refs changed the command root: got %q want %q", shape.name, got, registerRoot)
+		}
+	}
+
+	// The attestation receipt's parts project through the same canonical DTO.
+	newChallenge := func(refs []string) ArtifactDispositionCommandV1 {
+		return dispositionCommand(ArtifactDispositionActionV1{OpenChallenge: &ArtifactDispositionOpenChallengeV1{
+			Attestation: replay.SnapshotQueryAttestation{Receipt: replay.SnapshotQueryReceipt{
+				PartitionCommitmentsAfter: []replay.PartitionCommitment{},
+				AffectedParts:             []replay.PartManifestEntry{{TableID: "db.t", StorageRefs: refs}},
+			}},
+		}})
+	}
+	challengeRoot, err := ArtifactDispositionCommandRoot(newChallenge(nil))
+	if err != nil {
+		t.Fatalf("nil attestation storage refs rejected: %v", err)
+	}
+	for _, shape := range shapes {
+		got, err := ArtifactDispositionCommandRoot(newChallenge(shape.refs))
+		if err != nil {
+			t.Fatalf("%s attestation storage refs rejected: %v", shape.name, err)
+		}
+		if got != challengeRoot {
+			t.Fatalf("%s attestation storage refs changed the command root: got %q want %q", shape.name, got, challengeRoot)
+		}
+	}
+
+	// A protobuf round trip is where nil refs actually come from, and the
+	// decoded command must still hash to the root its sender computed.
+	raw, err := Encode(Command{ArtifactDisposition: &ArtifactDispositionCmd{Command: newRegister([]string{})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := decoded.ArtifactDisposition.Command.Action.RegisterCandidate.Manifest.Tables[0].ActiveParts[0].StorageRefs; refs != nil {
+		t.Fatalf("decode was expected to drop empty refs to nil, got %#v", refs)
+	}
+	got, err := ArtifactDispositionCommandRoot(decoded.ArtifactDisposition.Command)
+	if err != nil {
+		t.Fatalf("decoded command rejected: %v", err)
+	}
+	if got != registerRoot {
+		t.Fatalf("decoded command root = %q, want %q", got, registerRoot)
+	}
+
+	// The nil-array rule still polices every array the root does hash.
+	nilRoots := newRegister(nil)
+	nilRoots.Action.RegisterCandidate.Manifest.Tables[0].PartitionRoots = nil
+	if _, err := ArtifactDispositionCommandRoot(nilRoots); err == nil {
+		t.Fatal("nil partition roots accepted")
+	}
+	nilTables := newRegister(nil)
+	nilTables.Action.RegisterCandidate.Manifest.Tables = nil
+	if _, err := ArtifactDispositionCommandRoot(nilTables); err == nil {
+		t.Fatal("nil tables accepted")
+	}
+
+	// Skipping the field is only sound while the canonical DTO omits it.
+	if _, ok := reflect.TypeOf(canonicalPartManifestEntry{}).FieldByName("StorageRefs"); ok {
+		t.Fatal("canonical part DTO carries StorageRefs again; drop the canonicalProjectionOmits entry")
+	}
+}
+
 func TestArtifactDispositionPublishManifestUsesCanonicalDTO(t *testing.T) {
 	command := dispositionCommand(ArtifactDispositionActionV1{PublishCandidate: &ArtifactDispositionPublishCandidateV1{
 		Manifest: replay.SafeSnapshotManifest{Tables: []replay.TableManifest{{
