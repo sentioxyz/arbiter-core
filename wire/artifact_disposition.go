@@ -46,7 +46,10 @@ type ArtifactDispositionActionV1 struct {
 // canonicalSafeSnapshotManifest deliberately does not reuse replay's JSON
 // encoding. The replay record predates C1 and uses omitempty for two ordinary
 // fields; a C1 command must retain those zero values and empty arrays in its
-// public root.
+// public root. Part storage locations are the one deliberate omission: design
+// D5 makes StorageRefs fetch hints rather than identity, so relocating an
+// artifact that still serves the same authenticated bytes must not change the
+// command root of an otherwise identical registration.
 type canonicalSafeSnapshotManifest struct {
 	SnapshotID        string                   `json:"snapshot_id"`
 	ParentSnapshotID  string                   `json:"parent_snapshot_id"`
@@ -68,14 +71,23 @@ type canonicalTableManifest struct {
 }
 
 type canonicalPartManifestEntry struct {
-	TableID       string   `json:"table_id"`
-	PartitionID   string   `json:"partition_id"`
-	PartName      string   `json:"part_name"`
-	PartPhysHash  string   `json:"part_phys_hash"`
-	PartRowLtHash string   `json:"part_row_lthash"`
-	RowCount      uint64   `json:"row_count"`
-	Bytes         uint64   `json:"bytes"`
-	StorageRefs   []string `json:"storage_refs"`
+	TableID       string `json:"table_id"`
+	PartitionID   string `json:"partition_id"`
+	PartName      string `json:"part_name"`
+	PartPhysHash  string `json:"part_phys_hash"`
+	PartRowLtHash string `json:"part_row_lthash"`
+	RowCount      uint64 `json:"row_count"`
+	Bytes         uint64 `json:"bytes"`
+}
+
+// canonicalProjectionOmits names raw-record fields that the canonical DTOs
+// above drop before hashing. rejectNilSlices walks the raw command, so without
+// this it would police an array that cannot reach the root: partManifestEntryFromPB
+// appends onto a nil slice, so every part decoded from protobuf with no storage
+// refs carries nil, and such a command must still hash to the root its sender
+// computed. Keep an entry only while the canonical DTO really omits the field.
+var canonicalProjectionOmits = map[reflect.Type]map[string]bool{
+	reflect.TypeOf(replay.PartManifestEntry{}): {"StorageRefs": true},
 }
 
 func canonicalManifest(v replay.SafeSnapshotManifest) canonicalSafeSnapshotManifest {
@@ -94,7 +106,7 @@ func canonicalManifest(v replay.SafeSnapshotManifest) canonicalSafeSnapshotManif
 			out.Tables[i].ActiveParts[j] = canonicalPartManifestEntry{
 				TableID: part.TableID, PartitionID: part.PartitionID, PartName: part.PartName,
 				PartPhysHash: part.PartPhysHash, PartRowLtHash: part.PartRowLtHash, RowCount: part.RowCount,
-				Bytes: part.Bytes, StorageRefs: part.StorageRefs,
+				Bytes: part.Bytes,
 			}
 		}
 	}
@@ -135,7 +147,7 @@ func canonicalPart(v replay.PartManifestEntry) canonicalPartManifestEntry {
 	return canonicalPartManifestEntry{
 		TableID: v.TableID, PartitionID: v.PartitionID, PartName: v.PartName,
 		PartPhysHash: v.PartPhysHash, PartRowLtHash: v.PartRowLtHash, RowCount: v.RowCount,
-		Bytes: v.Bytes, StorageRefs: v.StorageRefs,
+		Bytes: v.Bytes,
 	}
 }
 
@@ -370,9 +382,11 @@ func ArtifactDispositionCommandRoot(command ArtifactDispositionCommandV1) (strin
 	return h, nil
 }
 
-// rejectNilSlices makes the command-root DTO unambiguous: all arrays have a
-// concrete [] representation, never JSON null. It walks embedded replay
-// records too, so a future action cannot silently reintroduce null arrays.
+// rejectNilSlices makes the command-root DTO unambiguous: every array the root
+// hashes has a concrete [] representation, never JSON null. It walks embedded
+// replay records too, so a future action cannot silently reintroduce null
+// arrays, and skips the fields canonicalProjectionOmits excludes from the
+// hashed projection so a nil there cannot reject an otherwise valid command.
 func rejectNilSlices(v reflect.Value) error {
 	if !v.IsValid() {
 		return nil
@@ -394,8 +408,10 @@ func rejectNilSlices(v reflect.Value) error {
 			}
 		}
 	case reflect.Struct:
+		omitted := canonicalProjectionOmits[v.Type()]
 		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).PkgPath != "" {
+			field := v.Type().Field(i)
+			if field.PkgPath != "" || omitted[field.Name] {
 				continue
 			}
 			if err := rejectNilSlices(v.Field(i)); err != nil {

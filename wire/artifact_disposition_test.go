@@ -85,19 +85,25 @@ func TestArtifactDispositionCommandRootRejectsActionCardinality(t *testing.T) {
 }
 
 func TestArtifactDispositionManifestCanonicalJSONAndRootGolden(t *testing.T) {
-	command := dispositionCommand(ArtifactDispositionActionV1{RegisterCandidate: &ArtifactDispositionRegisterCandidateV1{
-		Pin: replay.SnapshotPin{NetworkID: "net", SnapshotID: "pin"},
-		Manifest: replay.SafeSnapshotManifest{SnapshotID: "snapshot", Tables: []replay.TableManifest{{
-			TableID: "db.t", PartitionRoots: []replay.PartitionCommitment{}, ActiveParts: []replay.PartManifestEntry{{
-				TableID: "db.t", PartitionID: "p", PartName: "part", StorageRefs: []string{},
-			}},
-		}}},
-	}})
+	// Every case rebuilds the command. ArtifactDispositionActionV1 holds the
+	// action behind a pointer, so a struct copy would share a mutated manifest
+	// and confound one mutation with the next.
+	newCommand := func() ArtifactDispositionCommandV1 {
+		return dispositionCommand(ArtifactDispositionActionV1{RegisterCandidate: &ArtifactDispositionRegisterCandidateV1{
+			Pin: replay.SnapshotPin{NetworkID: "net", SnapshotID: "pin"},
+			Manifest: replay.SafeSnapshotManifest{SnapshotID: "snapshot", Tables: []replay.TableManifest{{
+				TableID: "db.t", PartitionRoots: []replay.PartitionCommitment{}, ActiveParts: []replay.PartManifestEntry{{
+					TableID: "db.t", PartitionID: "p", PartName: "part", StorageRefs: []string{},
+				}},
+			}}},
+		}})
+	}
+	command := newCommand()
 	gotJSON, err := json.Marshal(command)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantJSON = `{"version":1,"network_id":"net","keeper_shard_id":1,"actor_id":"0x1111111111111111111111111111111111111111","request_id":"request","expected_revision":0,"action":{"register_candidate":{"pin":{"network_id":"net","keeper_shard_id":0,"snapshot_id":"pin","safe_block_seq":0,"manifest_root":"","state_root":"","schema_snapshot_id":"","schema_root":""},"manifest":{"snapshot_id":"snapshot","parent_snapshot_id":"","safe_block_seq":0,"state_root":"","schema_snapshot_id":"","schema_root":"","executor_profile_id":"","data_root":"","manifest_root":"","tables":[{"table_id":"db.t","schema_hash":"","partition_roots":[],"active_parts":[{"table_id":"db.t","partition_id":"p","part_name":"part","part_phys_hash":"","part_row_lthash":"","row_count":0,"bytes":0,"storage_refs":[]}]}]},"publisher_id":"","retention_policy_id":"","publication_reference_id":"","origin":{"kind":"","parent_snapshot_id":"","safe_block_seq":0,"activation_id":"","transition_root":"","client_account":"","statement_id":"","request_id":"","reservation_id":"","fencing_generation":0,"block_seq":0,"statement_seq":0,"statement_root":"","input_root":"","user_jws_hash":"","execution_outcome":"","candidate_seq":0}}}}`
+	const wantJSON = `{"version":1,"network_id":"net","keeper_shard_id":1,"actor_id":"0x1111111111111111111111111111111111111111","request_id":"request","expected_revision":0,"action":{"register_candidate":{"pin":{"network_id":"net","keeper_shard_id":0,"snapshot_id":"pin","safe_block_seq":0,"manifest_root":"","state_root":"","schema_snapshot_id":"","schema_root":""},"manifest":{"snapshot_id":"snapshot","parent_snapshot_id":"","safe_block_seq":0,"state_root":"","schema_snapshot_id":"","schema_root":"","executor_profile_id":"","data_root":"","manifest_root":"","tables":[{"table_id":"db.t","schema_hash":"","partition_roots":[],"active_parts":[{"table_id":"db.t","partition_id":"p","part_name":"part","part_phys_hash":"","part_row_lthash":"","row_count":0,"bytes":0}]}]},"publisher_id":"","retention_policy_id":"","publication_reference_id":"","origin":{"kind":"","parent_snapshot_id":"","safe_block_seq":0,"activation_id":"","transition_root":"","client_account":"","statement_id":"","request_id":"","reservation_id":"","fencing_generation":0,"block_seq":0,"statement_seq":0,"statement_root":"","input_root":"","user_jws_hash":"","execution_outcome":"","candidate_seq":0}}}}`
 	if string(gotJSON) != wantJSON {
 		t.Fatalf("canonical JSON changed:\n got %s\nwant %s", gotJSON, wantJSON)
 	}
@@ -105,28 +111,125 @@ func TestArtifactDispositionManifestCanonicalJSONAndRootGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantRoot = "0x9aef7ff31b70484db4c35a288ea58acad926e1fe9e380fedc8a7810a6de19f81"
+	// Re-frozen once when storage locations left the canonical command DTO;
+	// see docs/compatibility/snapshot-query-raft-allocation.md.
+	const wantRoot = "0x1741594d3e441ad9718be1fbd0928775614978b0aff9226a14f4e610d9de4aca"
 	if root != wantRoot {
 		t.Fatalf("canonical root changed: got %q want %q", root, wantRoot)
 	}
-	mutated := command
+	mutated := newCommand()
 	mutated.Action.RegisterCandidate.Manifest.ParentSnapshotID = "parent"
 	changed, err := ArtifactDispositionCommandRoot(mutated)
 	if err != nil || changed == root {
 		t.Fatalf("empty parent snapshot ID did not bind root: %q %v", changed, err)
 	}
-	mutated = command
+	mutated = newCommand()
 	mutated.Action.RegisterCandidate.Manifest.Tables[0].ActiveParts[0].StorageRefs = []string{"s3://bucket/object"}
 	changed, err = ArtifactDispositionCommandRoot(mutated)
-	if err != nil || changed == root {
-		t.Fatalf("empty storage refs did not bind root: %q %v", changed, err)
+	if err != nil || changed != root {
+		t.Fatalf("storage refs bound the command root: %q %v", changed, err)
+	}
+}
+
+func TestArtifactDispositionCommandRootAcceptsEveryStorageRefShape(t *testing.T) {
+	newRegister := func(refs []string) ArtifactDispositionCommandV1 {
+		return dispositionCommand(ArtifactDispositionActionV1{RegisterCandidate: &ArtifactDispositionRegisterCandidateV1{
+			Manifest: replay.SafeSnapshotManifest{SnapshotID: "snapshot", Tables: []replay.TableManifest{{
+				TableID:        "db.t",
+				PartitionRoots: []replay.PartitionCommitment{{TableID: "db.t", PartitionID: "p", Root: "0xroot"}},
+				ActiveParts: []replay.PartManifestEntry{{
+					TableID: "db.t", PartitionID: "p", PartName: "part", StorageRefs: refs,
+				}},
+			}}},
+		}})
+	}
+	// nil is not a hypothetical shape: partManifestEntryFromPB appends onto a
+	// nil slice, so every part decoded from protobuf without refs carries nil.
+	shapes := []struct {
+		name string
+		refs []string
+	}{{"empty", []string{}}, {"populated", []string{"s3://bucket/object", "gs://other/object"}}}
+
+	registerRoot, err := ArtifactDispositionCommandRoot(newRegister(nil))
+	if err != nil {
+		t.Fatalf("nil storage refs rejected: %v", err)
+	}
+	for _, shape := range shapes {
+		got, err := ArtifactDispositionCommandRoot(newRegister(shape.refs))
+		if err != nil {
+			t.Fatalf("%s storage refs rejected: %v", shape.name, err)
+		}
+		if got != registerRoot {
+			t.Fatalf("%s storage refs changed the command root: got %q want %q", shape.name, got, registerRoot)
+		}
+	}
+
+	// The attestation receipt's parts project through the same canonical DTO.
+	newChallenge := func(refs []string) ArtifactDispositionCommandV1 {
+		return dispositionCommand(ArtifactDispositionActionV1{OpenChallenge: &ArtifactDispositionOpenChallengeV1{
+			Attestation: replay.SnapshotQueryAttestation{Receipt: replay.SnapshotQueryReceipt{
+				PartitionCommitmentsAfter: []replay.PartitionCommitment{},
+				AffectedParts:             []replay.PartManifestEntry{{TableID: "db.t", StorageRefs: refs}},
+			}},
+		}})
+	}
+	challengeRoot, err := ArtifactDispositionCommandRoot(newChallenge(nil))
+	if err != nil {
+		t.Fatalf("nil attestation storage refs rejected: %v", err)
+	}
+	for _, shape := range shapes {
+		got, err := ArtifactDispositionCommandRoot(newChallenge(shape.refs))
+		if err != nil {
+			t.Fatalf("%s attestation storage refs rejected: %v", shape.name, err)
+		}
+		if got != challengeRoot {
+			t.Fatalf("%s attestation storage refs changed the command root: got %q want %q", shape.name, got, challengeRoot)
+		}
+	}
+
+	// A protobuf round trip is where nil refs actually come from, and the
+	// decoded command must still hash to the root its sender computed.
+	raw, err := Encode(Command{ArtifactDisposition: &ArtifactDispositionCmd{Command: newRegister([]string{})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := decoded.ArtifactDisposition.Command.Action.RegisterCandidate.Manifest.Tables[0].ActiveParts[0].StorageRefs; refs != nil {
+		t.Fatalf("decode was expected to drop empty refs to nil, got %#v", refs)
+	}
+	got, err := ArtifactDispositionCommandRoot(decoded.ArtifactDisposition.Command)
+	if err != nil {
+		t.Fatalf("decoded command rejected: %v", err)
+	}
+	if got != registerRoot {
+		t.Fatalf("decoded command root = %q, want %q", got, registerRoot)
+	}
+
+	// The nil-array rule still polices every array the root does hash.
+	nilRoots := newRegister(nil)
+	nilRoots.Action.RegisterCandidate.Manifest.Tables[0].PartitionRoots = nil
+	if _, err := ArtifactDispositionCommandRoot(nilRoots); err == nil {
+		t.Fatal("nil partition roots accepted")
+	}
+	nilTables := newRegister(nil)
+	nilTables.Action.RegisterCandidate.Manifest.Tables = nil
+	if _, err := ArtifactDispositionCommandRoot(nilTables); err == nil {
+		t.Fatal("nil tables accepted")
+	}
+
+	// Skipping the field is only sound while the canonical DTO omits it.
+	if _, ok := reflect.TypeOf(canonicalPartManifestEntry{}).FieldByName("StorageRefs"); ok {
+		t.Fatal("canonical part DTO carries StorageRefs again; drop the canonicalProjectionOmits entry")
 	}
 }
 
 func TestArtifactDispositionPublishManifestUsesCanonicalDTO(t *testing.T) {
 	command := dispositionCommand(ArtifactDispositionActionV1{PublishCandidate: &ArtifactDispositionPublishCandidateV1{
 		Manifest: replay.SafeSnapshotManifest{Tables: []replay.TableManifest{{
-			PartitionRoots: []replay.PartitionCommitment{}, ActiveParts: []replay.PartManifestEntry{{StorageRefs: []string{}}},
+			PartitionRoots: []replay.PartitionCommitment{}, ActiveParts: []replay.PartManifestEntry{{StorageRefs: []string{"s3://bucket/object"}}},
 		}}},
 		TransitionReceipts: []replay.ExecutorProfileTransitionReceipt{},
 	}})
@@ -138,8 +241,13 @@ func TestArtifactDispositionPublishManifestUsesCanonicalDTO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encoded), `"parent_snapshot_id":""`) || !strings.Contains(string(encoded), `"storage_refs":[]`) {
+	if !strings.Contains(string(encoded), `"parent_snapshot_id":""`) {
 		t.Fatalf("publish manifest omitted ordinary zero fields: %s", encoded)
+	}
+	// replay's own part entry tags storage_refs omitempty, so a populated ref
+	// list would survive its encoding. The canonical DTO drops locations.
+	if strings.Contains(string(encoded), "storage_refs") {
+		t.Fatalf("publish manifest bound storage locations: %s", encoded)
 	}
 	command.Action.PublishCandidate.Manifest.ParentSnapshotID = "parent"
 	changed, err := ArtifactDispositionCommandRoot(command)
@@ -158,17 +266,22 @@ func TestArtifactDispositionChallengeAttestationUsesCanonicalParts(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	command.Action.OpenChallenge.Attestation.Receipt.AffectedParts[0].StorageRefs = []string{"s3://bucket/object"}
 	encoded, err := json.Marshal(command)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encoded), `"storage_refs":[]`) {
-		t.Fatalf("attestation part omitted storage refs: %s", encoded)
+	if strings.Contains(string(encoded), "storage_refs") {
+		t.Fatalf("attestation part bound storage locations: %s", encoded)
 	}
-	command.Action.OpenChallenge.Attestation.Receipt.AffectedParts[0].StorageRefs = []string{"s3://bucket/object"}
 	changed, err := ArtifactDispositionCommandRoot(command)
+	if err != nil || changed != root {
+		t.Fatalf("attestation storage refs bound the command root: %q %v", changed, err)
+	}
+	command.Action.OpenChallenge.Attestation.Receipt.ReplayLogHash = "0xlog"
+	changed, err = ArtifactDispositionCommandRoot(command)
 	if err != nil || changed == root {
-		t.Fatalf("attestation storage refs did not bind root: %q %v", changed, err)
+		t.Fatalf("attestation receipt field did not bind root: %q %v", changed, err)
 	}
 }
 
