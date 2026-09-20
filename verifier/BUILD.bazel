@@ -5,7 +5,7 @@ go_library(
     srcs = [
         "backends.go",
         "config.go",
-		"historical_snapshot_query_adapter.go",
+        "historical_snapshot_query_adapter.go",
         "verifier.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/verifier",
@@ -17,6 +17,7 @@ go_library(
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/auth",
         "@housegate//pkg/replay",
         "@housegate//pkg/replay/chexec",
         "@housegate//pkg/replay/payloadexec",
@@ -30,12 +31,13 @@ go_test(
     srcs = [
         "backends_test.go",
         "config_external_test.go",
-		"historical_snapshot_query_adapter_test.go",
+        "historical_snapshot_query_adapter_test.go",
         "protocol_tables_test.go",
         "scanner_test.go",
         "verifier_fakes_test.go",
         "verifier_test.go",
     ],
+    data = ["//conformance:snapshot_query_testdata"],
     embed = [":verifier"],
     deps = [
         "//:arbiter-core",

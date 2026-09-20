@@ -21,3 +21,11 @@ go_test(
         "@org_golang_google_protobuf//proto",
     ],
 )
+
+# The verifier role repeats the same v3 envelope verification before any
+# historical read, so its tests replay this immutable identity fixture.
+filegroup(
+    name = "snapshot_query_testdata",
+    srcs = glob(["testdata/snapshot_query_*.json"]),
+    visibility = ["//verifier:__pkg__"],
+)

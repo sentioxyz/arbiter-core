@@ -68,6 +68,18 @@ func historicalJob() replay.SnapshotQueryJob {
 	}
 }
 
+// signedHistoricalJob keeps historicalJob's reservation identity but carries a
+// genuine v3 envelope. A test that drives the role must clear its signature
+// gate to reach the historical boundary at all; historicalJob itself stays
+// unsigned so the adapter-level detachment test keeps its nested read-set
+// slices, which the immutable identity fixture does not have.
+func signedHistoricalJob(t *testing.T) replay.SnapshotQueryJob {
+	t.Helper()
+	job := historicalJob()
+	job.Statement.Envelope = signedSnapshotQueryJob(t).Statement.Envelope
+	return job
+}
+
 func historicalProjectionFor(job replay.SnapshotQueryJob) historicalSnapshotQueryAuthenticatedRecord {
 	return historicalSnapshotQueryAuthenticatedRecord{
 		Found: true, NetworkID: job.Reservation.ReadSnapshot.NetworkID, RequestID: "request-1", ClientAccount: job.Reservation.ClientAccount,
@@ -80,7 +92,7 @@ func newHistoricalAdapterForTest(core SnapshotQueryCore, source *historicalProje
 }
 
 func TestHistoricalSnapshotQueryAdapter_GatesProjectionBeforeReferenceOrSubmission(t *testing.T) {
-	job := historicalJob()
+	job := signedHistoricalJob(t)
 	for name, mutate := range map[string]func(*historicalSnapshotQueryAuthenticatedRecord){
 		"not found":   func(p *historicalSnapshotQueryAuthenticatedRecord) { p.Found = false },
 		"terminal":    func(p *historicalSnapshotQueryAuthenticatedRecord) { p.Terminal = true },
@@ -166,7 +178,7 @@ func TestHistoricalSnapshotQueryAdapter_SourceAndCoreGetDetachedJobsAndExactRefe
 }
 
 func TestHistoricalSnapshotQueryAdapter_ReferenceErrorOrCancelCannotReachCore(t *testing.T) {
-	job := historicalJob()
+	job := signedHistoricalJob(t)
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for name, tc := range map[string]struct {
