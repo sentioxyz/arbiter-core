@@ -46,7 +46,10 @@ type ArtifactDispositionActionV1 struct {
 // canonicalSafeSnapshotManifest deliberately does not reuse replay's JSON
 // encoding. The replay record predates C1 and uses omitempty for two ordinary
 // fields; a C1 command must retain those zero values and empty arrays in its
-// public root.
+// public root. Part storage locations are the one deliberate omission: design
+// D5 makes StorageRefs fetch hints rather than identity, so relocating an
+// artifact that still serves the same authenticated bytes must not change the
+// command root of an otherwise identical registration.
 type canonicalSafeSnapshotManifest struct {
 	SnapshotID        string                   `json:"snapshot_id"`
 	ParentSnapshotID  string                   `json:"parent_snapshot_id"`
@@ -68,14 +71,13 @@ type canonicalTableManifest struct {
 }
 
 type canonicalPartManifestEntry struct {
-	TableID       string   `json:"table_id"`
-	PartitionID   string   `json:"partition_id"`
-	PartName      string   `json:"part_name"`
-	PartPhysHash  string   `json:"part_phys_hash"`
-	PartRowLtHash string   `json:"part_row_lthash"`
-	RowCount      uint64   `json:"row_count"`
-	Bytes         uint64   `json:"bytes"`
-	StorageRefs   []string `json:"storage_refs"`
+	TableID       string `json:"table_id"`
+	PartitionID   string `json:"partition_id"`
+	PartName      string `json:"part_name"`
+	PartPhysHash  string `json:"part_phys_hash"`
+	PartRowLtHash string `json:"part_row_lthash"`
+	RowCount      uint64 `json:"row_count"`
+	Bytes         uint64 `json:"bytes"`
 }
 
 func canonicalManifest(v replay.SafeSnapshotManifest) canonicalSafeSnapshotManifest {
@@ -94,7 +96,7 @@ func canonicalManifest(v replay.SafeSnapshotManifest) canonicalSafeSnapshotManif
 			out.Tables[i].ActiveParts[j] = canonicalPartManifestEntry{
 				TableID: part.TableID, PartitionID: part.PartitionID, PartName: part.PartName,
 				PartPhysHash: part.PartPhysHash, PartRowLtHash: part.PartRowLtHash, RowCount: part.RowCount,
-				Bytes: part.Bytes, StorageRefs: part.StorageRefs,
+				Bytes: part.Bytes,
 			}
 		}
 	}
@@ -135,7 +137,7 @@ func canonicalPart(v replay.PartManifestEntry) canonicalPartManifestEntry {
 	return canonicalPartManifestEntry{
 		TableID: v.TableID, PartitionID: v.PartitionID, PartName: v.PartName,
 		PartPhysHash: v.PartPhysHash, PartRowLtHash: v.PartRowLtHash, RowCount: v.RowCount,
-		Bytes: v.Bytes, StorageRefs: v.StorageRefs,
+		Bytes: v.Bytes,
 	}
 }
 
