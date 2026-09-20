@@ -17,6 +17,7 @@ go_test(
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/auth",
         "@housegate//pkg/replay",
+        "@housegate//pkg/replay/snapshotquery",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
