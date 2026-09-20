@@ -16,6 +16,7 @@ import (
 
 	"github.com/housegate/housegate/pkg/auth"
 	"github.com/housegate/housegate/pkg/replay"
+	"github.com/housegate/housegate/pkg/replay/snapshotquery"
 	"github.com/sentioxyz/arbiter-core/wire"
 	"google.golang.org/protobuf/proto"
 )
@@ -303,32 +304,6 @@ func loadSnapshotIdentityFixture(t *testing.T) snapshotIdentityFixture {
 	return f
 }
 
-func verifySnapshotQueryEnvelopeProduction(envelope replay.SnapshotQueryEnvelope) (string, error) {
-	if err := replay.ValidateSnapshotQueryInput(envelope.Input); err != nil {
-		return "", fmt.Errorf("validate complete input: %w", err)
-	}
-	root, err := replay.SnapshotQueryInputRoot(envelope.Input)
-	if err != nil {
-		return "", fmt.Errorf("recompute input root: %w", err)
-	}
-	if root != envelope.InputRoot {
-		return "", fmt.Errorf("input_root mismatch: got %s want %s", envelope.InputRoot, root)
-	}
-	want := auth.JWSStatementPayloadV3{
-		Purpose:   auth.StatementPurposeV3,
-		Binding:   envelope.Input.Binding,
-		InputRoot: root,
-	}
-	account, err := auth.VerifyStatementV3Signature(envelope.UserJWS, want)
-	if err != nil {
-		return "", err
-	}
-	if account != envelope.Input.Binding.ClientAccount {
-		return "", fmt.Errorf("client_account does not match signature")
-	}
-	return account, nil
-}
-
 // The independent payload projection and key recovery below remain fixture
 // provenance checks. The production API is then exercised after protobuf
 // transport, complete input validation and input-root recomputation.
@@ -381,7 +356,7 @@ func TestSnapshotQueryValidSignatureIdentityFixture(t *testing.T) {
 		if got.UserJWS != id.UserJWS {
 			t.Fatal("original JWS changed")
 		}
-		account, err := verifySnapshotQueryEnvelopeProduction(got)
+		account, err := snapshotquery.VerifyEnvelope(got)
 		if err != nil || account != got.Input.Binding.ClientAccount || account != f.Account {
 			t.Fatalf("production verifier account=%q err=%v", account, err)
 		}
@@ -481,7 +456,7 @@ func TestSnapshotQueryProductionVerifierRejectsTransportTampering(t *testing.T) 
 				}
 			}
 			got := throughPB(t, mutated, wire.SnapshotQueryEnvelopeToPB, wire.SnapshotQueryEnvelopeFromPB)
-			if _, err := verifySnapshotQueryEnvelopeProduction(got); err == nil || !strings.Contains(err.Error(), tc.wantError) {
+			if _, err := snapshotquery.VerifyEnvelope(got); err == nil || !strings.Contains(err.Error(), tc.wantError) {
 				t.Fatalf("expected %q refusal, got %v", tc.wantError, err)
 			}
 		})
