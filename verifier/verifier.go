@@ -14,6 +14,7 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
+	"github.com/housegate/housegate/pkg/auth"
 	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core"
@@ -271,6 +272,10 @@ func (r *Role) handleSnapshotQueryJob(ctx context.Context, m *pb.SnapshotQueryJo
 		return fmt.Errorf("snapshot query verifier is not configured")
 	}
 	job := wire.SnapshotQueryJobFromPB(m)
+	if _, err := verifySnapshotQueryEnvelope(job.Statement.Envelope); err != nil {
+		r.d.Logger.Warn("snapshot query job signature rejected; refusing before any historical read", "block", m.GetBlockSeq(), "err", err)
+		return err
+	}
 	referenceID, err := r.d.SnapshotQueryReference.SnapshotQueryReference(ctx, job)
 	if err != nil {
 		r.d.Logger.Warn("snapshot query reference rejected; refusing to attest", "block", m.GetBlockSeq(), "err", err)
@@ -299,6 +304,35 @@ func (r *Role) handleSnapshotQueryJob(ctx context.Context, m *pb.SnapshotQueryJo
 		_, err := pb.NewVerifierGatewayClient(conn).SubmitSnapshotQueryAttestation(ctx, wire.SnapshotQueryAttestationToPB(att))
 		return err
 	})
+}
+
+// verifySnapshotQueryEnvelope authenticates the user's v3 envelope before any
+// historical record, reference or funding decision runs (plan B5: signature
+// and roots first, then history). The HG verifier repeats the same check; this
+// copy keeps unsigned jobs away from the trusted reference provider.
+func verifySnapshotQueryEnvelope(envelope replay.SnapshotQueryEnvelope) (string, error) {
+	if err := replay.ValidateSnapshotQueryInput(envelope.Input); err != nil {
+		return "", fmt.Errorf("validate complete input: %w", err)
+	}
+	root, err := replay.SnapshotQueryInputRoot(envelope.Input)
+	if err != nil {
+		return "", fmt.Errorf("recompute input root: %w", err)
+	}
+	if root != envelope.InputRoot {
+		return "", fmt.Errorf("input_root mismatch")
+	}
+	account, err := auth.VerifyStatementV3Signature(envelope.UserJWS, auth.JWSStatementPayloadV3{
+		Purpose:   auth.StatementPurposeV3,
+		Binding:   envelope.Input.Binding,
+		InputRoot: root,
+	})
+	if err != nil {
+		return "", err
+	}
+	if account != envelope.Input.Binding.ClientAccount {
+		return "", fmt.Errorf("client_account does not match signature")
+	}
+	return account, nil
 }
 
 func (r *Role) handleScanRequest(ctx context.Context, m *pb.ByteSideScanRequest) error {

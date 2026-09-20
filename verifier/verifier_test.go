@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -49,6 +51,40 @@ func newRoleHarnessVWithSnapshotQuery(t *testing.T, core SnapshotQueryCore, refe
 		t.Fatalf("new role: %v", err)
 	}
 	return role, server
+}
+
+// snapshotIdentityFixture reads only the fields the verifier needs from the
+// immutable A1 identity fixture; conformance owns its full-shape assertions.
+type snapshotIdentityFixture struct {
+	Input      replay.SnapshotQueryInput `json:"input"`
+	InputRoot  string                    `json:"input_root"`
+	Identities []struct {
+		UserJWS string `json:"user_jws"`
+	} `json:"identities"`
+}
+
+// signedSnapshotQueryJob builds a job whose envelope carries a genuine v3
+// signature, so a test reaches the historical gate only by authenticating.
+func signedSnapshotQueryJob(t *testing.T) replay.SnapshotQueryJob {
+	t.Helper()
+	raw, err := os.ReadFile("../conformance/testdata/snapshot_query_identity_v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f snapshotIdentityFixture
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Identities) == 0 {
+		t.Fatal("identity fixture carries no signed identity")
+	}
+	return replay.SnapshotQueryJob{
+		BlockSeq: 19,
+		Statement: replay.SnapshotQueryStatement{
+			StatementSeq: 71,
+			Envelope:     replay.SnapshotQueryEnvelope{Input: f.Input, InputRoot: f.InputRoot, UserJWS: f.Identities[0].UserJWS},
+		},
+	}
 }
 
 func TestNew_AssertsSchemaRoot(t *testing.T) {
@@ -168,7 +204,8 @@ func TestRun_ReplayCoreErrorMeansNoAttestationAndLoopSurvives(t *testing.T) {
 }
 
 func TestRun_SnapshotQueryJobUsesTrustedReferenceAndSubmitsOnce(t *testing.T) {
-	job := replay.SnapshotQueryJob{BlockSeq: 19, Reservation: replay.SnapshotQueryReservation{ReservationID: "must-not-be-reference"}, Statement: replay.SnapshotQueryStatement{StatementSeq: 71}}
+	job := signedSnapshotQueryJob(t)
+	job.Reservation = replay.SnapshotQueryReservation{ReservationID: "must-not-be-reference"}
 	att := replay.SnapshotQueryAttestation{ReplicaID: "v1", ReceiptHash: "0xquery", Signature: "sig"}
 	core := &fakeSnapshotQueryCore{results: []replay.SnapshotQueryAttestation{att}}
 	references := &fakeSnapshotQueryReferenceProvider{references: []string{" registered/reference "}}
@@ -198,6 +235,24 @@ func TestRun_SnapshotQueryJobUsesTrustedReferenceAndSubmitsOnce(t *testing.T) {
 	}
 }
 
+func TestHandleSnapshotQueryJobRejectsUnsignedJobBeforeReference(t *testing.T) {
+	core := &fakeSnapshotQueryCore{results: []replay.SnapshotQueryAttestation{{ReplicaID: "v1"}}}
+	references := &fakeSnapshotQueryReferenceProvider{references: []string{"registered"}}
+	role, _ := newRoleHarnessVWithSnapshotQuery(t, core, references)
+	job := signedSnapshotQueryJob(t)
+	job.Statement.Envelope.UserJWS = ""
+	err := role.handleSnapshotQueryJob(context.Background(), wire.SnapshotQueryJobToPB(job))
+	if err == nil {
+		t.Fatal("unsigned job was accepted")
+	}
+	if got := references.snapshot(); len(got) != 0 {
+		t.Fatalf("reference provider consulted for an unsigned job: %d calls", len(got))
+	}
+	if jobs, _ := core.snapshot(); len(jobs) != 0 {
+		t.Fatal("core invoked for an unsigned job")
+	}
+}
+
 func TestRun_SnapshotQueryJobRejectsMissingDependenciesWithoutSubmission(t *testing.T) {
 	role, server := newRoleHarnessV(t, &fakeReplayCore{}, &fakeScanner{})
 	err := role.handleSnapshotQueryJob(context.Background(), wire.SnapshotQueryJobToPB(replay.SnapshotQueryJob{BlockSeq: 3}))
@@ -217,9 +272,13 @@ func TestRun_SnapshotQueryJobReferenceOrCoreFailuresSubmitNothingAndLoopSurvives
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- role.Run(ctx) }()
-	server.push(wire.SnapshotQueryJobDispatch(replay.SnapshotQueryJob{BlockSeq: 1}))
-	server.push(wire.SnapshotQueryJobDispatch(replay.SnapshotQueryJob{BlockSeq: 2}))
-	server.push(wire.SnapshotQueryJobDispatch(replay.SnapshotQueryJob{BlockSeq: 3}))
+	// Every job is signed: the reference and core failures under test here are
+	// reachable only after the envelope gate has already accepted the job.
+	for _, block := range []uint64{1, 2, 3} {
+		job := signedSnapshotQueryJob(t)
+		job.BlockSeq = block
+		server.push(wire.SnapshotQueryJobDispatch(job))
+	}
 	waitVerifier(t, "all snapshot query reference checks", func() bool { return len(references.snapshot()) == 3 })
 	if jobs, _ := core.snapshot(); len(jobs) != 1 {
 		t.Fatalf("snapshot query core calls=%d want=1", len(jobs))
