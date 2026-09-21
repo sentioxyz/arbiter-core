@@ -59,17 +59,27 @@ func TestSnapshotQueryAbortHashIsNotTheRecordDigest(t *testing.T) {
 func TestSnapshotQueryAbortRefusesTamperedRecordWrongPurposeAndUnlistedSigner(t *testing.T) {
 	s := testSigner(t)
 	rec := testAbortRecord()
-	token, _ := s.SignSnapshotQueryAbort(rec)
+	token, err := s.SignSnapshotQueryAbort(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
 	v := Validator{AllowedAddresses: map[string]bool{s.Address(): true}, MaxTokenAge: time.Minute}
 	tampered := rec
 	tampered.ReasonCode = "operator_requested"
 	if _, err := v.VerifySnapshotQueryAbort(tampered, token); err == nil {
 		t.Fatal("tampered record accepted")
 	}
-	// A consensus-update token over the same bytes cannot authorize an abort, and vice versa.
-	foreign, _ := s.signPayload(JWSCommandPayload{Iat: time.Now().Unix(), Purpose: ConsensusParamsUpdatePurpose, CmdHash: mustAbortHash(t, rec)})
+	// A consensus-update token over the same bytes cannot authorize an abort,
+	// and an abort token cannot authorize a consensus update (vice versa).
+	foreign, err := s.signPayload(JWSCommandPayload{Iat: time.Now().Unix(), Purpose: ConsensusParamsUpdatePurpose, CmdHash: mustAbortHash(t, rec)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := v.VerifySnapshotQueryAbort(rec, foreign); err == nil {
 		t.Fatal("consensus-purpose token authorized an abort")
+	}
+	if _, err := v.VerifyConsensusParamsUpdate(testConsensusUpdate(), token); err == nil {
+		t.Fatal("abort-purpose token authorized a consensus update")
 	}
 	other := Validator{AllowedAddresses: map[string]bool{"0x" + strings.Repeat("0f", 20): true}, MaxTokenAge: time.Minute}
 	if _, err := other.VerifySnapshotQueryAbort(rec, token); err == nil {
@@ -111,6 +121,7 @@ func TestSnapshotQueryAbortRecordValidation(t *testing.T) {
 		"empty prev":        func(r *replay.SnapshotQueryAbortRecord) { r.PrevSnapshotID = "" },
 		"empty next":        func(r *replay.SnapshotQueryAbortRecord) { r.NextSnapshotID = "" },
 		"prev equals next":  func(r *replay.SnapshotQueryAbortRecord) { r.NextSnapshotID = r.PrevSnapshotID },
+		"nul cleanup root":  func(r *replay.SnapshotQueryAbortRecord) { r.CleanupAuthorizationRoot = "a\x00b" },
 	}
 	for name, mutate := range cases {
 		rec := testAbortRecord()
@@ -124,6 +135,23 @@ func TestSnapshotQueryAbortRecordValidation(t *testing.T) {
 	}
 	if err := ValidateSnapshotQueryAbortRecord(testAbortRecord()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSnapshotQueryAbortRecordValidationErrorNamesEarliestField pins that the
+// field checks run in a fixed order (an ordered slice, not a map) so the
+// error naming multiple invalid fields is deterministic rather than
+// depending on Go's randomized map iteration.
+func TestSnapshotQueryAbortRecordValidationErrorNamesEarliestField(t *testing.T) {
+	rec := testAbortRecord()
+	rec.StatementID = ""
+	rec.ReasonCode = ""
+	err := ValidateSnapshotQueryAbortRecord(rec)
+	if err == nil {
+		t.Fatal("record with two invalid fields accepted")
+	}
+	if !strings.Contains(err.Error(), "statement_id") {
+		t.Fatalf("error %q does not name statement_id, the earlier field in the ordered table", err)
 	}
 }
 
