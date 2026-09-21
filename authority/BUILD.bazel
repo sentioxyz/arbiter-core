@@ -8,6 +8,7 @@ go_library(
         "context.go",
         "payload.go",
         "signer.go",
+        "snapshot_query_abort.go",
         "validator.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/authority",
@@ -27,6 +28,7 @@ go_test(
         "authority_test.go",
         "consensus_test.go",
         "context_test.go",
+        "snapshot_query_abort_test.go",
     ],
     embed = [":authority"],
     deps = [

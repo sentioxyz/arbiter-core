@@ -12,7 +12,7 @@ named `arbiter` so domain types retain concise names such as
 | Package | Purpose |
 |---|---|
 | root | Canonical statement, result-claim, promotion, cleanup, consensus-update, and node types. |
-| `authority` | Domain-separated promotion, cleanup, and consensus-update signing and validation. |
+| `authority` | Domain-separated promotion, cleanup, consensus-update and snapshot-query-abort signing and validation. |
 | `wire` | The canonical Go ↔ `arbiter-proto` conversion and Raft command encoding. |
 | `dataplane` | Leader-aware Arbiter clients, subscriptions, manifests, and payload stores. |
 | `snode` | Durable storage-node intake, crash convergence, promotion, and cleanup runtime. |
