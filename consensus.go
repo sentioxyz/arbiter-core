@@ -21,4 +21,9 @@ type ConsensusParamsUpdate struct {
 	AuthorityAddresses   []string `json:"authority_addresses"`
 	MaxWriters           uint64   `json:"max_writers"`
 	ExpectedPromotionSeq uint64   `json:"expected_promotion_seq"`
+	// ArtifactDispositionCapability is the C1 artifact-disposition kill switch
+	// as a governed consensus parameter: 0 keeps every tag-28 command refused,
+	// 1 enables the lane. It is absent from the canonical form when zero, so
+	// every previously signed update keeps its digest; the FSM refuses 1 -> 0.
+	ArtifactDispositionCapability uint32 `json:"artifact_disposition_capability,omitempty"`
 }

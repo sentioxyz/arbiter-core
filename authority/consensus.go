@@ -28,6 +28,9 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if cmd.MaxWriters == 0 {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: max writers must be positive")
 	}
+	if cmd.ArtifactDispositionCapability > 1 {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: artifact disposition capability must be 0 or 1")
+	}
 	if len(cmd.AuthorityAddresses) == 0 {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: authority addresses must be non-empty")
 	}

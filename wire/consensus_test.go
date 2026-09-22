@@ -15,7 +15,8 @@ func TestConsensusParamsUpdateRaftRoundTrip(t *testing.T) {
 	update := arbiter.ConsensusParamsUpdate{
 		NetworkID: "testnet", GenesisSnapshotID: "snapshot:genesis", ExpectedEpoch: math.MaxUint64,
 		PreviousParamsDigest: "0xprevious", MaxWriters: math.MaxUint64, ExpectedPromotionSeq: math.MaxUint64,
-		AuthorityAddresses: []string{"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		AuthorityAddresses:            []string{"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		ArtifactDispositionCapability: 1,
 	}
 	command := Command{UpdateConsensusParams: &UpdateConsensusParams{Update: update, AuthorityJWS: "header.payload.signature"}}
 	mustRoundTrip(t, command)
