@@ -62,13 +62,14 @@ func TestConsensusUpdateBindsEveryField(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*arbiter.ConsensusParamsUpdate){
-		"network":       func(c *arbiter.ConsensusParamsUpdate) { c.NetworkID += "-other" },
-		"genesis":       func(c *arbiter.ConsensusParamsUpdate) { c.GenesisSnapshotID += "-other" },
-		"epoch":         func(c *arbiter.ConsensusParamsUpdate) { c.ExpectedEpoch++ },
-		"prior digest":  func(c *arbiter.ConsensusParamsUpdate) { c.PreviousParamsDigest += "-other" },
-		"authority set": func(c *arbiter.ConsensusParamsUpdate) { c.AuthorityAddresses = c.AuthorityAddresses[:1] },
-		"writer limit":  func(c *arbiter.ConsensusParamsUpdate) { c.MaxWriters++ },
-		"promotion seq": func(c *arbiter.ConsensusParamsUpdate) { c.ExpectedPromotionSeq++ },
+		"network":                         func(c *arbiter.ConsensusParamsUpdate) { c.NetworkID += "-other" },
+		"genesis":                         func(c *arbiter.ConsensusParamsUpdate) { c.GenesisSnapshotID += "-other" },
+		"epoch":                           func(c *arbiter.ConsensusParamsUpdate) { c.ExpectedEpoch++ },
+		"prior digest":                    func(c *arbiter.ConsensusParamsUpdate) { c.PreviousParamsDigest += "-other" },
+		"authority set":                   func(c *arbiter.ConsensusParamsUpdate) { c.AuthorityAddresses = c.AuthorityAddresses[:1] },
+		"writer limit":                    func(c *arbiter.ConsensusParamsUpdate) { c.MaxWriters++ },
+		"promotion seq":                   func(c *arbiter.ConsensusParamsUpdate) { c.ExpectedPromotionSeq++ },
+		"artifact disposition capability": func(c *arbiter.ConsensusParamsUpdate) { c.ArtifactDispositionCapability = 1 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			mutated := cmd
@@ -223,5 +224,28 @@ func TestConsensusUpdateReplayFailsClosed(t *testing.T) {
 		if _, err := v.VerifyConsensusParamsUpdate(cmd, malformed); err == nil {
 			t.Fatal("malformed signature accepted")
 		}
+	}
+}
+
+func TestConsensusUpdateHashIgnoresAnAbsentCapability(t *testing.T) {
+	base := testConsensusUpdate()
+	want, err := ConsensusParamsUpdateHash(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := base
+	zero.ArtifactDispositionCapability = 0
+	if got, _ := ConsensusParamsUpdateHash(zero); got != want {
+		t.Fatalf("zero capability changed the digest: %s != %s", got, want)
+	}
+	enabled := base
+	enabled.ArtifactDispositionCapability = 1
+	if got, _ := ConsensusParamsUpdateHash(enabled); got == want {
+		t.Fatal("capability 1 must change the digest")
+	}
+	invalid := base
+	invalid.ArtifactDispositionCapability = 2
+	if _, err := NormalizeConsensusParamsUpdate(invalid); err == nil || !strings.Contains(err.Error(), "capability") {
+		t.Fatalf("capability 2 accepted: %v", err)
 	}
 }
