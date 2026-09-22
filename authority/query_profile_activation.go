@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -175,8 +176,8 @@ func (v *Validator) verifyQueryProfileActivation(p replay.ActiveQueryPolicy, tok
 	if err != nil {
 		return "", fmt.Errorf("query profile activation token signature: %w", err)
 	}
-	if len(sig) != 65 {
-		return "", fmt.Errorf("query profile activation token signature: want 65 bytes, got %d", len(sig))
+	if err := validateQueryProfileActivationSignature(sig); err != nil {
+		return "", err
 	}
 	if enforceAge {
 		now := time.Now().Unix()
@@ -188,9 +189,7 @@ func (v *Validator) verifyQueryProfileActivation(p replay.ActiveQueryPolicy, tok
 		}
 	}
 	recovery := append([]byte(nil), sig...)
-	if recovery[64] >= 27 {
-		recovery[64] -= 27
-	}
+	recovery[64] -= 27
 	pub, err := crypto.SigToPub(crypto.Keccak256([]byte(parts[0]+"."+parts[1])), recovery)
 	if err != nil {
 		return "", fmt.Errorf("recover query profile activation authority address: %w", err)
@@ -230,4 +229,28 @@ func parseQueryProfileActivationPayload(b []byte, activation replay.ActiveQueryP
 		return QueryProfileActivationPayloadV1{}, fmt.Errorf("query profile activation token: activation mismatch or non-canonical activation")
 	}
 	return QueryProfileActivationPayloadV1{Purpose: purpose, Version: version, Iat: iat, Activation: activation}, nil
+}
+
+// validateQueryProfileActivationSignature mirrors
+// authority/artifact_disposition.go's validateArtifactDispositionSignature
+// exactly (same checks, same order): 65 bytes, a canonical Ethereum recovery
+// byte (27 or 28, never a raw 0/1 V), and canonical low-S R‖S. Without this,
+// a high-S malleation (r, n-s, v^1) of a valid signature, or a raw-V (0/1)
+// re-encoding of one, recovers to the same allow-listed address as a
+// distinct byte string — accepting more than one canonical encoding of "the
+// same" authorization.
+func validateQueryProfileActivationSignature(sig []byte) error {
+	if len(sig) != 65 {
+		return fmt.Errorf("query profile activation token signature: want 65 bytes, got %d", len(sig))
+	}
+	if sig[64] != 27 && sig[64] != 28 {
+		return fmt.Errorf("query profile activation token signature: recovery V must be 27 or 28")
+	}
+	n := crypto.S256().Params().N
+	r := new(big.Int).SetBytes(sig[:32])
+	s := new(big.Int).SetBytes(sig[32:64])
+	if r.Sign() <= 0 || r.Cmp(n) >= 0 || s.Sign() <= 0 || s.Cmp(n) >= 0 || s.Cmp(new(big.Int).Rsh(new(big.Int).Set(n), 1)) > 0 {
+		return fmt.Errorf("query profile activation token signature: require canonical low-S R||S")
+	}
+	return nil
 }

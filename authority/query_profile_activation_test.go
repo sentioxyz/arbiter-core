@@ -1,9 +1,13 @@
 package authority
 
 import (
+	"encoding/base64"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/housegate/housegate/pkg/replay"
 )
@@ -66,6 +70,38 @@ func TestQueryProfileActivationRefusesTamperedActivationWrongPurposeAndUnlistedS
 	}
 }
 
+// TestQueryProfileActivationRejectsSameShapeWrongPurposeOrVersion isolates
+// the purpose/version comparison in parseQueryProfileActivationPayload from
+// the strictJSONObject key-set check exercised above: the abort-token
+// cross-purpose case is rejected by the key set (different field names)
+// before it ever reaches the purpose/version comparison. Both tokens here
+// keep the correct 4-key {purpose,version,iat,activation} shape, so a wrong
+// Purpose or wrong Version can only be caught by the explicit
+// "purpose != ... || version != ... || iat <= 0" check.
+func TestQueryProfileActivationRejectsSameShapeWrongPurposeOrVersion(t *testing.T) {
+	s := testSigner(t)
+	p := testActivation()
+	v := Validator{AllowedAddresses: map[string]bool{s.Address(): true}, MaxTokenAge: time.Minute}
+
+	wrongPurpose := QueryProfileActivationPayloadV1{Purpose: SnapshotQueryAbortPurpose, Version: QueryProfileActivationVersion, Iat: time.Now().Unix(), Activation: p}
+	tokenA, err := s.signQueryProfileActivationPayload(wrongPurpose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.VerifyQueryProfileActivation(p, tokenA); err == nil || !strings.Contains(err.Error(), "unexpected purpose") {
+		t.Fatalf("wrong purpose (same shape) = %v, want the purpose/version comparison to refuse it", err)
+	}
+
+	wrongVersion := QueryProfileActivationPayloadV1{Purpose: QueryProfileActivationPurpose, Version: QueryProfileActivationVersion + 1, Iat: time.Now().Unix(), Activation: p}
+	tokenB, err := s.signQueryProfileActivationPayload(wrongVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.VerifyQueryProfileActivation(p, tokenB); err == nil || !strings.Contains(err.Error(), "unexpected purpose") {
+		t.Fatalf("wrong version (same shape) = %v, want the purpose/version comparison to refuse it", err)
+	}
+}
+
 // TestQueryProfileActivationTamperedSignatureRejected rewrites the first
 // character of the token's signature segment and confirms the mutated
 // signature no longer recovers an allow-listed address.
@@ -91,6 +127,65 @@ func TestQueryProfileActivationTamperedSignatureRejected(t *testing.T) {
 	v := Validator{AllowedAddresses: map[string]bool{s.Address(): true}, MaxTokenAge: time.Minute}
 	if _, err := v.VerifyQueryProfileActivation(p, tampered); err == nil {
 		t.Fatal("tampered signature accepted")
+	}
+}
+
+// TestQueryProfileActivationRejectsNonCanonicalSignatures proves the
+// signature-canonicalization fix: a high-S malleation (r, n-s, v^1) of a
+// validly-signed token's signature, and a raw-V (0/1, not the canonical
+// 27/28) re-encoding of one, are each a distinct byte string that would
+// otherwise recover the very same allow-listed address as the original —
+// both must be refused by validateQueryProfileActivationSignature, and the
+// original, canonically-signed token must be unaffected.
+func TestQueryProfileActivationRejectsNonCanonicalSignatures(t *testing.T) {
+	s := testSigner(t)
+	p := testActivation()
+	token, err := s.SignQueryProfileActivation(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := Validator{AllowedAddresses: map[string]bool{s.Address(): true}, MaxTokenAge: time.Minute}
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("malformed token: %q", token)
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(sig) != 65 {
+		t.Fatalf("decode signature: %v (len=%d)", err, len(sig))
+	}
+
+	// High-S malleation: (r, n-s, v^1) recovers the same address as (r, s, v)
+	// but is a distinct, non-canonical byte string (go-ethereum's crypto.Sign
+	// always produces the canonical low-S form, so s here starts low).
+	n := crypto.S256().Params().N
+	sVal := new(big.Int).SetBytes(sig[32:64])
+	malleated := append([]byte(nil), sig...)
+	copy(malleated[32:64], new(big.Int).Sub(n, sVal).FillBytes(make([]byte, 32)))
+	if malleated[64] == 27 {
+		malleated[64] = 28
+	} else {
+		malleated[64] = 27
+	}
+	malleatedParts := append([]string(nil), parts...)
+	malleatedParts[2] = base64.RawURLEncoding.EncodeToString(malleated)
+	if _, err := v.VerifyQueryProfileActivation(p, strings.Join(malleatedParts, ".")); err == nil || !strings.Contains(err.Error(), "canonical low-S") {
+		t.Fatalf("high-S malleation: got err=%v, want the canonical low-S check to refuse it", err)
+	}
+
+	// Raw-V re-encoding: sig[64] in {0,1} (as SigToPub itself expects) instead
+	// of the canonical Ethereum {27,28}.
+	rawV := append([]byte(nil), sig...)
+	rawV[64] -= 27
+	rawVParts := append([]string(nil), parts...)
+	rawVParts[2] = base64.RawURLEncoding.EncodeToString(rawV)
+	if _, err := v.VerifyQueryProfileActivation(p, strings.Join(rawVParts, ".")); err == nil || !strings.Contains(err.Error(), "recovery V") {
+		t.Fatalf("raw-V signature: got err=%v, want the recovery-V check to refuse it", err)
+	}
+
+	// The original, canonically-signed token is unaffected by the new checks.
+	if _, err := v.VerifyQueryProfileActivation(p, token); err != nil {
+		t.Fatalf("original token must still verify: %v", err)
 	}
 }
 

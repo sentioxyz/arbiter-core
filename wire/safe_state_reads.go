@@ -13,10 +13,13 @@ const (
 	// SafeStateReadProofVersion is the version of both SafeState read proofs.
 	SafeStateReadProofVersion uint32 = 1
 	// PublishedSnapshotReplyDomain and QueryPolicyReplyDomain are the canonical
-	// digest domains of the two authenticated SafeState reads. Like
-	// artifact-disposition-reply-v1 the root is CanonicalDigest over the reply
-	// body and excludes the proof; the proof is integrity and correlation
-	// evidence for a leader-barrier read, not a signature.
+	// digest domains of the two authenticated SafeState reads. The construction
+	// is shared with arbiter's own artifact-disposition-reply-v1 reply proof
+	// (server/artifact_disposition.go, a separate repository) and with this
+	// package's artifact-disposition-command-v1 (artifact_disposition.go):
+	// CanonicalDigest over the canonical body, excluding the proof itself. The
+	// proof is integrity and correlation evidence for a leader-barrier read,
+	// not a signature.
 	PublishedSnapshotReplyDomain = "published-snapshot-reply-v1"
 	QueryPolicyReplyDomain       = "query-policy-reply-v1"
 )
