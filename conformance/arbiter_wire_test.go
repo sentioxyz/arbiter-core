@@ -52,6 +52,10 @@ func TestArbiterMirrorsMatchProto(t *testing.T) {
 	assertMirror(t, arbiter.SafePartMapping{}, &pb.SafePartMapping{})
 	assertMirror(t, arbiter.PromotionAck{}, &pb.PromotionAck{})
 	assertMirror(t, arbiter.CleanupAck{}, &pb.CleanupAck{})
+	assertMirror(t, arbiter.TableRegistryParams{}, &pb.TableRegistryParams{})
+	assertMirror(t, arbiter.L2BlockRef{}, &pb.L2BlockRef{})
+	assertMirror(t, arbiter.L2EventRef{}, &pb.L2EventRef{})
+	assertMirror(t, arbiter.LegacyTable{}, &pb.LegacyTable{})
 }
 
 func TestEnumNumbersMatchProto(t *testing.T) {

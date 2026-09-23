@@ -2,6 +2,7 @@ package authority
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -247,5 +248,64 @@ func TestConsensusUpdateHashIgnoresAnAbsentCapability(t *testing.T) {
 	invalid.ArtifactDispositionCapability = 2
 	if _, err := NormalizeConsensusParamsUpdate(invalid); err == nil || !strings.Contains(err.Error(), "capability") {
 		t.Fatalf("capability 2 accepted: %v", err)
+	}
+}
+
+func validRegistryParams() *arbiter.TableRegistryParams {
+	return &arbiter.TableRegistryParams{
+		ChainID: 7892301, DatabasesContract: "0xAbCdEf0123456789abcdef0123456789ABCDEF01",
+		SIIndexerID: 1, ActivationBlock: 5_000_000, Confirmation: arbiter.TableRegistryConfirmationSafe,
+	}
+}
+
+func TestNormalizeConsensusParamsUpdateTableRegistry(t *testing.T) {
+	base := arbiter.ConsensusParamsUpdate{
+		NetworkID: "n", GenesisSnapshotID: "g", PreviousParamsDigest: "d",
+		AuthorityAddresses: []string{"0x0000000000000000000000000000000000000001"}, MaxWriters: 1,
+	}
+	withRegistry := base
+	withRegistry.TableRegistry = validRegistryParams()
+	got, err := NormalizeConsensusParamsUpdate(withRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TableRegistry.DatabasesContract != "0xabcdef0123456789abcdef0123456789abcdef01" {
+		t.Fatalf("contract not lowercased: %s", got.TableRegistry.DatabasesContract)
+	}
+	if withRegistry.TableRegistry.DatabasesContract == got.TableRegistry.DatabasesContract {
+		t.Fatal("normalization mutated the caller's params")
+	}
+	for name, mutate := range map[string]func(*arbiter.TableRegistryParams){
+		"zero chain":     func(p *arbiter.TableRegistryParams) { p.ChainID = 0 },
+		"short contract": func(p *arbiter.TableRegistryParams) { p.DatabasesContract = "0x1234" },
+		"non-hex contract": func(p *arbiter.TableRegistryParams) {
+			p.DatabasesContract = "0xzzcdef0123456789abcdef0123456789abcdef01"
+		},
+		"zero activation":    func(p *arbiter.TableRegistryParams) { p.ActivationBlock = 0 },
+		"bad confirmation":   func(p *arbiter.TableRegistryParams) { p.Confirmation = "latest" },
+		"empty confirmation": func(p *arbiter.TableRegistryParams) { p.Confirmation = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := base
+			bad.TableRegistry = validRegistryParams()
+			mutate(bad.TableRegistry)
+			if _, err := NormalizeConsensusParamsUpdate(bad); err == nil || !strings.Contains(err.Error(), "table registry") {
+				t.Fatalf("err = %v, want table registry rejection", err)
+			}
+		})
+	}
+	if got, err := NormalizeConsensusParamsUpdate(base); err != nil || got.TableRegistry != nil {
+		t.Fatalf("absent registry must stay absent: %+v %v", got.TableRegistry, err)
+	}
+}
+
+func TestConsensusParamsUpdateDigestUnchangedWithoutRegistry(t *testing.T) {
+	update := arbiter.ConsensusParamsUpdate{NetworkID: "n", GenesisSnapshotID: "g", AuthorityAddresses: []string{"0x0000000000000000000000000000000000000001"}, MaxWriters: 1}
+	b, err := json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "table_registry") {
+		t.Fatalf("absent registry leaked into the canonical form: %s", b)
 	}
 }

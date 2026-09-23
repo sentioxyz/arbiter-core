@@ -17,6 +17,7 @@ go_library(
     srcs = [
         "consensus.go",
         "domains.go",
+        "table_registry.go",
         "types.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core",
