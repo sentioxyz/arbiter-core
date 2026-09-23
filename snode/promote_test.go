@@ -1,9 +1,11 @@
 package snode
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/wire"
+	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 )
 
 func TestLegacyAckMatchesCommandRejectsChangedHistory(t *testing.T) {
@@ -490,9 +493,16 @@ func TestHandlePromote_ShadowClosureGateRejectsDivergentContent(t *testing.T) {
 	}
 	jws := mustSignPromotion(t, signer, cmd)
 
-	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err == nil ||
-		!strings.Contains(err.Error(), "shadow closure mismatch") {
+	err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws)
+	if err == nil || !strings.Contains(err.Error(), "shadow closure mismatch") {
 		t.Fatalf("divergent shadow must be rejected by the closure gate, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "candidate parts ["+part.PartName+"]") ||
+		!strings.Contains(err.Error(), "safe parts before promotion []") {
+		t.Fatalf("mismatch must name the parts that entered the shadow, got %v", err)
+	}
+	if len(err.Error()) > 1000 {
+		t.Fatalf("mismatch must abbreviate the 2048-byte roots, got %d bytes", len(err.Error()))
 	}
 	if got := len(claims.promotionAcks()); got != 0 {
 		t.Fatalf("divergent shadow produced %d acks", got)
@@ -501,6 +511,108 @@ func TestHandlePromote_ShadowClosureGateRejectsDivergentContent(t *testing.T) {
 		t.Fatalf("divergent shadow published %d safe rows", got)
 	}
 	assertNoPromotePartition(t, ctx, role, schema, part.PartitionID)
+}
+
+// TestHandlePromote_ShadowClosureMismatchNamesReactivatedSafePart reproduces
+// the devnet2-si-v2 wedge: hg_safe holds a part the base root does not account
+// for (there, a replaced part a ClickHouse restart reactivated; here, a stray
+// verified-looking row in the candidate's partition). The gate must reject, and
+// the error must name that safe part so an operator can compare it with the
+// base manifest. The stray row differs from the candidate's rows so the shadow's
+// block deduplication cannot absorb it.
+func TestHandlePromote_ShadowClosureMismatchNamesReactivatedSafePart(t *testing.T) {
+	ctx := context.Background()
+	role, claims, signer, schema, _ := seedPromotableStatement(t, ctx)
+	first := claims.snapshot()[0].CandidateParts[0]
+	firstCmd := arbiter.PromoteSafePartition{
+		TableID: schema.TableID, PartitionID: first.PartitionID, PromotionSeq: 1,
+		BaseSafeSnapshotID: "genesis",
+		CandidateParts: []arbiter.PartRef{{
+			TableID: schema.TableID, PartitionID: first.PartitionID,
+			PartRowLtHash: first.PartRowLtHash, PartName: first.PartName,
+		}},
+	}
+	if err := role.handlePromote(ctx, wire.PromoteToPB(firstCmd), mustSignPromotion(t, signer, firstCmd)); err != nil {
+		t.Fatalf("first promote: %v", err)
+	}
+	cleanup := cleanupCommand(schema.TableID, first)
+	if err := role.handleCleanup(ctx, wire.CleanupToPB(cleanup), mustSignCleanup(t, signer, cleanup)); err != nil {
+		t.Fatalf("first cleanup: %v", err)
+	}
+	// The part the base root does not account for.
+	table := CHTableName(schema.TableID)
+	mustExecIntake(t, role.d.Conn, fmt.Sprintf("INSERT INTO %s.%s (_hg_row_id, p, v) VALUES (unhex('%064x'), 'p0', 99)",
+		role.cfg.SafeDatabase, table, 99))
+	safeParts, err := activeParts(ctx, role.d.Conn, role.cfg.SafeDatabase, table)
+	if err != nil || len(safeParts) != 2 {
+		t.Fatalf("safe parts: %v %v", safeParts, err)
+	}
+
+	secondPayload := nativePayload(t, pv{"p0", 3}, pv{"p0", 4})
+	secondEnv := intakeEnvelope(secondPayload)
+	secondEnv.StatementID.ClientSeq = 2
+	secondEnv.StatementID.ClientNonce = "n2"
+	secondEnv.PayloadRef = "payload-2.native"
+	if err := role.SubmitLocalStatement(ctx, secondEnv, secondPayload); err != nil {
+		t.Fatalf("second SubmitLocalStatement: %v", err)
+	}
+	second := claims.snapshot()[1].CandidateParts[0]
+	baseRoot, _ := role.state.BaseRoot(partitionKey{Table: schema.TableID, Partition: second.PartitionID})
+	secondCmd := arbiter.PromoteSafePartition{
+		TableID: schema.TableID, PartitionID: second.PartitionID, PromotionSeq: 2,
+		BaseSafeSnapshotID: "safe-1", BasePartitionRoot: baseRoot,
+		CandidateParts: []arbiter.PartRef{{
+			TableID: schema.TableID, PartitionID: second.PartitionID,
+			PartRowLtHash: second.PartRowLtHash, PartName: second.PartName,
+		}},
+	}
+	err = role.handlePromote(ctx, wire.PromoteToPB(secondCmd), mustSignPromotion(t, signer, secondCmd))
+	if err == nil || !strings.Contains(err.Error(), "shadow closure mismatch") {
+		t.Fatalf("a safe part outside the base root must fail the closure gate, got %v", err)
+	}
+	for _, p := range safeParts {
+		if want := fmt.Sprintf("%s(rows=%d)", p.Name, p.Rows); !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want it to name safe part %q", err, want)
+		}
+	}
+	if !strings.Contains(err.Error(), "candidate parts ["+second.PartName+"]") {
+		t.Fatalf("err = %v, want it to name candidate %q", err, second.PartName)
+	}
+	if got := rowCount(t, ctx, role.d.Conn, role.cfg.SafeDatabase+"."+table); got != 3 {
+		t.Fatalf("rejected promotion changed hg_safe: %d rows", got)
+	}
+	assertNoPromotePartition(t, ctx, role, schema, second.PartitionID)
+}
+
+// TestDispatchPromotionCommand_LogsFailures pins that a failed command is both
+// returned (so the subscription redelivers it) and logged at error level.
+func TestDispatchPromotionCommand_LogsFailures(t *testing.T) {
+	ctx := context.Background()
+	role, claims, _, schema, _ := seedPromotableStatement(t, ctx)
+	var buf bytes.Buffer
+	role.d.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+	part := claims.snapshot()[0].CandidateParts[0]
+	cleanup := wire.CleanupToPB(arbiter.UnsafeCleanup{
+		TableID: schema.TableID, PartitionID: part.PartitionID, PromotionSeq: 7,
+		Parts: []arbiter.PartRef{{TableID: schema.TableID, PartitionID: part.PartitionID, PartRowLtHash: part.PartRowLtHash, PartName: part.PartName}},
+	})
+	err := role.dispatchPromotionCommand(ctx, &pb.PromotionCommand{
+		Cmd:          &pb.PromotionCommand_Cleanup{Cleanup: cleanup},
+		AuthorityJws: "not-a-jws",
+	})
+	if err == nil {
+		t.Fatal("an unauthorized cleanup must fail")
+	}
+	logged := buf.String()
+	for _, want := range []string{"level=ERROR", "unsafe cleanup failed", "promotion_seq=7", "partition=" + part.PartitionID} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("log %q missing %q", logged, want)
+		}
+	}
+	buf.Reset()
+	if err := role.dispatchPromotionCommand(ctx, nil); err != nil || buf.Len() != 0 {
+		t.Fatalf("nil command: err=%v log=%q", err, buf.String())
+	}
 }
 
 // lthashLie flips the first accumulator byte of a 0x-hex lthash, yielding a

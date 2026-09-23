@@ -183,18 +183,7 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	}
 	runSubscription := func(ctx context.Context) error {
 		return r.d.Client.RunPromotionSubscription(ctx, r.cfg.NodeID, func(cmd *pb.PromotionCommand) error {
-			if cmd == nil {
-				return nil
-			}
-			switch m := cmd.GetCmd().(type) {
-			case *pb.PromotionCommand_Promote:
-				return r.handlePromote(ctx, m.Promote, cmd.GetAuthorityJws())
-			case *pb.PromotionCommand_Cleanup:
-				return r.handleCleanup(ctx, m.Cleanup, cmd.GetAuthorityJws())
-			default:
-				r.d.Logger.Warn("unknown promotion command", "type", fmt.Sprintf("%T", cmd.GetCmd()))
-				return nil
-			}
+			return r.dispatchPromotionCommand(ctx, cmd)
 		})
 	}
 	workers := roleWorkers{subscription: runSubscription}
@@ -530,4 +519,32 @@ func (r *Role) promotionLock(k partitionKey) *sync.Mutex {
 		r.promotionLocks[ks] = &sync.Mutex{}
 	}
 	return r.promotionLocks[ks]
+}
+
+// dispatchPromotionCommand runs one promotion subscription command. A failed
+// command is returned so the subscription redelivers it, and logged at error
+// level first: without the log a wedged promotion retried every few seconds
+// with no trace on the source.
+func (r *Role) dispatchPromotionCommand(ctx context.Context, cmd *pb.PromotionCommand) error {
+	if cmd == nil {
+		return nil
+	}
+	var err error
+	switch m := cmd.GetCmd().(type) {
+	case *pb.PromotionCommand_Promote:
+		if err = r.handlePromote(ctx, m.Promote, cmd.GetAuthorityJws()); err != nil {
+			r.d.Logger.Error("promotion failed; the subscription redelivers it",
+				"promotion_seq", m.Promote.GetPromotionSeq(), "table", m.Promote.GetTableId(),
+				"partition", m.Promote.GetPartitionId(), "err", err)
+		}
+	case *pb.PromotionCommand_Cleanup:
+		if err = r.handleCleanup(ctx, m.Cleanup, cmd.GetAuthorityJws()); err != nil {
+			r.d.Logger.Error("unsafe cleanup failed; the subscription redelivers it",
+				"promotion_seq", m.Cleanup.GetPromotionSeq(), "table", m.Cleanup.GetTableId(),
+				"partition", m.Cleanup.GetPartitionId(), "err", err)
+		}
+	default:
+		r.d.Logger.Warn("unknown promotion command", "type", fmt.Sprintf("%T", cmd.GetCmd()))
+	}
+	return err
 }
