@@ -51,6 +51,8 @@ func TestReplayWireTypesMirrorPkgReplay(t *testing.T) {
 	}{
 		{"Statement", replay.Statement{}, &pb.Statement{}},
 		{"ReplayJob", replay.ReplayJob{}, &pb.ReplayJob{}},
+		{"ReplayTableSchema", replay.ReplayTableSchema{}, &pb.ReplayTableSchema{}},
+		{"ReplayTableSetTransition", replay.ReplayTableSetTransition{}, &pb.ReplayTableSetTransition{}},
 		{"PartitionCommitment", replay.PartitionCommitment{}, &pb.PartitionCommitment{}},
 		{"PartManifestEntry", replay.PartManifestEntry{}, &pb.PartManifestEntry{}},
 		{"ExecutionReceipt", replay.ExecutionReceipt{}, &pb.ExecutionReceipt{}},

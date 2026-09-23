@@ -33,6 +33,7 @@ go_test(
         "historical_snapshot_query_adapter_test.go",
         "protocol_tables_test.go",
         "scanner_test.go",
+        "table_set_test.go",
         "verifier_fakes_test.go",
         "verifier_test.go",
     ],

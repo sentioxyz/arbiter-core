@@ -59,6 +59,8 @@ func ReplayJobToPB(j replay.ReplayJob) *pb.ReplayJob {
 		ExecutorProfileId:  j.ExecutorProfileID,
 		SourceClaimRoot:    j.SourceClaimRoot,
 		Statements:         mapSlice(j.Statements, statementToPB),
+		TableSetTransition: tableSetTransitionToPB(j.TableSetTransition),
+		TableSchemas:       mapSlice(j.TableSchemas, replayTableSchemaToPB),
 	}
 }
 
@@ -72,6 +74,40 @@ func ReplayJobFromPB(m *pb.ReplayJob) replay.ReplayJob {
 		ExecutorProfileID:  m.GetExecutorProfileId(),
 		SourceClaimRoot:    m.GetSourceClaimRoot(),
 		Statements:         mapSlice(m.GetStatements(), StatementFromPB),
+		TableSetTransition: tableSetTransitionFromPB(m.GetTableSetTransition()),
+		TableSchemas:       mapSlice(m.GetTableSchemas(), replayTableSchemaFromPB),
+	}
+}
+
+func replayTableSchemaToPB(s replay.ReplayTableSchema) *pb.ReplayTableSchema {
+	return &pb.ReplayTableSchema{TableId: s.TableID, SchemaJson: s.SchemaJSON}
+}
+
+func replayTableSchemaFromPB(m *pb.ReplayTableSchema) replay.ReplayTableSchema {
+	return replay.ReplayTableSchema{TableID: m.GetTableId(), SchemaJSON: m.GetSchemaJson()}
+}
+
+// tableSetTransitionToPB keeps an absent transition absent on the wire, so a
+// job without one encodes exactly as before the field existed.
+func tableSetTransitionToPB(t *replay.ReplayTableSetTransition) *pb.ReplayTableSetTransition {
+	if t == nil {
+		return nil
+	}
+	return &pb.ReplayTableSetTransition{
+		Adds:          mapSlice(t.Adds, replayTableSchemaToPB),
+		Retires:       append([]string(nil), t.Retires...),
+		NewSchemaRoot: t.NewSchemaRoot,
+	}
+}
+
+func tableSetTransitionFromPB(m *pb.ReplayTableSetTransition) *replay.ReplayTableSetTransition {
+	if m == nil {
+		return nil
+	}
+	return &replay.ReplayTableSetTransition{
+		Adds:          mapSlice(m.GetAdds(), replayTableSchemaFromPB),
+		Retires:       mapSlice(m.GetRetires(), func(s string) string { return s }),
+		NewSchemaRoot: m.GetNewSchemaRoot(),
 	}
 }
 
