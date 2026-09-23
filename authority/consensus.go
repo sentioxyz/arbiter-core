@@ -50,6 +50,14 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	}
 	slices.Sort(addresses)
 	cmd.AuthorityAddresses = slices.Compact(addresses)
+	if cmd.TableRegistry != nil {
+		registry := *cmd.TableRegistry
+		registry.DatabasesContract = strings.ToLower(registry.DatabasesContract)
+		if err := registry.Validate(); err != nil {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
+		}
+		cmd.TableRegistry = &registry
+	}
 	return cmd, nil
 }
 

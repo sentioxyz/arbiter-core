@@ -56,3 +56,15 @@ func TestConsensusParamsUpdateConvertersCopySlices(t *testing.T) {
 		t.Fatal("empty repeated field did not decode to nil")
 	}
 }
+
+func TestConsensusParamsUpdateCarriesTableRegistry(t *testing.T) {
+	in := arbiter.ConsensusParamsUpdate{NetworkID: "n", MaxWriters: 1, TableRegistry: &arbiter.TableRegistryParams{
+		ChainID: 1, DatabasesContract: "0x0000000000000000000000000000000000000001", SIIndexerID: 2, ActivationBlock: 3, Confirmation: "finalized"}}
+	out := ConsensusParamsUpdateFromPB(ConsensusParamsUpdateToPB(in))
+	if out.TableRegistry == nil || *out.TableRegistry != *in.TableRegistry {
+		t.Fatalf("round trip = %+v", out.TableRegistry)
+	}
+	if ConsensusParamsUpdateFromPB(ConsensusParamsUpdateToPB(arbiter.ConsensusParamsUpdate{})).TableRegistry != nil {
+		t.Fatal("absent registry must decode as nil")
+	}
+}

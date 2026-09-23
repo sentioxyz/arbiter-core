@@ -26,4 +26,9 @@ type ConsensusParamsUpdate struct {
 	// 1 enables the lane. It is absent from the canonical form when zero, so
 	// every previously signed update keeps its digest; the FSM refuses 1 -> 0.
 	ArtifactDispositionCapability uint32 `json:"artifact_disposition_capability,omitempty"`
+	// TableRegistry enables the dynamic SI table registry. Absent (nil) keeps
+	// it disabled and is omitted from the canonical form, so every previously
+	// signed update keeps its digest. Once committed it must be resent
+	// unchanged by every later update; the FSM refuses any change or removal.
+	TableRegistry *TableRegistryParams `json:"table_registry,omitempty"`
 }
