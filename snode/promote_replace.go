@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/chexec"
@@ -66,7 +67,7 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 	}
 	if shadowRoot != post {
 		_ = r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition)
-		return "", safePartMappings{}, fmt.Errorf("shadow closure mismatch: promote partition root %s != base+candidates %s (unverified or missing part in shadow)", shadowRoot, post)
+		return "", safePartMappings{}, shadowClosureMismatch(shadowRoot, post, partsInLogicalPartition(safeBefore, sch, cmd.PartitionID), cmd)
 	}
 	safeBefore = partsInLogicalPartition(safeBefore, sch, cmd.PartitionID)
 	intent := promotionIntentFor(cmd, post, safeBefore)
@@ -286,4 +287,32 @@ func (r *Role) candidatesCoverUnsafePartition(ctx context.Context, cmd arbiter.P
 		}
 	}
 	return partitionParts == len(candidates), nil
+}
+
+// shadowClosureMismatch describes a failed shadow closure gate with what an
+// operator needs to find the divergent side: the safe parts that entered the
+// shadow and the claimed candidates. A safe part the base root does not account
+// for (for example one a ClickHouse restart reactivated after an earlier
+// REPLACE PARTITION) shows up here by name; compare the list with the base
+// safe manifest's active parts. Roots are abbreviated: they are 2048-byte
+// accumulators.
+func shadowClosureMismatch(shadowRoot, post string, safeBefore []partInfo, cmd arbiter.PromoteSafePartition) error {
+	safe := make([]string, 0, len(safeBefore))
+	for _, p := range safeBefore {
+		safe = append(safe, fmt.Sprintf("%s(rows=%d)", p.Name, p.Rows))
+	}
+	candidates := make([]string, 0, len(cmd.CandidateParts))
+	for _, p := range cmd.CandidateParts {
+		candidates = append(candidates, p.PartName)
+	}
+	return fmt.Errorf("shadow closure mismatch for %s/%s promotion %d: promote partition root %s != base+candidates %s (unverified or missing part in shadow); safe parts before promotion [%s], candidate parts [%s]",
+		cmd.TableID, cmd.PartitionID, cmd.PromotionSeq, abbreviateRoot(shadowRoot), abbreviateRoot(post),
+		strings.Join(safe, ", "), strings.Join(candidates, ", "))
+}
+
+func abbreviateRoot(root string) string {
+	if len(root) <= 26 {
+		return root
+	}
+	return root[:18] + "…" + root[len(root)-8:]
 }
