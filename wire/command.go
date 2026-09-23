@@ -109,6 +109,11 @@ type Command struct {
 	PublishExecutorProfileTransition *PublishExecutorProfileTransition `json:",omitempty"`
 	RecordSnapshotArtifactReady      *RecordSnapshotArtifactReady      `json:",omitempty"`
 	ArtifactDisposition              *ArtifactDispositionCmd           `json:",omitempty"`
+	SeedLegacyTables                 *SeedLegacyTables                 `json:",omitempty"`
+	AddTable                         *AddTable                         `json:",omitempty"`
+	RetireTables                     *RetireTables                     `json:",omitempty"`
+	AdvanceL2Cursor                  *AdvanceL2Cursor                  `json:",omitempty"`
+	RecordTablePurged                *RecordTablePurged                `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -242,6 +247,34 @@ func Encode(c Command) ([]byte, error) {
 		}
 		out.Cmd = &pb.RaftCommand_ArtifactDisposition{ArtifactDisposition: ArtifactDispositionCmdToPB(*c.ArtifactDisposition)}
 	}
+	if c.SeedLegacyTables != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_SeedLegacyTables{SeedLegacyTables: &pb.SeedLegacyTablesCmd{
+			AtBlock: L2BlockRefToPB(&c.SeedLegacyTables.AtBlock), Tables: legacyTablesToPB(c.SeedLegacyTables.Tables)}}
+	}
+	if c.AddTable != nil {
+		set++
+		a := c.AddTable
+		out.Cmd = &pb.RaftCommand_AddTable{AddTable: &pb.AddTableCmd{DatabaseId: a.DatabaseID, TableId: a.TableID,
+			Created: L2EventRefToPB(&a.Created), Schema: L2EventRefToPB(&a.Schema), SchemaVersion: a.SchemaVersion,
+			SchemaHash: a.SchemaHash, SchemaJson: a.SchemaJSON}}
+	}
+	if c.RetireTables != nil {
+		set++
+		r := c.RetireTables
+		out.Cmd = &pb.RaftCommand_RetireTables{RetireTables: &pb.RetireTablesCmd{DatabaseId: r.DatabaseID,
+			TableIds: mapSlice(r.TableIDs, func(s string) string { return s }), Deleted: L2EventRefToPB(&r.Deleted),
+			Reason: pb.TableRetireReason(r.Reason)}}
+	}
+	if c.AdvanceL2Cursor != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_AdvanceL2Cursor{AdvanceL2Cursor: &pb.AdvanceL2CursorCmd{To: L2BlockRefToPB(&c.AdvanceL2Cursor.To)}}
+	}
+	if c.RecordTablePurged != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_RecordTablePurged{RecordTablePurged: &pb.RecordTablePurgedCmd{
+			NodeId: c.RecordTablePurged.NodeID, IncarnationSeq: c.RecordTablePurged.IncarnationSeq}}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -297,6 +330,25 @@ func Decode(b []byte) (Command, error) {
 			return Command{}, err
 		}
 		return Command{ArtifactDisposition: &v}, nil
+
+	case *pb.RaftCommand_SeedLegacyTables:
+		m := cmd.SeedLegacyTables
+		return Command{SeedLegacyTables: &SeedLegacyTables{AtBlock: l2BlockRefValue(m.GetAtBlock()), Tables: legacyTablesFromPB(m.GetTables())}}, nil
+	case *pb.RaftCommand_AddTable:
+		m := cmd.AddTable
+		return Command{AddTable: &AddTable{DatabaseID: m.GetDatabaseId(), TableID: m.GetTableId(),
+			Created: l2EventRefValue(m.GetCreated()), Schema: l2EventRefValue(m.GetSchema()),
+			SchemaVersion: m.GetSchemaVersion(), SchemaHash: m.GetSchemaHash(), SchemaJSON: m.GetSchemaJson()}}, nil
+	case *pb.RaftCommand_RetireTables:
+		m := cmd.RetireTables
+		return Command{RetireTables: &RetireTables{DatabaseID: m.GetDatabaseId(),
+			TableIDs: mapSlice(m.GetTableIds(), func(s string) string { return s }),
+			Deleted:  l2EventRefValue(m.GetDeleted()), Reason: TableRetireReason(m.GetReason())}}, nil
+	case *pb.RaftCommand_AdvanceL2Cursor:
+		return Command{AdvanceL2Cursor: &AdvanceL2Cursor{To: l2BlockRefValue(cmd.AdvanceL2Cursor.GetTo())}}, nil
+	case *pb.RaftCommand_RecordTablePurged:
+		m := cmd.RecordTablePurged
+		return Command{RecordTablePurged: &RecordTablePurged{NodeID: m.GetNodeId(), IncarnationSeq: m.GetIncarnationSeq()}}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{
