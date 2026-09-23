@@ -22,7 +22,10 @@ func NewReplayCore(cfg Config, conn clickhouse.Conn, manifests replay.SnapshotSt
 	if err != nil {
 		return nil, fmt.Errorf("verifier signer: %w", err)
 	}
-	payload := payloadexec.NewWithMaterializer(cfg.NetworkID, chexec.NewMaterializer(cfg.NetworkID, conn), cfg.Tables...)
+	// NewDynamic: the configured tables are the genesis set; a table-set
+	// transition job and the schemas a job carries extend it per job, so the
+	// verifier needs no registry access (dynamic SI table set, sub-project 2b).
+	payload := payloadexec.NewDynamic(cfg.NetworkID, chexec.NewMaterializer(cfg.NetworkID, conn), cfg.Tables...)
 	// Query routes stay empty so the snapshot-query lane remains default-off.
 	dispatcher, err := snapshotquery.NewCompositeExecutor(payload, nil)
 	if err != nil {
@@ -33,7 +36,7 @@ func NewReplayCore(cfg Config, conn clickhouse.Conn, manifests replay.SnapshotSt
 		Payloads:     payloads,
 		Executor:     dispatcher,
 		Signer:       signer,
-		SchemaHashes: tableSchemaHashes{networkID: cfg.NetworkID, tables: cfg.Tables},
+		SchemaHashes: payloadexec.SchemaHashes{NetworkID: cfg.NetworkID, Tables: cfg.Tables},
 	}, nil
 }
 
@@ -62,22 +65,6 @@ func (c *SnapshotQueryReplayCore) VerifySnapshotQuery(ctx context.Context, job r
 		return replay.SnapshotQueryAttestation{}, fmt.Errorf("snapshot query verifier is not configured")
 	}
 	return c.verifier.Verify(ctx, snapshotquery.VerifyRequest{Job: job, ReferenceID: referenceID})
-}
-
-// tableSchemaHashes implements replay.SchemaHashSource over the verifier's
-// configured tables (Phase-B hashes under this network id).
-type tableSchemaHashes struct {
-	networkID string
-	tables    []payloadexec.TableSchema
-}
-
-func (s tableSchemaHashes) TableSchemaHash(tableID string) (string, bool) {
-	for _, t := range s.tables {
-		if t.TableID == tableID {
-			return payloadexec.TableSchemaHash(s.networkID, t), true
-		}
-	}
-	return "", false
 }
 
 // CHScanner recomputes byte-side part commitments from this verifier's ClickHouse.
