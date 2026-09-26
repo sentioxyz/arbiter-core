@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
+
+	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay"
@@ -15,6 +21,7 @@ import (
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 	"github.com/sentioxyz/arbiter-core/dataplane/fspayload"
+	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -223,6 +230,13 @@ func TestTableQuiescent_WaitsForPromotionCleanupAndIntake(t *testing.T) {
 		t.Fatal("a drained partition is quiescent")
 	}
 	st.mu.Lock()
+	st.s.PromotionIntents[key("db.t", "p_x")] = promotionIntent{PromotionSeq: 1}
+	st.mu.Unlock()
+	if quiet() {
+		t.Fatal("a promotion intent keeps the table busy")
+	}
+	st.mu.Lock()
+	delete(st.s.PromotionIntents, key("db.t", "p_x"))
 	st.s.PromotedUnsafeParts[key("db.t", "p_x")] = []string{"p_x_1_1_0"}
 	st.mu.Unlock()
 	if quiet() {
@@ -339,4 +353,111 @@ func TestNew_FollowingTheRegistryNeedsManagedTablesAndAConnection(t *testing.T) 
 	if _, err := New(cfg, Deps{Client: client}); err != nil {
 		t.Fatalf("a registry-less unmanaged role is unchanged: %v", err)
 	}
+}
+
+func TestTableQuiescent_SerializesWithAnInFlightPrepare(t *testing.T) {
+	cfg := testConfigS(t)
+	st, err := openStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openIntakeJournal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Role{cfg: cfg, state: st, journal: journal}
+	// A prepare that passed requireAdmissible holds intakeMu until its
+	// Preparing record is durable.
+	r.intakeMu.Lock()
+	type result struct {
+		quiet bool
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		quiet, err := r.tableQuiescent("db.t")
+		done <- result{quiet, err}
+	}()
+	select {
+	case got := <-done:
+		t.Fatalf("the purge gate judged the table during an in-flight prepare: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	rec := testRecord("0xabc:7:n")
+	rec.Envelope.TargetTableID = "db.t"
+	if err := journal.save(rec); err != nil {
+		t.Fatal(err)
+	}
+	r.intakeMu.Unlock()
+	select {
+	case got := <-done:
+		if got.err != nil || got.quiet {
+			t.Fatalf("after the prepare saved its record: quiet=%v err=%v, want busy", got.quiet, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the purge gate did not proceed once the prepare released intakeMu")
+	}
+}
+
+type nopConnS struct{ clickhouse.Conn }
+
+type nopArbiterS struct{}
+
+func (nopArbiterS) SubmitTablePurged(context.Context, string, uint64) error { return nil }
+func (nopArbiterS) PurgeNodeSet(context.Context) ([]string, error)          { return nil, nil }
+
+// A registry version accepted while a pass runs (the startup pass or a
+// periodic one) must wake the next pass at once, not after the interval.
+func TestReconcileLoop_RegistryChangeDuringAPassWakesTheNextPass(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = time.Hour
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		view := newFakeRegistryS()
+		tables, err := tableset.New(tableset.Config{
+			Pinned:   ddl.Pinned{UnsafeDB: "hg_unsafe", SafeDB: "hg_safe", PromoteDB: "hg_promote", NodeID: "s1"},
+			Interval: interval,
+		}, tableset.Deps{Conn: nopConnS{}, Registry: view, Arbiter: nopArbiterS{}, Logger: logger})
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		var mu sync.Mutex
+		var passes []time.Duration
+		r := &Role{cfg: Config{ProtocolTablesReconcile: interval}, d: Deps{Registry: view, Logger: logger}, tables: tables}
+		r.ensureFn = func(context.Context, ddl.Mode) error {
+			mu.Lock()
+			passes = append(passes, time.Since(start))
+			n := len(passes)
+			mu.Unlock()
+			if n <= 2 {
+				view.set() // accepted while this pass runs
+			}
+			return nil
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		registryChanged, err := r.startupEnsure(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- r.reconcileProtocolTablesFrom(ctx, registryChanged) }()
+		synctest.Wait()
+		mu.Lock()
+		got := append([]time.Duration(nil), passes...)
+		mu.Unlock()
+		// startup pass (changes the registry), a woken pass (changes it
+		// again), a woken pass; then the loop sleeps on the interval timer.
+		if len(got) != 3 {
+			t.Fatalf("passes = %v, want 3 before the loop sleeps", got)
+		}
+		for i, at := range got {
+			if at != 0 {
+				t.Fatalf("pass %d ran after %v: a registry change during the previous pass waited for the timer", i+1, at)
+			}
+		}
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("loop exit = %v, want context canceled", err)
+		}
+	})
 }

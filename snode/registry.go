@@ -121,11 +121,19 @@ func (r *Role) TableSetStats() tableset.Stats {
 // tableQuiescent is the purge gate: no promotion intent, no promoted part
 // awaiting cleanup, no unpromoted rows and no unfinished intake still
 // reference tableID.
+//
+// It holds intakeMu, the lock every intake transition holds from its
+// admission check to its durable journal record. A prepare that passed
+// requireAdmissible before the table left Active therefore either finished
+// (its record is visible here) or has not started (it re-reads the registry
+// under intakeMu and is refused); it cannot save a record after this check
+// judged the table quiescent. The journal is read before the state store.
+// Lock order: the reconciler's passMu, then intakeMu, then stateStore.mu;
+// the intake path takes intakeMu, then the registry follower and the
+// reconciler's mu, and never passMu.
 func (r *Role) tableQuiescent(tableID string) (bool, error) {
-	quiet, err := r.state.quiescent(tableID)
-	if err != nil || !quiet {
-		return false, err
-	}
+	r.intakeMu.Lock()
+	defer r.intakeMu.Unlock()
 	records, err := r.journal.list()
 	if err != nil {
 		return false, err
@@ -139,7 +147,7 @@ func (r *Role) tableQuiescent(tableID string) (bool, error) {
 			return false, nil
 		}
 	}
-	return true, nil
+	return r.state.quiescent(tableID)
 }
 
 func (st *stateStore) quiescent(table string) (bool, error) {

@@ -195,7 +195,8 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	// The periodic verifier first fires after an interval. Ensure before
 	// Prepare so startup convergence never touches ClickHouse in an unverified
 	// protocol-table state, including when Run is called without Register.
-	if err := r.ensureProtocolTables(runCtx); err != nil {
+	registryChanged, err := r.startupEnsure(runCtx)
+	if err != nil {
 		return err
 	}
 	if err := r.Prepare(runCtx); err != nil {
@@ -208,7 +209,9 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	}
 	workers := roleWorkers{subscription: runSubscription}
 	if r.cfg.protocolTables != ddl.ModeOff {
-		workers.reconcile = r.reconcileProtocolTables
+		workers.reconcile = func(ctx context.Context) error {
+			return r.reconcileProtocolTablesFrom(ctx, registryChanged)
+		}
 	}
 	return r.resolveWorkerErrors(newRoleWorkerCoordinator(runCtx, cancel, ready, workers).run())
 }
@@ -222,6 +225,17 @@ func (r *Role) pinned() ddl.Pinned {
 
 func (r *Role) ensureProtocolTables(ctx context.Context) error {
 	return r.ensureFn(ctx, r.cfg.protocolTables)
+}
+
+// startupEnsure runs the startup pass and returns the registry wake channel
+// armed before it, so a version accepted while that pass runs wakes the
+// periodic loop's first iteration instead of waiting out the interval.
+func (r *Role) startupEnsure(ctx context.Context) (<-chan struct{}, error) {
+	registryChanged, _ := r.tables.Wake()
+	if err := r.ensureProtocolTables(ctx); err != nil {
+		return nil, err
+	}
+	return registryChanged, nil
 }
 
 func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {
@@ -475,6 +489,18 @@ func (c *roleWorkerCoordinator) join(first *roleWorkerResult) roleWorkerErrors {
 }
 
 func (r *Role) reconcileProtocolTables(ctx context.Context) error {
+	registryChanged, _ := r.tables.Wake()
+	return r.reconcileProtocolTablesFrom(ctx, registryChanged)
+}
+
+// reconcileProtocolTablesFrom is the periodic verify loop. registryChanged is
+// the registry wake channel armed before the pass that preceded the loop. Each
+// iteration re-arms the wake channels before its pass, never after it:
+// RegistryView.Changed only closes for a version accepted after the call, so
+// arming after a pass would miss a version accepted during it until the timer
+// fired.
+func (r *Role) reconcileProtocolTablesFrom(ctx context.Context, registryChanged <-chan struct{}) error {
+	_, triggered := r.tables.Wake()
 	interval := r.cfg.ProtocolTablesReconcile
 	maxFailures := r.cfg.ProtocolTablesMaxFailures
 	if maxFailures <= 0 {
@@ -484,7 +510,6 @@ func (r *Role) reconcileProtocolTables(ctx context.Context) error {
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
 	for {
-		registryChanged, triggered := r.tables.Wake()
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -493,6 +518,7 @@ func (r *Role) reconcileProtocolTables(ctx context.Context) error {
 		case <-triggered:
 		}
 
+		registryChanged, triggered = r.tables.Wake()
 		err := r.ensureFn(ctx, ddl.ModeVerifyOnly)
 		switch {
 		case err == nil:
