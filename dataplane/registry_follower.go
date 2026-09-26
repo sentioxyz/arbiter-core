@@ -26,6 +26,13 @@ const TableRegistryDisabledMessage = "table registry is disabled"
 // follower's first GetTableRegistry answer before its startup fails.
 const DefaultRegistryStartupTimeout = 2 * time.Minute
 
+// registryOversizeRetry is how long the follower waits before reopening a
+// watch whose snapshot exceeded the receive limit. The registry only grows,
+// so the retry can succeed only once the limit is raised; each attempt costs
+// the leader a full snapshot encode, hence a delay well above the ordinary
+// backoff.
+const registryOversizeRetry = 30 * time.Second
+
 // ErrRegistryNotReady reports that the follower had no answer from the
 // arbiter within the startup timeout.
 var ErrRegistryNotReady = errors.New("dataplane: table registry follower is not ready")
@@ -61,6 +68,8 @@ type RegistryFollower struct {
 	ready     chan struct{}
 	readyOnce sync.Once
 	connected atomic.Bool
+
+	oversizeRetry time.Duration
 }
 
 // NewRegistryFollower returns a follower that reads through c. Call Run to
@@ -69,7 +78,7 @@ func NewRegistryFollower(c *Client, logger *slog.Logger) *RegistryFollower {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &RegistryFollower{c: c, logger: logger, changed: make(chan struct{}), ready: make(chan struct{})}
+	return &RegistryFollower{c: c, logger: logger, changed: make(chan struct{}), ready: make(chan struct{}), oversizeRetry: registryOversizeRetry}
 }
 
 // View implements RegistryView.
@@ -115,6 +124,15 @@ func WaitReady(ctx context.Context, v RegistryView, timeout time.Duration) error
 // non-retryable transport error. An arbiter without the TableRegistry service
 // (Unimplemented) counts as a disabled registry; the watch keeps retrying it
 // at the maximum backoff.
+//
+// A watched snapshot larger than the client's receive limit
+// (ResourceExhausted) does not end Run: every node crosses the limit at the
+// same registry version, so returning would stop every data-plane role at
+// once. The follower logs an error, keeps serving the last accepted version
+// and retries the watch every registryOversizeRetry. A stale view fails safe
+// because the arbiter stays the authority: new tables remain Pending
+// (retryable) and writes to a retired table are refused at admission. The
+// startup Get has no view to fall back to, so there the error is returned.
 func (f *RegistryFollower) Run(ctx context.Context) error {
 	if err := f.initial(ctx); err != nil {
 		return err
@@ -125,13 +143,24 @@ func (f *RegistryFollower) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if status.Code(err) != codes.Unimplemented {
+		var wait time.Duration
+		switch status.Code(err) {
+		case codes.Unimplemented:
+			wait = f.c.cfg.RetryBackoffMax
+		case codes.ResourceExhausted:
+			f.mu.Lock()
+			version := f.snap.Version
+			f.mu.Unlock()
+			f.logger.Error("table registry snapshot exceeds the data-plane receive limit; keeping the last accepted version until dataplane Config.MaxRecvMsgSize is raised",
+				"version", version, "max_recv_msg_size", f.c.cfg.MaxRecvMsgSize, "retry_in", f.oversizeRetry, "err", err)
+			wait = f.oversizeRetry
+		default:
 			return err
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(f.c.cfg.RetryBackoffMax):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -160,6 +189,9 @@ func (f *RegistryFollower) initial(ctx context.Context) error {
 		}
 		return err
 	})
+	if status.Code(err) == codes.ResourceExhausted {
+		return fmt.Errorf("get table registry (dataplane Config.MaxRecvMsgSize is %d bytes): %w", f.c.cfg.MaxRecvMsgSize, err)
+	}
 	if err != nil {
 		return fmt.Errorf("get table registry: %w", err)
 	}
