@@ -104,11 +104,8 @@ func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinn
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if conn == nil {
-		return errors.New("ddl: clickhouse connection is required")
-	}
-	if pinned.UnsafeDB == "" || pinned.SafeDB == "" || pinned.PromoteDB == "" || pinned.NodeID == "" {
-		return errors.New("ddl: Pinned needs UnsafeDB, SafeDB, PromoteDB and NodeID")
+	if err := validatePinned(conn, pinned); err != nil {
+		return err
 	}
 	// Compile and validate the complete batch before issuing any DDL. In
 	// particular, a fatal declaration after a valid one must not leave a
@@ -126,10 +123,8 @@ func EnsureProtocolTables(ctx context.Context, conn clickhouse.Conn, pinned Pinn
 		plan = append(plan, unsafe, safe, promote)
 	}
 	if mode == ModeCreateAndVerify {
-		for _, database := range []string{pinned.UnsafeDB, pinned.SafeDB, pinned.PromoteDB} {
-			if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(database)); err != nil {
-				return fmt.Errorf("ddl: create database %s: %w", database, err)
-			}
+		if err := ensureDatabases(ctx, conn, pinned); err != nil {
+			return err
 		}
 	}
 	var errs []error

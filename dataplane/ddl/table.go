@@ -80,10 +80,8 @@ func EnsureTable(ctx context.Context, conn clickhouse.Conn, p Pinned, t payloade
 	}
 	intents := []TableIntent{unsafe, safe, promote}
 	if mode == ModeCreateAndVerify {
-		for _, database := range []string{p.UnsafeDB, p.SafeDB, p.PromoteDB} {
-			if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(database)); err != nil {
-				return fmt.Errorf("ddl: create database %s: %w", database, err)
-			}
+		if err := ensureDatabases(ctx, conn, p); err != nil {
+			return err
 		}
 		for _, intent := range intents {
 			err := conn.Exec(ctx, intent.SQL())
@@ -216,6 +214,18 @@ func keeperChildren(ctx context.Context, conn clickhouse.Conn, path string) ([]s
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// ensureDatabases creates p's three protocol databases if they don't already
+// exist. Shared by EnsureTable and EnsureProtocolTables so the two entry
+// points issue identical CREATE DATABASE DDL.
+func ensureDatabases(ctx context.Context, conn clickhouse.Conn, p Pinned) error {
+	for _, database := range []string{p.UnsafeDB, p.SafeDB, p.PromoteDB} {
+		if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(database)); err != nil {
+			return fmt.Errorf("ddl: create database %s: %w", database, err)
+		}
+	}
+	return nil
 }
 
 func validatePinned(conn clickhouse.Conn, p Pinned) error {

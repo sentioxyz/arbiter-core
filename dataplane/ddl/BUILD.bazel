@@ -31,6 +31,7 @@ go_test(
         "naming_collision_test.go",
         "reconcile_test.go",
         "table_ch_test.go",
+        "table_test.go",
         "verify_test.go",
     ],
     embed = [":ddl"],

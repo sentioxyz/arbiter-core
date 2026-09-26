@@ -31,8 +31,9 @@ func tableComments(t *testing.T, conn clickhouse.Conn, p Pinned, tableID string)
 // strandReplica leaves a replica named replica under tableID's Keeper path
 // with no attached table anywhere: it creates hg_unsafe on the second server
 // and detaches it, which is the Keeper state a crash between Keeper
-// registration and local metadata leaves behind. The cleanup re-attaches and
-// drops the detached table if its replica still exists.
+// registration and local metadata leaves behind. The cleanup drops
+// p.UnsafeDB wholesale, detached table and all, so it does not depend on
+// what the test did with the replica in the meantime.
 func strandReplica(t *testing.T, replicaConn clickhouse.Conn, p Pinned, sch payloadexec.TableSchema, replica string) {
 	t.Helper()
 	ctx := context.Background()
