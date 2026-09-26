@@ -5,8 +5,10 @@ go_library(
     srcs = [
         "client.go",
         "manifests.go",
+        "registry_follower.go",
         "snapshot_restore.go",
         "subscribe.go",
+        "table_purge.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/dataplane",
     visibility = ["//visibility:public"],
@@ -19,6 +21,7 @@ go_library(
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
     ],
 )
 
@@ -27,6 +30,7 @@ go_test(
     srcs = [
         "client_test.go",
         "manifests_test.go",
+        "registry_follower_test.go",
         "snapshot_restore_test.go",
         "subscribe_test.go",
     ],
@@ -42,5 +46,6 @@ go_test(
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
     ],
 )
