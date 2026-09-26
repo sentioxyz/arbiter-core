@@ -393,3 +393,91 @@ func TestReconcileLoop_RegistryChangeDuringAPassWakesTheNextPass(t *testing.T) {
 		}
 	})
 }
+
+func newGateRoleV(t *testing.T, registry dataplane.RegistryView, managed bool, logs io.Writer) (*Role, *fakeReplayCore) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(logs, nil))
+	core := &fakeReplayCore{}
+	r := &Role{cfg: Config{AddTransitionReadyWait: time.Hour}, d: Deps{Replay: core, Registry: registry, Logger: logger}}
+	if managed {
+		tables, err := tableset.New(tableset.Config{
+			Pinned: ddl.Pinned{UnsafeDB: "hg_unsafe", SafeDB: "hg_safe", PromoteDB: "hg_promote", NodeID: "v1"},
+		}, tableset.Deps{Conn: nopConnV{}, Registry: registry, Arbiter: nopArbiterV{}, Logger: logger})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.tables = tables
+	}
+	return r, core
+}
+
+// Without an enabled registry no chain table is ever reconciled, so the gate
+// refuses at once instead of blocking the subscription for its whole bound
+// on every redelivery.
+func TestReplayJob_AddTransitionIsRefusedAtOnceWithoutAnEnabledRegistry(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		registry func() dataplane.RegistryView
+		managed  bool
+	}{
+		{"managed tables, no registry", func() dataplane.RegistryView { return nil }, true},
+		{"managed tables, registry disabled", func() dataplane.RegistryView { return newFakeRegistryView() }, true},
+		{"unmanaged tables", func() dataplane.RegistryView { return nil }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r, core := newGateRoleV(t, tc.registry(), tc.managed, io.Discard)
+				start := time.Now()
+				err := r.handleReplayJob(t.Context(), addTransitionJob(7, "db.n"))
+				if !errors.Is(err, ErrAddedTableNotReady) {
+					t.Fatalf("err = %v, want ErrAddedTableNotReady", err)
+				}
+				if waited := time.Since(start); waited != 0 {
+					t.Fatalf("the gate waited %v before refusing; it must refuse at once", waited)
+				}
+				if core.jobCount() != 0 {
+					t.Fatal("the replay core must not run")
+				}
+			})
+		})
+	}
+}
+
+// A gate wait that ends because the context ended returns the context's error
+// and does not log the "has not created" refusal.
+func TestReplayJob_CanceledGateWaitIsNotLoggedAsARefusal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		view := newFakeRegistryView()
+		view.set(chainIncarnationV(t, 2, "testnet", payloadexec.TableSchema{TableID: "db.n", Columns: []lthash.Column{{Name: "w", Type: "String"}}}, wire.TableStatusPending))
+		var logs strings.Builder
+		var mu sync.Mutex
+		r, core := newGateRoleV(t, view, true, lockedWriter{&mu, &logs})
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- r.handleReplayJob(ctx, addTransitionJob(7, "db.n")) }()
+		synctest.Wait() // the gate is waiting for the table
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context canceled", err)
+		}
+		if core.jobCount() != 0 {
+			t.Fatal("the replay core must not run")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.Contains(logs.String(), "has not created") {
+			t.Fatalf("a canceled wait was logged as a refusal:\n%s", logs.String())
+		}
+	})
+}
+
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (l lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}

@@ -55,8 +55,8 @@ type Deps struct {
 	Conn                   clickhouse.Conn
 	Logger                 *slog.Logger
 	// Registry is the table-registry follower (usually shared with the host).
-	// Nil keeps the verifier on its configured tables; it then never attests
-	// a transition that adds one.
+	// Nil keeps the verifier on its configured tables; it then refuses at
+	// once to attest a transition that adds one.
 	Registry dataplane.RegistryView
 }
 
@@ -307,6 +307,9 @@ func (r *Role) reconcileProtocolTablesFrom(ctx context.Context, registryChanged 
 func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {
 	job := wire.ReplayJobFromPB(m)
 	if err := r.requireAddedTablesReady(ctx, job); err != nil {
+		if !errors.Is(err, ErrAddedTableNotReady) {
+			return err // the context ended while waiting
+		}
 		r.d.Logger.Warn("table-set transition adds a table this verifier has not created; refusing to attest", "block", m.GetBlockSeq(), "err", err)
 		return err
 	}

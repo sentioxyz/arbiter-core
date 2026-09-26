@@ -10,7 +10,6 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
-	"github.com/sentioxyz/arbiter-core/wire"
 )
 
 // DefaultAddTransitionReadyWait bounds how long a replay job whose table-set
@@ -42,6 +41,12 @@ func (r *Role) requireAddedTablesReady(ctx context.Context, job replay.ReplayJob
 	if !missing {
 		return nil
 	}
+	// Without an enabled registry no chain table is ever reconciled, so
+	// waiting could only block the subscription (and overflow its stream
+	// buffer) for the whole bound on every redelivery: refuse at once.
+	if !r.followsEnabledRegistry() {
+		return fmt.Errorf("%w: block %d adds %v, and this verifier follows no enabled table registry", ErrAddedTableNotReady, job.BlockSeq, ids)
+	}
 	if r.tables.WaitReady(ctx, ids, r.cfg.AddTransitionReadyWait) {
 		return nil
 	}
@@ -49,6 +54,16 @@ func (r *Role) requireAddedTablesReady(ctx context.Context, job replay.ReplayJob
 		return err
 	}
 	return fmt.Errorf("%w: block %d adds %v", ErrAddedTableNotReady, job.BlockSeq, ids)
+}
+
+// followsEnabledRegistry reports whether this verifier reconciles the table
+// registry's chain tables: it follows a registry and that registry is enabled.
+func (r *Role) followsEnabledRegistry() bool {
+	if r.tables == nil || r.d.Registry == nil {
+		return false
+	}
+	_, enabled := r.d.Registry.View()
+	return enabled
 }
 
 // requireGenesisReadSet keeps the snapshot-query lane on the static genesis
@@ -82,42 +97,4 @@ func genesisSchema(tables []payloadexec.TableSchema, tableID string) (payloadexe
 		}
 	}
 	return payloadexec.TableSchema{}, false
-}
-
-// registrySchema resolves tableID from an enabled registry by the SNode's rule
-// (snode.Role.schemaFor): the schema of the key's live incarnation when that
-// is Active, Retiring or Purging (so a block admitted before a retirement is
-// still scanned) — the configured schema for a genesis-origin incarnation,
-// otherwise the decoded schema_json, which must hash to the incarnation's
-// schema_hash under networkID. Anything else is refused; an enabled registry
-// never falls back to the configured tables.
-func registrySchema(networkID string, genesis []payloadexec.TableSchema, snap wire.TableRegistrySnapshot, tableID string) (payloadexec.TableSchema, error) {
-	live := snap.Live(tableID)
-	if live == nil {
-		return payloadexec.TableSchema{}, fmt.Errorf("table %s is not in the table registry", tableID)
-	}
-	switch live.Status {
-	case wire.TableStatusActive, wire.TableStatusRetiring, wire.TableStatusPurging:
-	default:
-		return payloadexec.TableSchema{}, fmt.Errorf("table %s is %s in the table registry", tableID, live.Status)
-	}
-	return incarnationSchema(networkID, genesis, *live)
-}
-
-// incarnationSchema mirrors snode.Role.incarnationSchema.
-func incarnationSchema(networkID string, genesis []payloadexec.TableSchema, inc wire.TableIncarnation) (payloadexec.TableSchema, error) {
-	if inc.Origin == wire.TableOriginGenesis {
-		if t, ok := genesisSchema(genesis, inc.Key()); ok {
-			return t, nil
-		}
-		return payloadexec.TableSchema{}, fmt.Errorf("genesis table %s is not configured", inc.Key())
-	}
-	schema, err := inc.Schema()
-	if err != nil {
-		return payloadexec.TableSchema{}, err
-	}
-	if got := payloadexec.TableSchemaHash(networkID, schema); got != inc.SchemaHash {
-		return payloadexec.TableSchema{}, fmt.Errorf("table %s schema_json hashes to %s, registry records %s", inc.Key(), got, inc.SchemaHash)
-	}
-	return schema, nil
 }

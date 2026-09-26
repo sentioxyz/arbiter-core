@@ -9,6 +9,7 @@ import (
 	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
+	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
@@ -39,10 +40,11 @@ func (r *Role) genesisSchema(tableID string) (payloadexec.TableSchema, bool) {
 
 // schemaFor resolves tableID for promotion, cleanup and recorded intake.
 // Without an enabled registry it is the configured genesis table. With one it
-// is the schema of the key's live storage-integrity incarnation when that is
-// Active, Retiring or Purging (so a statement admitted before a retirement
-// still converges and promotes): the configured schema for a genesis-origin
-// incarnation, the decoded schema_json otherwise.
+// is dataplane.RegistrySchema, the rule the verifier's scanner shares: the
+// schema of the key's live storage-integrity incarnation when that is Active,
+// Retiring or Purging (so a statement admitted before a retirement still
+// converges and promotes), the configured schema for a genesis-origin
+// incarnation and the hash-checked schema_json otherwise.
 func (r *Role) schemaFor(tableID string) (payloadexec.TableSchema, error) {
 	snap, enabled := r.registryView()
 	if !enabled {
@@ -51,33 +53,7 @@ func (r *Role) schemaFor(tableID string) (payloadexec.TableSchema, error) {
 		}
 		return payloadexec.TableSchema{}, fmt.Errorf("no schema configured for table %s", tableID)
 	}
-	live := snap.Live(tableID)
-	if live == nil {
-		return payloadexec.TableSchema{}, fmt.Errorf("table %s is not in the table registry", tableID)
-	}
-	switch live.Status {
-	case wire.TableStatusActive, wire.TableStatusRetiring, wire.TableStatusPurging:
-	default:
-		return payloadexec.TableSchema{}, fmt.Errorf("table %s is %s in the table registry", tableID, live.Status)
-	}
-	return r.incarnationSchema(*live)
-}
-
-func (r *Role) incarnationSchema(inc wire.TableIncarnation) (payloadexec.TableSchema, error) {
-	if inc.Origin == wire.TableOriginGenesis {
-		if t, ok := r.genesisSchema(inc.Key()); ok {
-			return t, nil
-		}
-		return payloadexec.TableSchema{}, fmt.Errorf("genesis table %s is not configured", inc.Key())
-	}
-	schema, err := inc.Schema()
-	if err != nil {
-		return payloadexec.TableSchema{}, err
-	}
-	if got := payloadexec.TableSchemaHash(r.cfg.NetworkID, schema); got != inc.SchemaHash {
-		return payloadexec.TableSchema{}, fmt.Errorf("table %s schema_json hashes to %s, registry records %s", inc.Key(), got, inc.SchemaHash)
-	}
-	return schema, nil
+	return dataplane.RegistrySchema(r.cfg.NetworkID, r.cfg.Tables, snap, tableID)
 }
 
 // requireAdmissible is the fresh-intake gate (defence in depth: HouseGate

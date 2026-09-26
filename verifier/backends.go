@@ -143,8 +143,8 @@ func (s *CHScanner) Scan(ctx context.Context, parts []arbiter.PartRef) ([]arbite
 }
 
 // schemaFor resolves the table a scan names, by the SNode's rule. With an
-// enabled registry the key's live incarnation decides (registrySchema): a
-// genesis-origin one uses the configured schema, a chain-origin one its
+// enabled registry the key's live incarnation decides
+// (dataplane.RegistrySchema, shared with the SNode): a genesis-origin one uses the configured schema, a chain-origin one its
 // registry schema_json verified against its schema_hash, so a same-name
 // recreation of a retired genesis table is scanned with its new schema. Only
 // while the registry is disabled (or not followed) do the configured genesis
@@ -152,7 +152,7 @@ func (s *CHScanner) Scan(ctx context.Context, parts []arbiter.PartRef) ([]arbite
 func (s *CHScanner) schemaFor(tableID string) (payloadexec.TableSchema, error) {
 	if s.registry != nil {
 		if snap, enabled := s.registry.View(); enabled {
-			return registrySchema(s.cfg.NetworkID, s.cfg.Tables, snap, tableID)
+			return dataplane.RegistrySchema(s.cfg.NetworkID, s.cfg.Tables, snap, tableID)
 		}
 	}
 	if t, ok := genesisSchema(s.cfg.Tables, tableID); ok {
