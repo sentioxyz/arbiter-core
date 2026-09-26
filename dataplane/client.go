@@ -18,11 +18,23 @@ type Peer struct {
 	GRPCAddr string
 }
 
+// DefaultMaxRecvMsgSize is the per-message receive limit of every data-plane
+// call when Config.MaxRecvMsgSize is unset. gRPC's own client default is
+// 4 MiB, but GetTableRegistry and WatchTableRegistry return the whole
+// registry, which retains every Purged and Refused incarnation and so grows
+// with every CREATE/DROP on the SI indexer (roughly 1-5 KiB per chain
+// incarnation, 0.2 KiB per legacy one). The arbiter's servers keep gRPC's
+// unlimited send default, so the receiver's limit is the only one in play.
+const DefaultMaxRecvMsgSize = 256 << 20
+
 type Config struct {
 	Peers           []Peer
 	DialTimeout     time.Duration
 	RetryBackoffMin time.Duration
 	RetryBackoffMax time.Duration
+	// MaxRecvMsgSize bounds each message received from the arbiter, in
+	// bytes. Zero or negative selects DefaultMaxRecvMsgSize.
+	MaxRecvMsgSize int
 }
 
 func (cfg Config) withDefaults() Config {
@@ -37,6 +49,9 @@ func (cfg Config) withDefaults() Config {
 	}
 	if cfg.RetryBackoffMax < cfg.RetryBackoffMin {
 		cfg.RetryBackoffMax = cfg.RetryBackoffMin
+	}
+	if cfg.MaxRecvMsgSize <= 0 {
+		cfg.MaxRecvMsgSize = DefaultMaxRecvMsgSize
 	}
 	return cfg
 }
@@ -95,7 +110,10 @@ func (c *Client) conn(id string) (*grpc.ClientConn, error) {
 	if !ok {
 		return nil, fmt.Errorf("dataplane: unknown peer %q", id)
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(c.cfg.MaxRecvMsgSize)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("dataplane: dial %s: %w", addr, err)
 	}
