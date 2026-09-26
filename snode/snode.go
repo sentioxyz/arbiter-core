@@ -119,7 +119,10 @@ func New(cfg Config, d Deps) (*Role, error) {
 	if cfg.protocolTables != ddl.ModeOff && d.Conn != nil {
 		tables, err := tableset.New(tableset.Config{
 			Pinned: r.pinned(), Genesis: cfg.Tables, Interval: cfg.ProtocolTablesReconcile, SweepDecommissioned: true,
-		}, tableset.Deps{Conn: d.Conn, Registry: d.Registry, Arbiter: d.Client, Quiescent: r.tableQuiescent, Logger: d.Logger})
+		}, tableset.Deps{
+			Conn: d.Conn, Registry: d.Registry, Arbiter: d.Client,
+			Quiescent: r.tableQuiescent, Dropped: r.forgetDroppedTable, Logger: d.Logger,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("snode: %w", err)
 		}

@@ -2,8 +2,11 @@ package snode
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/housegate/housegate/pkg/lthash"
@@ -154,4 +157,71 @@ func (st *stateStore) quiescent(table string) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// forgetDroppedTable is the reconciler's Dropped hook: once this SNode
+// dropped tableID's protocol tables, it forgets the table's per-partition
+// promotion ledger. The arbiter drops a retired table's partition bases with
+// it, so a later incarnation under the same name (spec D9) promotes from an
+// empty base; a base root kept here would refuse every such promotion as a
+// base CAS mismatch. Intake part records go too: the new incarnation's
+// hg_unsafe numbers its parts from scratch, and an old record under a reused
+// part name would refuse or swallow its intake.
+func (r *Role) forgetDroppedTable(_ context.Context, tableID string) error {
+	return r.state.ForgetTable(tableID)
+}
+
+// ForgetTable durably removes every BaseRoots, BaseSnapshotIDs,
+// UnpromotedSums, LastAcks and IntakeParts entry of table in one state write;
+// watermarks stay, because promotion seqs are global. It is idempotent (no
+// entry, no write). It refuses while the table still has promotion work
+// (the purge gate's quiescence): an unresolved intent, a promoted part
+// awaiting cleanup or unpromoted rows are never discarded silently.
+func (st *stateStore) ForgetTable(table string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	prefix := table + "\x00"
+	zero := lthash.New().Bytes()
+	for ks := range st.s.PromotionIntents {
+		if strings.HasPrefix(ks, prefix) {
+			return fmt.Errorf("snode: forget table %s: promotion intent for partition %s is unresolved", table, strings.TrimPrefix(ks, prefix))
+		}
+	}
+	for ks, parts := range st.s.PromotedUnsafeParts {
+		if strings.HasPrefix(ks, prefix) && len(parts) > 0 {
+			return fmt.Errorf("snode: forget table %s: promoted parts of partition %s await cleanup", table, strings.TrimPrefix(ks, prefix))
+		}
+	}
+	for ks, sum := range st.s.UnpromotedSums {
+		if !strings.HasPrefix(ks, prefix) {
+			continue
+		}
+		acc, err := parseAccumulatorHex(sum)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(acc.Bytes(), zero) {
+			return fmt.Errorf("snode: forget table %s: partition %s has unpromoted rows", table, strings.TrimPrefix(ks, prefix))
+		}
+	}
+	next := cloneLocalState(st.s)
+	changed := false
+	forget := func(keys []string, del func(string)) {
+		for _, ks := range keys {
+			if strings.HasPrefix(ks, prefix) {
+				del(ks)
+				changed = true
+			}
+		}
+	}
+	forget(slices.Collect(maps.Keys(next.BaseRoots)), func(ks string) { delete(next.BaseRoots, ks) })
+	forget(slices.Collect(maps.Keys(next.BaseSnapshotIDs)), func(ks string) { delete(next.BaseSnapshotIDs, ks) })
+	forget(slices.Collect(maps.Keys(next.UnpromotedSums)), func(ks string) { delete(next.UnpromotedSums, ks) })
+	forget(slices.Collect(maps.Keys(next.LastAcks)), func(ks string) { delete(next.LastAcks, ks) })
+	forget(slices.Collect(maps.Keys(next.IntakeParts)), func(ks string) { delete(next.IntakeParts, ks) })
+	forget(slices.Collect(maps.Keys(next.PromotedUnsafeParts)), func(ks string) { delete(next.PromotedUnsafeParts, ks) })
+	if !changed {
+		return nil
+	}
+	return st.persistStateLocked(next)
 }

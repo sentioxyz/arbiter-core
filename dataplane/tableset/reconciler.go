@@ -84,7 +84,15 @@ type Deps struct {
 	// Quiescent, when set, gates a purge: it reports whether the role has no
 	// promotion or unsafe cleanup work left that references tableID.
 	Quiescent func(tableID string) (bool, error)
-	Logger    *slog.Logger
+	// Dropped, when set, runs after this node dropped tableID's protocol
+	// tables: in a purge, after the drop and before SubmitTablePurged (a
+	// failure fails the purge step, which is retried with backoff and not
+	// reported), and after every leftover drop (a failure is retried before
+	// the key's tables are created again). It lets the role forget
+	// per-table state, so a later incarnation under the same name (spec D9)
+	// starts from an empty ledger. It must be idempotent.
+	Dropped func(ctx context.Context, tableID string) error
+	Logger  *slog.Logger
 }
 
 // Stats is a point-in-time copy of the reconciler's metrics.
@@ -117,6 +125,10 @@ type Reconciler struct {
 	failures      map[string]uint64
 	unknown       []string
 	leftoverDrops uint64
+	// owed names the keys whose last Dropped hook call failed; their tables
+	// are not created again until the hook succeeds. In memory only: a
+	// restart forgets it.
+	owed map[string]bool
 	// early carries the early-pass signal Wake exposes. Trigger sends on it
 	// after clearing every backoff; WaitReady sends on it and keeps the
 	// backoffs (P9).
@@ -150,7 +162,7 @@ func New(cfg Config, d Deps) (*Reconciler, error) {
 	}
 	return &Reconciler{
 		cfg: cfg, d: d, genesis: genesis, now: time.Now,
-		tables: map[string]*tableStatus{}, failures: map[string]uint64{},
+		tables: map[string]*tableStatus{}, failures: map[string]uint64{}, owed: map[string]bool{},
 		early: make(chan struct{}, 1), passDone: make(chan struct{}),
 	}, nil
 }
@@ -411,13 +423,17 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 		return err
 	}
 	comments := map[string][]string{}
+	unsafeLocal := map[string]bool{} // physical names with a local hg_unsafe table
 	for _, lt := range local {
 		comments[lt.Table] = append(comments[lt.Table], lt.Comment)
+		if lt.Database == r.cfg.Pinned.UnsafeDB {
+			unsafeLocal[lt.Table] = true
+		}
 	}
 
 	for _, physical := range sortedKeys(present) {
 		t := present[physical]
-		if err := r.ensurePresent(ctx, snap, t, comments[physical]); err != nil {
+		if err := r.ensurePresent(ctx, snap, t, comments[physical], unsafeLocal[physical]); err != nil {
 			switch {
 			case ddl.FatalReconcileError(err):
 				fatal = append(fatal, err)
@@ -491,8 +507,10 @@ func (r *Reconciler) targetFor(inc wire.TableIncarnation, genesisMode ddl.Mode) 
 // local table of a chain table with another comment is a leftover when the
 // registry records the incarnation it belongs to as Purged or Refused
 // (retiredLeftover); it is dropped before the create. Any other comment is
-// drift.
-func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistrySnapshot, t target, comments []string) error {
+// drift. hasUnsafe reports whether a local hg_unsafe table of that name
+// exists; before a chain incarnation's hg_unsafe is created, its Keeper path
+// must hold no decommissioned replica (clearDecommissioned).
+func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistrySnapshot, t target, comments []string, hasUnsafe bool) error {
 	key := t.inc.Key()
 	expected := ""
 	if t.marker != 0 {
@@ -516,6 +534,24 @@ func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistryS
 			return err
 		}
 		r.countLeftover(key, "earlier incarnation")
+		hasUnsafe = false
+		if err := r.notifyDropped(ctx, key); err != nil {
+			r.fail(key, t.inc.Seq, StateCreating, err)
+			return err
+		}
+	} else if r.isOwed(key) {
+		// An earlier leftover drop's hook failed: retry it before the key's
+		// tables exist again.
+		if err := r.notifyDropped(ctx, key); err != nil {
+			r.fail(key, t.inc.Seq, StateCreating, err)
+			return err
+		}
+	}
+	if t.marker != 0 && !hasUnsafe {
+		if err := r.clearDecommissioned(ctx, key); err != nil {
+			r.fail(key, t.inc.Seq, StateCreating, err)
+			return err
+		}
 	}
 	if err := ddl.EnsureTable(ctx, r.d.Conn, r.cfg.Pinned, t.schema, t.marker, t.mode); err != nil {
 		r.fail(key, t.inc.Seq, StateCreating, err)
@@ -636,6 +672,10 @@ func (r *Reconciler) purge(ctx context.Context, inc wire.TableIncarnation, hasLo
 	if hasLocal {
 		r.d.Logger.Info("dropped purging table", "table", key, "incarnation", inc.Seq)
 	}
+	if err := r.notifyDropped(ctx, key); err != nil {
+		r.fail(key, inc.Seq, StatePurging, err)
+		return
+	}
 	if r.cfg.SweepDecommissioned {
 		if err := r.sweep(ctx, key); err != nil {
 			r.fail(key, inc.Seq, StatePurging, err)
@@ -676,6 +716,77 @@ func (r *Reconciler) sweep(ctx context.Context, key string) error {
 	return nil
 }
 
+// clearDecommissioned runs before this node creates a chain incarnation's
+// hg_unsafe table that it does not hold locally. A replica under the key's
+// Keeper path that is neither this node nor in the arbiter's purge node set
+// belongs to a decommissioned node, left behind when that node's eviction
+// completed an earlier incarnation's purge after the source's sweep. Joining
+// that path would fail with a different structure, or clone the evicted
+// replica's parts into the new incarnation. The source SNode
+// (SweepDecommissioned) removes such replicas (ClickHouse refuses an active
+// one, which fails the step); every other node refuses the create until the
+// source has removed them. An absent path lists no replica.
+func (r *Reconciler) clearDecommissioned(ctx context.Context, key string) error {
+	replicas, err := ddl.KeeperReplicas(ctx, r.d.Conn, r.cfg.Pinned, key)
+	if err != nil {
+		return err
+	}
+	var nodes, blocking []string
+	fetched := false
+	for _, replica := range replicas {
+		if replica == r.cfg.Pinned.NodeID {
+			continue
+		}
+		if !fetched {
+			if nodes, err = r.d.Arbiter.PurgeNodeSet(ctx); err != nil {
+				return fmt.Errorf("tableset: purge node set: %w", err)
+			}
+			fetched = true
+		}
+		if slices.Contains(nodes, replica) {
+			continue
+		}
+		if !r.cfg.SweepDecommissioned {
+			blocking = append(blocking, replica)
+			continue
+		}
+		if err := ddl.DropReplica(ctx, r.d.Conn, r.cfg.Pinned, key, replica); err != nil {
+			return err
+		}
+		r.d.Logger.Warn("dropped decommissioned replica before create", "table", key, "replica", replica)
+	}
+	if len(blocking) > 0 {
+		return fmt.Errorf("tableset: keeper path of %s holds decommissioned replica(s) %v; not creating until the source SNode removes them", key, blocking)
+	}
+	return nil
+}
+
+// notifyDropped runs the Dropped hook for key. A failure is remembered, so
+// ensurePresent retries it before key's tables are created again.
+func (r *Reconciler) notifyDropped(ctx context.Context, key string) error {
+	if r.d.Dropped == nil {
+		return nil
+	}
+	err := r.d.Dropped(ctx, key)
+	r.mu.Lock()
+	if err != nil {
+		r.owed[key] = true
+	} else {
+		delete(r.owed, key)
+	}
+	r.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("tableset: forget dropped table %s: %w", key, err)
+	}
+	return nil
+}
+
+func (r *Reconciler) isOwed(key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.owed[key]
+}
+
 // sweepPurgedKeeperPaths catches a Keeper path that survived its purge
 // because a node was evicted after this node's sweep: for every key whose
 // live incarnation has no tables but whose path still exists, drop this
@@ -713,6 +824,12 @@ func (r *Reconciler) dropLeftover(ctx context.Context, key string) {
 		return
 	}
 	r.countLeftover(key, "retired key")
+	if err := r.notifyDropped(ctx, key); err != nil {
+		r.d.Logger.Warn("forget dropped leftover", "table", key, "err", err)
+		r.mu.Lock()
+		r.failures[key]++
+		r.mu.Unlock()
+	}
 }
 
 func (r *Reconciler) countLeftover(key, why string) {

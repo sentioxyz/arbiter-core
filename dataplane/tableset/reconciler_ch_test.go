@@ -956,3 +956,155 @@ func TestReconciler_DropsALeftoverOfARetiredCollidingKey(t *testing.T) {
 		}
 	})
 }
+
+// FR-C1: the Dropped hook runs after a purge's drop and before the report; its
+// failure fails the purge step with backoff and withholds SubmitTablePurged.
+func TestReconciler_DroppedHookFailureWithholdsThePurgeReport(t *testing.T) {
+	conn := requireCH(t)
+	p := testPinned(t, conn)
+	view, arb := newFakeView(), &fakeArbiter{}
+	hookErr := errors.New("state store unavailable")
+	var calls []string
+	r := newReconciler(t, conn, p, view, arb, func(_ *Config, d *Deps) {
+		d.Dropped = func(_ context.Context, tableID string) error {
+			calls = append(calls, tableID)
+			return hookErr
+		}
+	})
+	clock := pinClock(r)
+	s := schemaFor(t, "t")
+	view.set(chainInc(t, 1, s, wire.TableStatusActive))
+	mustReconcile(t, r)
+	if len(calls) != 0 {
+		t.Fatalf("the hook runs only after a drop: %v", calls)
+	}
+	view.set(chainInc(t, 1, s, wire.TableStatusPurging))
+	mustReconcile(t, r)
+	if left := localComments(t, conn, p, s.TableID); len(left) != 0 {
+		t.Fatalf("tables left: %v", left)
+	}
+	if !slices.Equal(calls, []string{s.TableID}) {
+		t.Fatalf("hook calls = %v", calls)
+	}
+	if got := arb.reported(); len(got) != 0 {
+		t.Fatalf("a failed hook must withhold the purge report: %v", got)
+	}
+	if st := r.Stats(); st.Failures[s.TableID] != 1 || st.States[StatePurging] != 1 {
+		t.Fatalf("stats = %+v", st)
+	}
+	mustReconcile(t, r)
+	if len(calls) != 1 || len(arb.reported()) != 0 {
+		t.Fatalf("a backed-off purge is not retried by the next pass: calls %v reports %v", calls, arb.reported())
+	}
+	hookErr = nil
+	clock.advance(time.Minute)
+	mustReconcile(t, r)
+	if got := arb.reported(); !slices.Equal(got, []string{p.NodeID + "/1"}) || len(calls) != 2 {
+		t.Fatalf("after the hook succeeds: reports %v calls %v", got, calls)
+	}
+}
+
+// FR-C1: the Dropped hook also runs after every leftover drop. A failure after
+// the drop that precedes a create keeps the key's tables from being created
+// until the hook succeeds.
+func TestReconciler_DroppedHookRunsAfterEveryLeftoverDrop(t *testing.T) {
+	conn := requireCH(t)
+	p := testPinned(t, conn)
+	view, arb := newFakeView(), &fakeArbiter{}
+	hookErr := errors.New("state store unavailable")
+	var calls []string
+	r := newReconciler(t, conn, p, view, arb, func(_ *Config, d *Deps) {
+		d.Dropped = func(_ context.Context, tableID string) error {
+			calls = append(calls, tableID)
+			return hookErr
+		}
+	})
+	pinClock(r)
+	gone, reused := schemaFor(t, "gone"), schemaFor(t, "reused")
+	if err := ddl.EnsureTable(context.Background(), conn, p, gone, 1, ddl.ModeCreateAndVerify); err != nil {
+		t.Fatal(err)
+	}
+	if err := ddl.EnsureTable(context.Background(), conn, p, reused, 2, ddl.ModeCreateAndVerify); err != nil {
+		t.Fatal(err)
+	}
+	view.set(chainInc(t, 1, gone, wire.TableStatusPurged), chainInc(t, 2, reused, wire.TableStatusPurged), chainInc(t, 3, reused, wire.TableStatusPending))
+	mustReconcile(t, r)
+	if !slices.Equal(calls, []string{reused.TableID, gone.TableID}) {
+		t.Fatalf("hook calls = %v, want one per leftover drop", calls)
+	}
+	if left := localComments(t, conn, p, reused.TableID); len(left) != 0 || r.Ready(reused.TableID) {
+		t.Fatalf("a failed hook must keep the new incarnation from being created: tables %v ready %v", left, r.Ready(reused.TableID))
+	}
+	hookErr = nil
+	r.Trigger()
+	mustReconcile(t, r)
+	if !slices.Equal(calls, []string{reused.TableID, gone.TableID, reused.TableID}) {
+		t.Fatalf("hook calls = %v, want the owed hook retried before the create", calls)
+	}
+	if !r.Ready(reused.TableID) {
+		t.Fatalf("the new incarnation must be created once the hook succeeds: %+v", r.Stats())
+	}
+}
+
+// FR-I1: a replica of a decommissioned node (neither this node nor in the
+// purge node set) that survived under a recreated key's Keeper path blocks
+// the create on every node but the source, which removes it and creates.
+func TestReconciler_DecommissionedReplicaUnderARecreatedKeyIsRemovedByTheSourceOnly(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	replicaConn := requireReplicaCH(t)
+	p := testPinned(t, conn, replicaConn)
+	v := p
+	v.NodeID = "verifier-" + suffix(t)
+	s := schemaFor(t, "t")
+	// An evicted node's replica of incarnation 1 on the second server, in its
+	// own databases, detached as a gone node's would be inactive.
+	gone := p
+	gone.UnsafeDB, gone.SafeDB, gone.PromoteDB, gone.NodeID = p.UnsafeDB+"_gone", p.SafeDB+"_gone", p.PromoteDB+"_gone", "verifier-gone"
+	t.Cleanup(func() {
+		for _, db := range []string{gone.UnsafeDB, gone.SafeDB, gone.PromoteDB} {
+			_ = replicaConn.Exec(ctx, "DROP DATABASE IF EXISTS "+db+" SYNC")
+		}
+	})
+	if err := ddl.EnsureTable(ctx, replicaConn, gone, s, 1, ddl.ModeCreateAndVerify); err != nil {
+		t.Fatal(err)
+	}
+	if err := replicaConn.Exec(ctx, fmt.Sprintf("DETACH TABLE %s.%s", gone.UnsafeDB, ddl.CHTableName(s.TableID))); err != nil {
+		t.Fatal(err)
+	}
+	view, arb := newFakeView(), &fakeArbiter{nodeSet: []string{p.NodeID, v.NodeID}}
+	view.set(chainInc(t, 1, s, wire.TableStatusPurged), chainInc(t, 2, s, wire.TableStatusPending))
+	verifier := newReconciler(t, replicaConn, v, view, arb, nil)
+	source := newReconciler(t, conn, p, view, arb, func(c *Config, _ *Deps) { c.SweepDecommissioned = true })
+
+	mustReconcile(t, verifier)
+	if verifier.Ready(s.TableID) || len(localComments(t, replicaConn, v, s.TableID)) != 0 {
+		t.Fatalf("a non-source node must not create over a decommissioned replica: ready %v tables %v",
+			verifier.Ready(s.TableID), localComments(t, replicaConn, v, s.TableID))
+	}
+	if st := verifier.Stats(); st.Failures[s.TableID] != 1 {
+		t.Fatalf("the refusal is a per-table failure: %+v", st)
+	}
+	if replicas, err := ddl.KeeperReplicas(ctx, conn, p, s.TableID); err != nil || !slices.Equal(replicas, []string{"verifier-gone"}) {
+		t.Fatalf("replicas = %v, %v; a non-source node must not remove a replica", replicas, err)
+	}
+
+	mustReconcile(t, source)
+	if !source.Ready(s.TableID) {
+		t.Fatalf("the source must remove the decommissioned replica and create: %+v", source.Stats())
+	}
+	if replicas, err := ddl.KeeperReplicas(ctx, conn, p, s.TableID); err != nil || !slices.Equal(replicas, []string{p.NodeID}) {
+		t.Fatalf("replicas = %v, %v; want only the source", replicas, err)
+	}
+
+	verifier.Trigger()
+	mustReconcile(t, verifier)
+	if !verifier.Ready(s.TableID) {
+		t.Fatalf("the verifier creates once the source removed the replica: %+v", verifier.Stats())
+	}
+	want := []string{p.NodeID, v.NodeID}
+	slices.Sort(want)
+	if replicas, err := ddl.KeeperReplicas(ctx, conn, p, s.TableID); err != nil || !slices.Equal(replicas, want) {
+		t.Fatalf("replicas = %v, %v; want %v", replicas, err, want)
+	}
+}

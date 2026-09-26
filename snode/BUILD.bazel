@@ -62,6 +62,7 @@ go_test(
         "promote_test.go",
         "protocol_tables_test.go",
         "recorded_bindings_test.go",
+        "recreate_test.go",
         "registry_test.go",
         "snode_test.go",
         "staged_backpressure_test.go",
