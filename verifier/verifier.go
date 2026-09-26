@@ -56,7 +56,8 @@ type Deps struct {
 	Logger                 *slog.Logger
 	// Registry is the table-registry follower (usually shared with the host).
 	// Nil keeps the verifier on its configured tables; it then refuses at
-	// once to attest a transition that adds one.
+	// once to attest a transition that adds one. A *CHScanner Scanner must
+	// follow this same view (NewRegistryScanner), or none when it is nil.
 	Registry dataplane.RegistryView
 }
 
@@ -78,6 +79,9 @@ func New(cfg Config, d Deps) (*Role, error) {
 	}
 	if cfg.protocolTables != ddl.ModeOff && d.Conn == nil {
 		return nil, fmt.Errorf("verifier: clickhouse connection is required when protocol tables are ensured")
+	}
+	if err := checkScannerRegistry(d.Scanner, d.Registry); err != nil {
+		return nil, err
 	}
 	if d.Logger == nil {
 		d.Logger = slog.Default()

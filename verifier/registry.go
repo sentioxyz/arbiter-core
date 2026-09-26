@@ -9,6 +9,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
+	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
 )
 
@@ -97,4 +98,37 @@ func genesisSchema(tables []payloadexec.TableSchema, tableID string) (payloadexe
 		}
 	}
 	return payloadexec.TableSchema{}, false
+}
+
+// checkScannerRegistry refuses a *CHScanner whose registry view is not the
+// role's: a scanner built by NewScanner under a followed registry would scan
+// a recreated genesis key with its stale genesis schema, and a scanner that
+// follows a registry the role does not follow would resolve tables the role
+// never reconciles. Other scanner implementations are the host's
+// responsibility.
+func checkScannerRegistry(s scanner, registry dataplane.RegistryView) error {
+	ch, ok := s.(*CHScanner)
+	if !ok || ch == nil {
+		return nil
+	}
+	switch {
+	case registry != nil && ch.registry == nil:
+		return errors.New("verifier: Deps.Registry is set but Deps.Scanner follows no table registry; build it with NewRegistryScanner(cfg, conn, registry)")
+	case registry == nil && ch.registry != nil:
+		return errors.New("verifier: Deps.Scanner follows a table registry but Deps.Registry is nil")
+	case registry != nil && !sameRegistryView(ch.registry, registry):
+		return errors.New("verifier: Deps.Scanner follows a different table registry than Deps.Registry")
+	}
+	return nil
+}
+
+// sameRegistryView reports whether a and b are the same view. A dynamic type
+// that is not comparable is never the same.
+func sameRegistryView(a, b dataplane.RegistryView) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a == b
 }

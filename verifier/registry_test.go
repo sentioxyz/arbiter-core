@@ -481,3 +481,36 @@ func (l lockedWriter) Write(p []byte) (int, error) {
 	defer l.mu.Unlock()
 	return l.w.Write(p)
 }
+
+// FR-m2: a *CHScanner must follow exactly the role's registry view.
+func TestNew_RefusesAChScannerThatDoesNotFollowTheRolesRegistry(t *testing.T) {
+	client, err := dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: "127.0.0.1:1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	cfg := testConfigV()
+	cfg.SchemaSource = ddl.SchemaSourceNetworkState
+	view := newFakeRegistryView()
+	deps := func(scanner scanner, registry dataplane.RegistryView) Deps {
+		return Deps{Client: client, Replay: &fakeReplayCore{}, Scanner: scanner, Conn: nopConnV{}, Registry: registry}
+	}
+	if _, err := New(cfg, deps(NewScanner(cfg, nil), view)); err == nil || !strings.Contains(err.Error(), "follows no table registry") {
+		t.Fatalf("a registry with a registry-less scanner: err = %v", err)
+	}
+	if _, err := New(cfg, deps(NewRegistryScanner(cfg, nil, view), nil)); err == nil || !strings.Contains(err.Error(), "Deps.Registry is nil") {
+		t.Fatalf("a registry scanner without a registry: err = %v", err)
+	}
+	if _, err := New(cfg, deps(NewRegistryScanner(cfg, nil, newFakeRegistryView()), view)); err == nil || !strings.Contains(err.Error(), "different table registry") {
+		t.Fatalf("a scanner following another registry: err = %v", err)
+	}
+	if _, err := New(cfg, deps(NewRegistryScanner(cfg, nil, view), view)); err != nil {
+		t.Fatalf("a scanner following the role's registry: %v", err)
+	}
+	if _, err := New(cfg, deps(NewScanner(cfg, nil), nil)); err != nil {
+		t.Fatalf("the static path is unchanged: %v", err)
+	}
+	if _, err := New(cfg, deps(&fakeScanner{}, view)); err != nil {
+		t.Fatalf("another scanner implementation is the host's responsibility: %v", err)
+	}
+}
