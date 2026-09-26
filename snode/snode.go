@@ -13,10 +13,10 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
-	"github.com/housegate/housegate/pkg/replay/payloadexec"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
+	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
 )
 
 // PayloadSpool is the intake's payload-before-write seam.
@@ -29,6 +29,10 @@ type Deps struct {
 	Conn     clickhouse.Conn
 	Payloads PayloadSpool
 	Logger   *slog.Logger
+	// Registry is the table-registry follower (usually shared with the host,
+	// which runs it). Nil keeps the role on its configured tables exactly as
+	// before the dynamic table set.
+	Registry dataplane.RegistryView
 }
 
 // contextMutex is a zero-value mutex whose acquisition can be canceled.
@@ -82,6 +86,8 @@ type Role struct {
 	// ensureFn is the protocol-table lifecycle seam. New wires production to
 	// ensureProtocolTablesMode; tests inject deterministic reconcile outcomes.
 	ensureFn func(context.Context, ddl.Mode) error
+	// tables is the table-set reconciler; nil when the host owns DDL.
+	tables *tableset.Reconciler
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -110,6 +116,20 @@ func New(cfg Config, d Deps) (*Role, error) {
 		authority: authorityValidator(cfg.AuthorityAddresses),
 	}
 	r.ensureFn = r.ensureProtocolTablesMode
+	if cfg.protocolTables != ddl.ModeOff && d.Conn != nil {
+		tables, err := tableset.New(tableset.Config{
+			Pinned: r.pinned(), Genesis: cfg.Tables, Interval: cfg.ProtocolTablesReconcile, SweepDecommissioned: true,
+		}, tableset.Deps{Conn: d.Conn, Registry: d.Registry, Arbiter: d.Client, Quiescent: r.tableQuiescent, Logger: d.Logger})
+		if err != nil {
+			return nil, fmt.Errorf("snode: %w", err)
+		}
+		r.tables = tables
+	} else if d.Registry != nil {
+		if cfg.protocolTables == ddl.ModeOff {
+			return nil, errors.New("snode: following the table registry requires managed protocol tables")
+		}
+		return nil, errors.New("snode: following the table registry requires a clickhouse connection")
+	}
 	return r, nil
 }
 
@@ -208,10 +228,15 @@ func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) erro
 	if mode == ddl.ModeOff {
 		return nil
 	}
-	if r.d.Conn == nil {
+	if r.tables == nil {
 		return errors.New("snode: clickhouse connection is required to ensure protocol tables")
 	}
-	if err := ddl.EnsureProtocolTables(ctx, r.d.Conn, r.pinned(), r.cfg.Tables, mode, r.d.Logger); err != nil {
+	if r.d.Registry != nil {
+		if err := dataplane.WaitReady(ctx, r.d.Registry, r.cfg.RegistryStartupTimeout); err != nil {
+			return fmt.Errorf("snode: %w", err)
+		}
+	}
+	if err := r.tables.Reconcile(ctx, mode); err != nil {
 		return fmt.Errorf("snode: ensure protocol tables: %w", err)
 	}
 	return nil
@@ -459,17 +484,20 @@ func (r *Role) reconcileProtocolTables(ctx context.Context) error {
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
 	for {
+		registryChanged, triggered := r.tables.Wake()
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
+		case <-registryChanged:
+		case <-triggered:
 		}
 
 		err := r.ensureFn(ctx, ddl.ModeVerifyOnly)
 		switch {
 		case err == nil:
 			consecutive = 0
-			timer.Reset(interval)
+			timer.Reset(min(interval, r.tables.NextDelay()))
 		case ctx.Err() != nil:
 			return ctx.Err()
 		case ddl.FatalReconcileError(err):
@@ -497,15 +525,6 @@ func authorityValidator(addresses []string) *authority.Validator {
 		allow[strings.ToLower(addr)] = true
 	}
 	return &authority.Validator{AllowedAddresses: allow, MaxTokenAge: time.Minute}
-}
-
-func (r *Role) schemaFor(tableID string) (payloadexec.TableSchema, error) {
-	for _, t := range r.cfg.Tables {
-		if t.TableID == tableID {
-			return t, nil
-		}
-	}
-	return payloadexec.TableSchema{}, fmt.Errorf("no schema configured for table %s", tableID)
 }
 
 func (r *Role) promotionLock(k partitionKey) *sync.Mutex {

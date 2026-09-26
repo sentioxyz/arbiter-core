@@ -93,15 +93,21 @@ func (r *Role) PrepareLocalStatement(ctx context.Context, req PrepareRequest, pa
 	if err != nil {
 		return PreparedLocalResult{}, err
 	}
-	schema, err := r.resolveEnvelopeSchema(req.Envelope)
-	if err != nil {
-		return PreparedLocalResult{}, err
-	}
-
 	flat := req.Envelope.StatementID.Flat()
 	rec, ok, err := r.journal.load(flat)
 	if err != nil {
 		return PreparedLocalResult{}, fmt.Errorf("intake journal: %w", err)
+	}
+	if !ok || rec.Lifecycle == LifecycleCleaned {
+		// A fresh admission: the table must be Active in the registry and
+		// Ready on this source. A recorded statement converges regardless.
+		if err := r.requireAdmissible(req.Envelope.TargetTableID, req.Envelope.SchemaHash); err != nil {
+			return PreparedLocalResult{}, err
+		}
+	}
+	schema, err := r.resolveEnvelopeSchema(req.Envelope)
+	if err != nil {
+		return PreparedLocalResult{}, err
 	}
 	if ok {
 		if err := validateReplayRequest(rec, req, payload); err != nil {
