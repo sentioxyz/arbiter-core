@@ -24,11 +24,11 @@ var (
 // Every mismatch is joined into one error naming the table and field.
 func VerifyProtocolTable(ctx context.Context, conn clickhouse.Conn, want TableIntent) error {
 	qualified := want.Database + "." + want.Table
-	var engine, engineFull, sortingKey, partitionKey string
+	var engine, engineFull, sortingKey, partitionKey, comment string
 	err := conn.QueryRow(ctx, `
-		SELECT engine, engine_full, sorting_key, partition_key
+		SELECT engine, engine_full, sorting_key, partition_key, comment
 		FROM system.tables WHERE database = ? AND name = ?`, want.Database, want.Table,
-	).Scan(&engine, &engineFull, &sortingKey, &partitionKey)
+	).Scan(&engine, &engineFull, &sortingKey, &partitionKey, &comment)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: %s", ErrProtocolTableMissing, qualified)
@@ -41,6 +41,9 @@ func VerifyProtocolTable(ctx context.Context, conn clickhouse.Conn, want TableIn
 	}
 	if engine != want.Engine {
 		drift("engine", engine, want.Engine)
+	}
+	if want.Comment != "" && comment != want.Comment {
+		drift("comment", comment, want.Comment)
 	}
 	wantSortingKey := strings.Join(want.SortingKey, ", ")
 	gotSortingKey, sortingErr := parseMetadataIdentifiers(sortingKey)
