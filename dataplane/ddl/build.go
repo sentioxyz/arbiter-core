@@ -27,6 +27,9 @@ type TableIntent struct {
 	PartitionKey  string // "" for unpartitioned
 	SortingKey    []string
 	Settings      []PinnedSetting
+	// Comment marks the tables of one chain-origin registry incarnation
+	// (IncarnationComment). Genesis tables carry none.
+	Comment string
 }
 
 // SQL renders the CREATE TABLE IF NOT EXISTS statement for the intent.
@@ -58,6 +61,9 @@ func (t TableIntent) SQL() string {
 		settings = append(settings, s.Name+" = "+s.Value)
 	}
 	b.WriteString("SETTINGS " + strings.Join(settings, ", "))
+	if t.Comment != "" {
+		b.WriteString("\nCOMMENT " + quoteLiteral(t.Comment))
+	}
 	return b.String()
 }
 

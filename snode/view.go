@@ -8,30 +8,67 @@ import (
 	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
+
+	"github.com/sentioxyz/arbiter-core/wire"
 )
 
+// sourceClaimRoot is the diagnostic state root the source attaches to its
+// RC. With an enabled registry it covers the tables still in the state root
+// (Active and Retiring incarnations) and derives the schema root from their
+// registry hashes; otherwise it covers the configured tables and the
+// configured schema root. Nothing compares it: the FSM's check 1 ignores the
+// receipt's MatchSourceRoot (arbiter fsm/threeway.go).
 func (r *Role) sourceClaimRoot() (string, error) {
-	tables := make([]replay.TableManifest, 0, len(r.cfg.Tables))
-	for _, sch := range r.cfg.Tables {
+	schemaRoot, hashes := r.stateRootTables()
+	tables := make([]replay.TableManifest, 0, len(hashes))
+	for _, tableID := range sortedTableIDs(hashes) {
 		tm := replay.TableManifest{
-			TableID:    sch.TableID,
-			SchemaHash: payloadexec.TableSchemaHash(r.cfg.NetworkID, sch),
+			TableID:    tableID,
+			SchemaHash: hashes[tableID],
 		}
-		for _, pk := range r.state.partitionsOf(sch.TableID) {
+		for _, pk := range r.state.partitionsOf(tableID) {
 			base := r.state.baseRootOr(pk, "")
 			unpromoted := r.state.unpromotedSumOr(pk, "")
 			root, err := lthashCombineHex(base, unpromoted)
 			if err != nil {
-				return "", fmt.Errorf("partition %s/%s: %w", sch.TableID, pk.Partition, err)
+				return "", fmt.Errorf("partition %s/%s: %w", tableID, pk.Partition, err)
 			}
 			tm.PartitionRoots = append(tm.PartitionRoots, replay.PartitionCommitment{
-				TableID: sch.TableID, PartitionID: pk.Partition, Root: root,
+				TableID: tableID, PartitionID: pk.Partition, Root: root,
 			})
 		}
 		tables = append(tables, tm)
 	}
-	_, stateRoot, err := replay.AssembleStateRoot(r.cfg.SchemaSnapshotID, r.cfg.SchemaRoot, r.cfg.ExecutorProfileID, tables)
+	_, stateRoot, err := replay.AssembleStateRoot(r.cfg.SchemaSnapshotID, schemaRoot, r.cfg.ExecutorProfileID, tables)
 	return stateRoot, err
+}
+
+// stateRootTables returns the schema root and the table id -> schema hash
+// set the source claim root covers.
+func (r *Role) stateRootTables() (string, map[string]string) {
+	hashes := map[string]string{}
+	snap, enabled := r.registryView()
+	if !enabled {
+		for _, sch := range r.cfg.Tables {
+			hashes[sch.TableID] = payloadexec.TableSchemaHash(r.cfg.NetworkID, sch)
+		}
+		return r.cfg.SchemaRoot, hashes
+	}
+	for _, inc := range snap.Incarnations {
+		if inc.Status == wire.TableStatusActive || inc.Status == wire.TableStatusRetiring {
+			hashes[inc.Key()] = inc.SchemaHash
+		}
+	}
+	return payloadexec.SchemaRootFromHashes(hashes), hashes
+}
+
+func sortedTableIDs(hashes map[string]string) []string {
+	out := make([]string, 0, len(hashes))
+	for id := range hashes {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func lthashCombineHex(a, b string) (string, error) {

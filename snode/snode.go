@@ -13,10 +13,10 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
-	"github.com/housegate/housegate/pkg/replay/payloadexec"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
+	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
 )
 
 // PayloadSpool is the intake's payload-before-write seam.
@@ -29,6 +29,10 @@ type Deps struct {
 	Conn     clickhouse.Conn
 	Payloads PayloadSpool
 	Logger   *slog.Logger
+	// Registry is the table-registry follower (usually shared with the host,
+	// which runs it). Nil keeps the role on its configured tables exactly as
+	// before the dynamic table set.
+	Registry dataplane.RegistryView
 }
 
 // contextMutex is a zero-value mutex whose acquisition can be canceled.
@@ -82,6 +86,8 @@ type Role struct {
 	// ensureFn is the protocol-table lifecycle seam. New wires production to
 	// ensureProtocolTablesMode; tests inject deterministic reconcile outcomes.
 	ensureFn func(context.Context, ddl.Mode) error
+	// tables is the table-set reconciler; nil when the host owns DDL.
+	tables *tableset.Reconciler
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -110,6 +116,23 @@ func New(cfg Config, d Deps) (*Role, error) {
 		authority: authorityValidator(cfg.AuthorityAddresses),
 	}
 	r.ensureFn = r.ensureProtocolTablesMode
+	if cfg.protocolTables != ddl.ModeOff && d.Conn != nil {
+		tables, err := tableset.New(tableset.Config{
+			Pinned: r.pinned(), Genesis: cfg.Tables, Interval: cfg.ProtocolTablesReconcile, SweepDecommissioned: true,
+		}, tableset.Deps{
+			Conn: d.Conn, Registry: d.Registry, Arbiter: d.Client,
+			Quiescent: r.tableQuiescent, Dropped: r.forgetDroppedTable, Logger: d.Logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("snode: %w", err)
+		}
+		r.tables = tables
+	} else if d.Registry != nil {
+		if cfg.protocolTables == ddl.ModeOff {
+			return nil, errors.New("snode: following the table registry requires managed protocol tables")
+		}
+		return nil, errors.New("snode: following the table registry requires a clickhouse connection")
+	}
 	return r, nil
 }
 
@@ -175,7 +198,8 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	// The periodic verifier first fires after an interval. Ensure before
 	// Prepare so startup convergence never touches ClickHouse in an unverified
 	// protocol-table state, including when Run is called without Register.
-	if err := r.ensureProtocolTables(runCtx); err != nil {
+	registryChanged, err := r.startupEnsure(runCtx)
+	if err != nil {
 		return err
 	}
 	if err := r.Prepare(runCtx); err != nil {
@@ -188,7 +212,9 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	}
 	workers := roleWorkers{subscription: runSubscription}
 	if r.cfg.protocolTables != ddl.ModeOff {
-		workers.reconcile = r.reconcileProtocolTables
+		workers.reconcile = func(ctx context.Context) error {
+			return r.reconcileProtocolTablesFrom(ctx, registryChanged)
+		}
 	}
 	return r.resolveWorkerErrors(newRoleWorkerCoordinator(runCtx, cancel, ready, workers).run())
 }
@@ -204,14 +230,30 @@ func (r *Role) ensureProtocolTables(ctx context.Context) error {
 	return r.ensureFn(ctx, r.cfg.protocolTables)
 }
 
+// startupEnsure runs the startup pass and returns the registry wake channel
+// armed before it, so a version accepted while that pass runs wakes the
+// periodic loop's first iteration instead of waiting out the interval.
+func (r *Role) startupEnsure(ctx context.Context) (<-chan struct{}, error) {
+	registryChanged, _ := r.tables.Wake()
+	if err := r.ensureProtocolTables(ctx); err != nil {
+		return nil, err
+	}
+	return registryChanged, nil
+}
+
 func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {
 	if mode == ddl.ModeOff {
 		return nil
 	}
-	if r.d.Conn == nil {
+	if r.tables == nil {
 		return errors.New("snode: clickhouse connection is required to ensure protocol tables")
 	}
-	if err := ddl.EnsureProtocolTables(ctx, r.d.Conn, r.pinned(), r.cfg.Tables, mode, r.d.Logger); err != nil {
+	if r.d.Registry != nil {
+		if err := dataplane.WaitReady(ctx, r.d.Registry, r.cfg.RegistryStartupTimeout); err != nil {
+			return fmt.Errorf("snode: %w", err)
+		}
+	}
+	if err := r.tables.Reconcile(ctx, mode); err != nil {
 		return fmt.Errorf("snode: ensure protocol tables: %w", err)
 	}
 	return nil
@@ -450,6 +492,18 @@ func (c *roleWorkerCoordinator) join(first *roleWorkerResult) roleWorkerErrors {
 }
 
 func (r *Role) reconcileProtocolTables(ctx context.Context) error {
+	registryChanged, _ := r.tables.Wake()
+	return r.reconcileProtocolTablesFrom(ctx, registryChanged)
+}
+
+// reconcileProtocolTablesFrom is the periodic verify loop. registryChanged is
+// the registry wake channel armed before the pass that preceded the loop. Each
+// iteration re-arms the wake channels before its pass, never after it:
+// RegistryView.Changed only closes for a version accepted after the call, so
+// arming after a pass would miss a version accepted during it until the timer
+// fired.
+func (r *Role) reconcileProtocolTablesFrom(ctx context.Context, registryChanged <-chan struct{}) error {
+	_, triggered := r.tables.Wake()
 	interval := r.cfg.ProtocolTablesReconcile
 	maxFailures := r.cfg.ProtocolTablesMaxFailures
 	if maxFailures <= 0 {
@@ -463,13 +517,16 @@ func (r *Role) reconcileProtocolTables(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
+		case <-registryChanged:
+		case <-triggered:
 		}
 
+		registryChanged, triggered = r.tables.Wake()
 		err := r.ensureFn(ctx, ddl.ModeVerifyOnly)
 		switch {
 		case err == nil:
 			consecutive = 0
-			timer.Reset(interval)
+			timer.Reset(min(interval, r.tables.NextDelay()))
 		case ctx.Err() != nil:
 			return ctx.Err()
 		case ddl.FatalReconcileError(err):
@@ -497,15 +554,6 @@ func authorityValidator(addresses []string) *authority.Validator {
 		allow[strings.ToLower(addr)] = true
 	}
 	return &authority.Validator{AllowedAddresses: allow, MaxTokenAge: time.Minute}
-}
-
-func (r *Role) schemaFor(tableID string) (payloadexec.TableSchema, error) {
-	for _, t := range r.cfg.Tables {
-		if t.TableID == tableID {
-			return t, nil
-		}
-	}
-	return payloadexec.TableSchema{}, fmt.Errorf("no schema configured for table %s", tableID)
 }
 
 func (r *Role) promotionLock(k partitionKey) *sync.Mutex {

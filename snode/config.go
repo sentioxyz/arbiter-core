@@ -20,11 +20,14 @@ const (
 )
 
 type Config struct {
-	NodeID             string
-	NetworkID          string
-	SchemaSnapshotID   string
-	ExecutorProfileID  string
-	SchemaRoot         string
+	NodeID            string
+	NetworkID         string
+	SchemaSnapshotID  string
+	ExecutorProfileID string
+	SchemaRoot        string
+	// Tables is the genesis table set. It is the whole table set while the
+	// table registry is disabled (or not followed); afterwards the registry
+	// takes over and Tables only supplies genesis-origin schemas.
 	Tables             []payloadexec.TableSchema
 	StateDir           string
 	UnsafeDatabase     string
@@ -43,6 +46,9 @@ type Config struct {
 	ProtocolTablesMaxFailures int
 	// KeeperShardID feeds /sentio/<shard>/unsafe/<table>; v1 uses zero.
 	KeeperShardID uint32
+	// RegistryStartupTimeout bounds the wait for the registry follower's
+	// first answer (0 = dataplane.DefaultRegistryStartupTimeout).
+	RegistryStartupTimeout time.Duration
 	// HardPartsPerPartition refuses a prepare before journal or ClickHouse
 	// writes when any touched unsafe partition is already at this limit.
 	HardPartsPerPartition int

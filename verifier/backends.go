@@ -13,6 +13,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay/snapshotquery"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
@@ -69,16 +70,24 @@ func (c *SnapshotQueryReplayCore) VerifySnapshotQuery(ctx context.Context, job r
 
 // CHScanner recomputes byte-side part commitments from this verifier's ClickHouse.
 type CHScanner struct {
-	cfg  Config
-	conn clickhouse.Conn
+	cfg      Config
+	conn     clickhouse.Conn
+	registry dataplane.RegistryView
 }
 
-// NewScanner builds a ClickHouse-backed byte-side scanner.
+// NewScanner builds a ClickHouse-backed byte-side scanner over the
+// configured tables only.
 func NewScanner(cfg Config, conn clickhouse.Conn) *CHScanner {
+	return NewRegistryScanner(cfg, conn, nil)
+}
+
+// NewRegistryScanner builds a scanner that resolves tables through the table
+// registry while it is enabled (nil registry: configured tables only).
+func NewRegistryScanner(cfg Config, conn clickhouse.Conn, registry dataplane.RegistryView) *CHScanner {
 	if cfg.UnsafeDatabase == "" {
 		cfg.UnsafeDatabase = defaultUnsafeDatabase
 	}
-	return &CHScanner{cfg: cfg, conn: conn}
+	return &CHScanner{cfg: cfg, conn: conn, registry: registry}
 }
 
 // Scan recomputes the row LtHash for every requested active part.
@@ -133,11 +142,21 @@ func (s *CHScanner) Scan(ctx context.Context, parts []arbiter.PartRef) ([]arbite
 	return out, nil
 }
 
+// schemaFor resolves the table a scan names, by the SNode's rule. With an
+// enabled registry the key's live incarnation decides
+// (dataplane.RegistrySchema, shared with the SNode): a genesis-origin one uses the configured schema, a chain-origin one its
+// registry schema_json verified against its schema_hash, so a same-name
+// recreation of a retired genesis table is scanned with its new schema. Only
+// while the registry is disabled (or not followed) do the configured genesis
+// tables apply.
 func (s *CHScanner) schemaFor(tableID string) (payloadexec.TableSchema, error) {
-	for _, t := range s.cfg.Tables {
-		if t.TableID == tableID {
-			return t, nil
+	if s.registry != nil {
+		if snap, enabled := s.registry.View(); enabled {
+			return dataplane.RegistrySchema(s.cfg.NetworkID, s.cfg.Tables, snap, tableID)
 		}
+	}
+	if t, ok := genesisSchema(s.cfg.Tables, tableID); ok {
+		return t, nil
 	}
 	return payloadexec.TableSchema{}, fmt.Errorf("no schema configured for table %s", tableID)
 }

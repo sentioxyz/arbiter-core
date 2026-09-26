@@ -14,7 +14,8 @@ named `arbiter` so domain types retain concise names such as
 | root | Canonical statement, result-claim, promotion, cleanup, consensus-update, and node types. |
 | `authority` | Domain-separated promotion, cleanup, consensus-update and snapshot-query-abort signing and validation. |
 | `wire` | The canonical Go ↔ `arbiter-proto` conversion and Raft command encoding. |
-| `dataplane` | Leader-aware Arbiter clients, subscriptions, manifests, and payload stores. |
+| `dataplane` | Leader-aware Arbiter clients, subscriptions, manifests, payload stores, the table-registry follower, and purge reports. |
+| `dataplane/tableset` | The level-triggered table-set reconciler: creates, verifies, and purges the `hg_*` tables the table registry asks for. |
 | `snode` | Durable storage-node intake, crash convergence, promotion, and cleanup runtime. |
 | `verifier` | Replay and byte-side verification runtime shared by storage-node hosts. |
 | `conformance` | Field and enum compatibility gates against `arbiter-proto` and Housegate replay types. |

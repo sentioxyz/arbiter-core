@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "tableset",
+    srcs = ["reconciler.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/tableset",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//dataplane",
+        "//dataplane/ddl",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay/payloadexec",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)
+
+go_test(
+    name = "tableset_test",
+    srcs = ["reconciler_ch_test.go"],
+    embed = [":tableset"],
+    deps = [
+        "//dataplane/ddl",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/payloadexec",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)
