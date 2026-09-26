@@ -20,6 +20,7 @@ import (
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
+	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -53,6 +54,10 @@ type Deps struct {
 	Scanner                scanner
 	Conn                   clickhouse.Conn
 	Logger                 *slog.Logger
+	// Registry is the table-registry follower (usually shared with the host).
+	// Nil keeps the verifier on its configured tables; it then never attests
+	// a transition that adds one.
+	Registry dataplane.RegistryView
 }
 
 type Role struct {
@@ -60,6 +65,8 @@ type Role struct {
 	d        Deps
 	priv     ed25519.PrivateKey
 	ensureFn func(context.Context, ddl.Mode) error
+	// tables is the table-set reconciler; nil when the host owns DDL.
+	tables *tableset.Reconciler
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -77,7 +84,25 @@ func New(cfg Config, d Deps) (*Role, error) {
 	}
 	r := &Role{cfg: cfg, d: d, priv: ed25519.NewKeyFromSeed(cfg.Ed25519Seed)}
 	r.ensureFn = r.ensureProtocolTablesMode
+	if cfg.protocolTables != ddl.ModeOff {
+		tables, err := tableset.New(tableset.Config{
+			Pinned: r.pinned(), Genesis: cfg.Tables, Interval: cfg.ProtocolTablesReconcile,
+		}, tableset.Deps{Conn: d.Conn, Registry: d.Registry, Arbiter: d.Client, Logger: d.Logger})
+		if err != nil {
+			return nil, fmt.Errorf("verifier: %w", err)
+		}
+		r.tables = tables
+	} else if d.Registry != nil {
+		return nil, errors.New("verifier: following the table registry requires managed protocol tables")
+	}
 	return r, nil
+}
+
+func (r *Role) pinned() ddl.Pinned {
+	return ddl.Pinned{
+		UnsafeDB: r.cfg.UnsafeDatabase, SafeDB: r.cfg.SafeDatabase, PromoteDB: r.cfg.PromoteDatabase,
+		NodeID: r.cfg.ReplicaID, KeeperShardID: r.cfg.KeeperShardID,
+	}
 }
 
 func (r *Role) Register(ctx context.Context) error {
@@ -109,7 +134,8 @@ func (r *Role) Run(ctx context.Context) error {
 	defer cancel()
 	// Ensure before any subscription starts so Run is safe even when a host did
 	// not call Register first. The periodic worker remains verify-only below.
-	if err := r.ensureProtocolTables(runCtx); err != nil {
+	registryChanged, err := r.startupEnsure(runCtx)
+	if err != nil {
 		return err
 	}
 	runSubscription := func(ctx context.Context) error {
@@ -133,22 +159,37 @@ func (r *Role) Run(ctx context.Context) error {
 	if r.cfg.protocolTables == ddl.ModeOff {
 		return runSubscription(runCtx)
 	}
-	return r.runWithProtocolTableReconcile(runCtx, cancel, runSubscription)
+	return r.runWithProtocolTableReconcile(runCtx, cancel, runSubscription, registryChanged)
 }
 
 func (r *Role) ensureProtocolTables(ctx context.Context) error {
 	return r.ensureFn(ctx, r.cfg.protocolTables)
 }
 
+// startupEnsure runs the startup pass and returns the registry wake channel
+// armed before it, so a version accepted while that pass runs wakes the
+// periodic loop's first iteration instead of waiting out the interval.
+func (r *Role) startupEnsure(ctx context.Context) (<-chan struct{}, error) {
+	registryChanged, _ := r.tables.Wake()
+	if err := r.ensureProtocolTables(ctx); err != nil {
+		return nil, err
+	}
+	return registryChanged, nil
+}
+
 func (r *Role) ensureProtocolTablesMode(ctx context.Context, mode ddl.Mode) error {
 	if mode == ddl.ModeOff {
 		return nil
 	}
-	pinned := ddl.Pinned{
-		UnsafeDB: r.cfg.UnsafeDatabase, SafeDB: r.cfg.SafeDatabase, PromoteDB: r.cfg.PromoteDatabase,
-		NodeID: r.cfg.ReplicaID, KeeperShardID: r.cfg.KeeperShardID,
+	if r.tables == nil {
+		return errors.New("verifier: clickhouse connection is required to ensure protocol tables")
 	}
-	if err := ddl.EnsureProtocolTables(ctx, r.d.Conn, pinned, r.cfg.Tables, mode, r.d.Logger); err != nil {
+	if r.d.Registry != nil {
+		if err := dataplane.WaitReady(ctx, r.d.Registry, r.cfg.RegistryStartupTimeout); err != nil {
+			return fmt.Errorf("verifier: %w", err)
+		}
+	}
+	if err := r.tables.Reconcile(ctx, mode); err != nil {
 		return fmt.Errorf("verifier: ensure protocol tables: %w", err)
 	}
 	return nil
@@ -170,13 +211,14 @@ func (r *Role) runWithProtocolTableReconcile(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	runSubscription func(context.Context) error,
+	registryChanged <-chan struct{},
 ) error {
 	results := make(chan protocolTableRunResult, 2)
 	go func() {
 		results <- protocolTableRunResult{kind: protocolTableRunSubscription, err: runSubscription(ctx)}
 	}()
 	go func() {
-		results <- protocolTableRunResult{kind: protocolTableRunReconcile, err: r.reconcileProtocolTables(ctx)}
+		results <- protocolTableRunResult{kind: protocolTableRunReconcile, err: r.reconcileProtocolTablesFrom(ctx, registryChanged)}
 	}()
 	return r.resolveProtocolTableRunResults(cancel, results)
 }
@@ -206,6 +248,18 @@ func (r *Role) resolveProtocolTableRunResults(
 }
 
 func (r *Role) reconcileProtocolTables(ctx context.Context) error {
+	registryChanged, _ := r.tables.Wake()
+	return r.reconcileProtocolTablesFrom(ctx, registryChanged)
+}
+
+// reconcileProtocolTablesFrom is the periodic verify loop. registryChanged is
+// the registry wake channel armed before the pass that preceded the loop. Each
+// iteration re-arms the wake channels before its pass, never after it:
+// RegistryView.Changed only closes for a version accepted after the call, so
+// arming after a pass would miss a version accepted during it until the timer
+// fired. The trigger channel fires on Trigger and on the add gate's WaitReady.
+func (r *Role) reconcileProtocolTablesFrom(ctx context.Context, registryChanged <-chan struct{}) error {
+	_, triggered := r.tables.Wake()
 	interval := r.cfg.ProtocolTablesReconcile
 	maxFailures := r.cfg.ProtocolTablesMaxFailures
 	if maxFailures <= 0 {
@@ -219,13 +273,16 @@ func (r *Role) reconcileProtocolTables(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
+		case <-registryChanged:
+		case <-triggered:
 		}
 
+		registryChanged, triggered = r.tables.Wake()
 		err := r.ensureFn(ctx, ddl.ModeVerifyOnly)
 		switch {
 		case err == nil:
 			consecutive = 0
-			timer.Reset(interval)
+			timer.Reset(min(interval, r.tables.NextDelay()))
 		case ctx.Err() != nil:
 			return ctx.Err()
 		case ddl.FatalReconcileError(err):
@@ -248,7 +305,12 @@ func (r *Role) reconcileProtocolTables(ctx context.Context) error {
 }
 
 func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {
-	att, err := r.d.Replay.Verify(ctx, wire.ReplayJobFromPB(m))
+	job := wire.ReplayJobFromPB(m)
+	if err := r.requireAddedTablesReady(ctx, job); err != nil {
+		r.d.Logger.Warn("table-set transition adds a table this verifier has not created; refusing to attest", "block", m.GetBlockSeq(), "err", err)
+		return err
+	}
+	att, err := r.d.Replay.Verify(ctx, job)
 	if err != nil {
 		r.d.Logger.Warn("replay verify failed; refusing to attest", "block", m.GetBlockSeq(), "err", err)
 		return err
@@ -272,6 +334,10 @@ func (r *Role) handleSnapshotQueryJob(ctx context.Context, m *pb.SnapshotQueryJo
 		return fmt.Errorf("snapshot query verifier is not configured")
 	}
 	job := wire.SnapshotQueryJobFromPB(m)
+	if err := r.requireGenesisReadSet(job); err != nil {
+		r.d.Logger.Warn("snapshot query reads a table outside the genesis set; refusing before any historical read", "block", m.GetBlockSeq(), "err", err)
+		return err
+	}
 	if _, err := verifySnapshotQueryEnvelope(job.Statement.Envelope); err != nil {
 		r.d.Logger.Warn("snapshot query job signature rejected; refusing before any historical read", "block", m.GetBlockSeq(), "err", err)
 		return err

@@ -24,10 +24,13 @@ type Config struct {
 	SchemaSnapshotID  string
 	ExecutorProfileID string
 	SchemaRoot        string
-	Tables            []payloadexec.TableSchema
-	UnsafeDatabase    string
-	SafeDatabase      string
-	PromoteDatabase   string
+	// Tables is the genesis table set: the whole set while the table
+	// registry is disabled (or not followed), afterwards only the schemas of
+	// genesis-origin incarnations.
+	Tables          []payloadexec.TableSchema
+	UnsafeDatabase  string
+	SafeDatabase    string
+	PromoteDatabase string
 	// SchemaSource names where Tables came from. It derives the protocol-table
 	// mode (Spec L D2); there is no configurable mode and no fail-open zero.
 	SchemaSource ddl.SchemaSource
@@ -39,6 +42,12 @@ type Config struct {
 	// before the role exits (0 = ddl.DefaultReconcileMaxFailures).
 	ProtocolTablesMaxFailures int
 	KeeperShardID             uint32
+	// RegistryStartupTimeout bounds the wait for the registry follower's
+	// first answer (0 = dataplane.DefaultRegistryStartupTimeout).
+	RegistryStartupTimeout time.Duration
+	// AddTransitionReadyWait bounds the attestation gate's wait for added
+	// tables (0 = DefaultAddTransitionReadyWait).
+	AddTransitionReadyWait time.Duration
 }
 
 func (c *Config) validate() error {
@@ -85,6 +94,11 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("protocol tables reconcile interval must not be negative"))
 	} else if c.ProtocolTablesReconcile == 0 {
 		c.ProtocolTablesReconcile = ddl.DefaultReconcileInterval
+	}
+	if c.AddTransitionReadyWait < 0 {
+		errs = append(errs, errors.New("add transition ready wait must not be negative"))
+	} else if c.AddTransitionReadyWait == 0 {
+		c.AddTransitionReadyWait = DefaultAddTransitionReadyWait
 	}
 	if c.ProtocolTablesMaxFailures < 0 {
 		errs = append(errs, errors.New("protocol tables reconcile max failures must not be negative"))

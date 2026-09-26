@@ -400,7 +400,7 @@ func TestRunWithProtocolTableReconcile_SubscriptionFirstPreservesCause(t *testin
 			done <- role.runWithProtocolTableReconcile(ctx, cancel, func(context.Context) error {
 				<-entered
 				return subscriptionErr
-			})
+			}, nil)
 		}()
 
 		<-cancelSeen
