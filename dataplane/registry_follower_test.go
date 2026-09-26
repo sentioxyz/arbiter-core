@@ -3,6 +3,8 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"testing"
@@ -14,6 +16,14 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+// discardLogger keeps test output pristine: NewRegistryFollower(nil, ...)
+// falls back to slog.Default(), which writes to stderr, so every test that
+// exercises a code path with a Warn/Error log (disabled registry, no
+// TableRegistry service, undecodable snapshot) uses this instead.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 // fakeRegistry serves TableRegistry and the purge RPC of PromotionGateway.
 type fakeRegistry struct {
@@ -145,10 +155,27 @@ func waitChanged(t *testing.T, ch <-chan struct{}, what string) {
 	}
 }
 
+// waitWatchRequests blocks until r has recorded at least n WatchTableRegistry
+// calls. Used to make a reconnect deterministic before sending the next
+// message: without it, a message queued right after ending the old stream
+// can race the old server-side handler's select and go out on the stream
+// that is about to close instead of the reconnected one.
+func waitWatchRequests(t *testing.T, r *fakeRegistry, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(r.watchRequests()) >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d watch requests, got %v", n, r.watchRequests())
+}
+
 func TestRegistryFollower_DisabledThenFirstSnapshot(t *testing.T) {
 	r := newFakeRegistry()
 	r.getErr = disabledErr()
-	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: startRegistryPeer(t, r)}), nil)
+	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: startRegistryPeer(t, r)}), discardLogger())
 	runFollower(t, f)
 
 	waitChanged(t, f.Ready(), "ready")
@@ -170,7 +197,7 @@ func TestRegistryFollower_DisabledThenFirstSnapshot(t *testing.T) {
 func TestRegistryFollower_ResumesFromLastVersionAfterDisconnect(t *testing.T) {
 	r := newFakeRegistry()
 	r.getSnap = registrySnapshotPB(3)
-	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: startRegistryPeer(t, r)}), nil)
+	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: startRegistryPeer(t, r)}), discardLogger())
 	runFollower(t, f)
 	waitChanged(t, f.Ready(), "ready")
 	if snap, enabled := f.View(); !enabled || snap.Version != 3 {
@@ -180,6 +207,10 @@ func TestRegistryFollower_ResumesFromLastVersionAfterDisconnect(t *testing.T) {
 	r.sends <- registrySnapshotPB(4)
 	waitChanged(t, changed, "version 4")
 	r.end <- status.Error(codes.Unavailable, "stream reset")
+	// Wait for the reconnect's WatchTableRegistry call before sending the
+	// next message: otherwise it can race the old stream's server-side
+	// handler and be delivered on the stream that is ending instead.
+	waitWatchRequests(t, r, 2)
 	changed = f.Changed()
 	r.sends <- registrySnapshotPB(6)
 	waitChanged(t, changed, "version 6 after reconnect")
@@ -198,7 +229,7 @@ func TestRegistryFollower_FollowsNotLeader(t *testing.T) {
 	leader := newFakeRegistry()
 	leader.getSnap = registrySnapshotPB(2)
 	c := newTestClient(t, Peer{ID: "n1", GRPCAddr: startRegistryPeer(t, follower)}, Peer{ID: "n2", GRPCAddr: startRegistryPeer(t, leader)})
-	f := NewRegistryFollower(c, nil)
+	f := NewRegistryFollower(c, discardLogger())
 	runFollower(t, f)
 	waitChanged(t, f.Ready(), "ready")
 	if snap, enabled := f.View(); !enabled || snap.Version != 2 {
@@ -215,7 +246,7 @@ func TestRegistryFollower_FollowsNotLeader(t *testing.T) {
 func TestRegistryFollower_IgnoresStaleVersions(t *testing.T) {
 	r := newFakeRegistry()
 	r.getSnap = registrySnapshotPB(5)
-	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: startRegistryPeer(t, r)}), nil)
+	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: startRegistryPeer(t, r)}), discardLogger())
 	runFollower(t, f)
 	waitChanged(t, f.Ready(), "ready")
 	changed := f.Changed()
@@ -228,6 +259,28 @@ func TestRegistryFollower_IgnoresStaleVersions(t *testing.T) {
 	waitChanged(t, changed, "version 7")
 	if snap, _ := f.View(); snap.Version != 7 {
 		t.Fatalf("version = %d, want 7 (4 and 5 are stale, 6 does not decode)", snap.Version)
+	}
+}
+
+func TestRegistryFollower_UndecodableInitialSnapshotKeepsReadyOpenAndRetries(t *testing.T) {
+	r := newFakeRegistry()
+	bad := registrySnapshotPB(1)
+	bad.Incarnations[0].Status = pb.TableIncarnationStatus_TABLE_INCARNATION_STATUS_UNSPECIFIED
+	r.getSnap = bad
+	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: startRegistryPeer(t, r)}), discardLogger())
+	runFollower(t, f)
+
+	err := WaitReady(context.Background(), f, 200*time.Millisecond)
+	if !errors.Is(err, ErrRegistryNotReady) {
+		t.Fatalf("err = %v, want ErrRegistryNotReady", err)
+	}
+	select {
+	case <-f.Ready():
+		t.Fatal("Ready must not close while the initial snapshot cannot decode")
+	default:
+	}
+	if _, enabled := f.View(); enabled {
+		t.Fatal("an undecodable initial snapshot must not read as enabled")
 	}
 }
 
@@ -300,7 +353,7 @@ func TestWaitReady_TimesOutWithoutAnArbiter(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 	_ = ln.Close() // nothing listens: every Get fails with Unavailable
-	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: addr}), nil)
+	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: addr}), discardLogger())
 	runFollower(t, f)
 	err = WaitReady(context.Background(), f, 200*time.Millisecond)
 	if !errors.Is(err, ErrRegistryNotReady) {
@@ -317,7 +370,7 @@ func TestRegistryFollower_ArbiterWithoutTheServiceCountsAsDisabled(t *testing.T)
 	pb.RegisterPromotionGatewayServer(srv, &pb.UnimplementedPromotionGatewayServer{})
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(srv.Stop)
-	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: ln.Addr().String()}), nil)
+	f := NewRegistryFollower(newTestClient(t, Peer{ID: "n1", GRPCAddr: ln.Addr().String()}), discardLogger())
 	runFollower(t, f)
 	if err := WaitReady(context.Background(), f, 5*time.Second); err != nil {
 		t.Fatal(err)

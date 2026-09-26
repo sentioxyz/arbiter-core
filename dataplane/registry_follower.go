@@ -142,6 +142,14 @@ func (f *RegistryFollower) initial(ctx context.Context) error {
 		m, err := pb.NewTableRegistryClient(conn).GetTableRegistry(ctx, &emptypb.Empty{})
 		switch {
 		case err == nil:
+			// Decode before accepting: an undecodable answer (e.g. version
+			// skew introducing an unknown status/origin/retire-reason) must
+			// not be read as a disabled registry. Returning an error here
+			// (via the callback) makes WithLeaderRetry retry the Get with
+			// its existing backoff instead of closing Ready.
+			if _, decodeErr := wire.TableRegistrySnapshotFromPB(m); decodeErr != nil {
+				return fmt.Errorf("decode initial table registry snapshot: %w", decodeErr)
+			}
 			got = m
 			return nil
 		case registryDisabled(err):
