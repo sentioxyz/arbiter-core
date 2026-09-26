@@ -197,10 +197,36 @@ func newReconciler(t *testing.T, conn clickhouse.Conn, p ddl.Pinned, view *fakeV
 }
 
 // pinClock fixes the reconciler's clock so a per-table backoff never expires
-// on its own during the test.
-func pinClock(r *Reconciler) {
-	fixed := time.Now()
-	r.now = func() time.Time { return fixed }
+// on its own during the test. The returned clock only moves when advanced.
+func pinClock(r *Reconciler) *testClock {
+	c := &testClock{t: time.Now()}
+	r.now = c.Now
+	return c
+}
+
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+func stateCount(st Stats) int {
+	n := 0
+	for _, c := range st.States {
+		n += c
+	}
+	return n
 }
 
 func localComments(t *testing.T, conn clickhouse.Conn, p ddl.Pinned, tableID string) map[string]string {
@@ -761,4 +787,172 @@ func TestReconciler_NeverDropsATableALiveKeyOwns(t *testing.T) {
 	if st := r.Stats(); st.LeftoverDrops != 0 {
 		t.Fatalf("stats = %+v", st)
 	}
+}
+
+// Fix round 1, item 1: a backoff that has expired must not survive a
+// non-failing transition, or NextDelay stays 0 and the loop spins.
+func TestReconciler_ExpiredBackoffDoesNotPinNextDelay(t *testing.T) {
+	t.Run("quiescence error then not quiescent", func(t *testing.T) {
+		conn := requireCH(t)
+		p := testPinned(t, conn)
+		view, arb := newFakeView(), &fakeArbiter{}
+		var quietErr error = errors.New("promotion state unavailable")
+		r := newReconciler(t, conn, p, view, arb, func(_ *Config, d *Deps) {
+			d.Quiescent = func(string) (bool, error) { return false, quietErr }
+		})
+		clock := pinClock(r)
+		s := schemaFor(t, "t")
+		view.set(chainInc(t, 1, s, wire.TableStatusPurging))
+		mustReconcile(t, r)
+		if st := r.Stats(); st.Failures[s.TableID] != 1 || st.States[StateWaitingQuiescence] != 1 {
+			t.Fatalf("stats = %+v", st)
+		}
+		quietErr = nil
+		clock.advance(time.Minute)
+		mustReconcile(t, r)
+		if st := r.Stats(); st.States[StateWaitingQuiescence] != 1 || st.Failures[s.TableID] != 1 {
+			t.Fatalf("stats = %+v", st)
+		}
+		clock.advance(time.Minute)
+		if got := r.NextDelay(); got != ddl.DefaultReconcileInterval {
+			t.Fatalf("NextDelay = %v, want the interval %v", got, ddl.DefaultReconcileInterval)
+		}
+	})
+	t.Run("failed purge report then purged", func(t *testing.T) {
+		conn := requireCH(t)
+		p := testPinned(t, conn)
+		view := newFakeView()
+		// The report committed but the client saw an error.
+		arb := &fakeArbiter{err: status.Error(codes.Unavailable, "connection reset")}
+		r := newReconciler(t, conn, p, view, arb, nil)
+		clock := pinClock(r)
+		s := schemaFor(t, "t")
+		view.set(chainInc(t, 1, s, wire.TableStatusPurging))
+		mustReconcile(t, r)
+		if st := r.Stats(); st.Failures[s.TableID] != 1 {
+			t.Fatalf("stats = %+v", st)
+		}
+		view.set(chainInc(t, 1, s, wire.TableStatusPurged))
+		mustReconcile(t, r)
+		clock.advance(time.Minute)
+		if got := r.NextDelay(); got != ddl.DefaultReconcileInterval {
+			t.Fatalf("NextDelay = %v, want the interval %v", got, ddl.DefaultReconcileInterval)
+		}
+		if st := r.Stats(); stateCount(st) != 0 {
+			t.Fatalf("a retired key must not count in States: %+v", st)
+		}
+	})
+}
+
+// Fix round 1, item 2: a Purging key never drops a physical name that a
+// present key desires (D2 collision), and does not report the purge.
+func TestReconciler_PurgeNeverDropsAPhysicalNameAPresentKeyDesires(t *testing.T) {
+	conn := requireCH(t)
+	p := testPinned(t, conn)
+	view, arb := newFakeView(), &fakeArbiter{}
+	r := newReconciler(t, conn, p, view, arb, nil)
+	s := suffix(t)
+	live := payloadexec.TableSchema{TableID: "x.y__z_" + s, Columns: []lthash.Column{{Name: "v", Type: "UInt64"}}}
+	colliding := payloadexec.TableSchema{TableID: "x__y.z_" + s, Columns: []lthash.Column{{Name: "v", Type: "UInt64"}}}
+	if ddl.CHTableName(live.TableID) != ddl.CHTableName(colliding.TableID) {
+		t.Fatal("fixture: the two keys must share a physical name")
+	}
+	view.set(chainInc(t, 1, colliding, wire.TableStatusPurging), chainInc(t, 2, live, wire.TableStatusActive))
+	mustReconcile(t, r)
+	mustReconcile(t, r)
+	got := localComments(t, conn, p, live.TableID)
+	if len(got) != 3 || !r.Ready(live.TableID) {
+		t.Fatalf("tables %v ready %v: the present key's tables must survive", got, r.Ready(live.TableID))
+	}
+	for db, c := range got {
+		if c != "hg_incarnation=2" {
+			t.Fatalf("%s comment = %q", db, c)
+		}
+	}
+	if reports := arb.reported(); len(reports) != 0 {
+		t.Fatalf("a purge whose drop was skipped must not be reported: %v", reports)
+	}
+	if !keeperPathExists(t, conn, p, live.TableID) {
+		t.Fatal("the present key's Keeper path must survive")
+	}
+}
+
+// Fix round 1, item 3: a chain key whose schema cannot be decoded backs off
+// instead of failing on every pass.
+func TestReconciler_UndecodableChainSchemaBacksOff(t *testing.T) {
+	conn := requireCH(t)
+	p := testPinned(t, conn)
+	view, arb := newFakeView(), &fakeArbiter{}
+	r := newReconciler(t, conn, p, view, arb, nil)
+	clock := pinClock(r)
+	inc := chainInc(t, 1, schemaFor(t, "t"), wire.TableStatusPending)
+	inc.SchemaJSON = "{not json"
+	view.set(inc)
+	for range 3 {
+		mustReconcile(t, r)
+	}
+	if st := r.Stats(); st.Failures[inc.Key()] != 1 {
+		t.Fatalf("a backed-off undecodable schema must not fail on every pass: %+v", st)
+	}
+	clock.advance(time.Minute)
+	mustReconcile(t, r)
+	if st := r.Stats(); st.Failures[inc.Key()] != 2 {
+		t.Fatalf("an expired backoff retries: %+v", st)
+	}
+}
+
+// Fix round 1, item 4: a local table whose marker names a retired (Purged or
+// Refused) incarnation of another key with the same D2 physical name is a
+// leftover of that key (a node evicted before the purge that rejoined), so
+// it is dropped before the create instead of being fatal drift. A marker of
+// a live incarnation of another key stays drift and is never dropped.
+func TestReconciler_DropsALeftoverOfARetiredCollidingKey(t *testing.T) {
+	for _, st := range []wire.TableIncarnationStatus{wire.TableStatusPurged, wire.TableStatusRefused} {
+		t.Run(string(st), func(t *testing.T) {
+			conn := requireCH(t)
+			p := testPinned(t, conn)
+			view, arb := newFakeView(), &fakeArbiter{}
+			r := newReconciler(t, conn, p, view, arb, nil)
+			s := suffix(t)
+			old := payloadexec.TableSchema{TableID: "a__b.c_" + s, Columns: []lthash.Column{{Name: "w", Type: "String"}}}
+			next := payloadexec.TableSchema{TableID: "a.b__c_" + s, Columns: []lthash.Column{{Name: "v", Type: "UInt64"}}}
+			if ddl.CHTableName(old.TableID) != ddl.CHTableName(next.TableID) {
+				t.Fatal("fixture: the two keys must share a physical name")
+			}
+			if err := ddl.EnsureTable(context.Background(), conn, p, old, 1, ddl.ModeCreateAndVerify); err != nil {
+				t.Fatal(err)
+			}
+			view.set(chainInc(t, 1, old, st), chainInc(t, 2, next, wire.TableStatusPending))
+			mustReconcile(t, r)
+			for db, c := range localComments(t, conn, p, next.TableID) {
+				if c != "hg_incarnation=2" {
+					t.Fatalf("%s comment = %q, want the new key's incarnation", db, c)
+				}
+			}
+			if stats := r.Stats(); stats.LeftoverDrops != 1 || !r.Ready(next.TableID) {
+				t.Fatalf("stats = %+v ready=%v", stats, r.Ready(next.TableID))
+			}
+		})
+	}
+	t.Run("live colliding incarnation is drift", func(t *testing.T) {
+		conn := requireCH(t)
+		p := testPinned(t, conn)
+		view, arb := newFakeView(), &fakeArbiter{}
+		r := newReconciler(t, conn, p, view, arb, nil)
+		s := suffix(t)
+		next := payloadexec.TableSchema{TableID: "a.b__c_" + s, Columns: []lthash.Column{{Name: "v", Type: "UInt64"}}}
+		legacy := wire.TableIncarnation{Seq: 1, DatabaseID: "a__b", TableID: "c_" + s, Origin: wire.TableOriginLegacy, Status: wire.TableStatusLegacy}
+		if err := ddl.EnsureTable(context.Background(), conn, p, next, 1, ddl.ModeCreateAndVerify); err != nil {
+			t.Fatal(err)
+		}
+		view.set(legacy, chainInc(t, 2, next, wire.TableStatusPending))
+		if err := r.Reconcile(context.Background(), ddl.ModeVerifyOnly); !errors.Is(err, ddl.ErrProtocolTableDrift) {
+			t.Fatalf("err = %v, want drift", err)
+		}
+		for db, c := range localComments(t, conn, p, next.TableID) {
+			if c != "hg_incarnation=1" {
+				t.Fatalf("%s comment = %q: a live incarnation's table must never be dropped", db, c)
+			}
+		}
+	})
 }

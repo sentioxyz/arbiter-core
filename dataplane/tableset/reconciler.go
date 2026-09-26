@@ -363,6 +363,7 @@ type target struct {
 
 func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegistrySnapshot, genesisMode ddl.Mode) error {
 	present := map[string]target{}                // physical name -> table to create and verify
+	wanted := map[string]bool{}                   // physical names a Pending/Active/Retiring key desires
 	purging := map[string]wire.TableIncarnation{} // physical name -> incarnation to purge
 	history := map[string][]string{}              // physical name -> keys whose live incarnation is Purged/Refused/Legacy
 	seen := map[string]bool{}
@@ -379,6 +380,14 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 		case live.Status == wire.TableStatusPurging:
 			purging[physical] = *live
 		case live.HasPhysicalTables():
+			wanted[physical] = true
+			// A chain table that is backing off is skipped before its schema
+			// is decoded, so a deterministic decode failure backs off too. A
+			// genesis table keeps the role's own retry budget (its failures
+			// are returned), so it is never skipped.
+			if live.Origin != wire.TableOriginGenesis && !r.due(key) {
+				continue
+			}
 			t, err := r.targetFor(*live, genesisMode)
 			if err != nil {
 				r.fail(key, live.Seq, StateCreating, err)
@@ -389,6 +398,9 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 			}
 			present[physical] = t
 		default:
+			// A retired key has no tables to converge: forget its status, so
+			// neither an expired backoff nor its last state outlives it.
+			r.forget(key)
 			history[physical] = append(history[physical], key)
 		}
 	}
@@ -415,12 +427,20 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 		}
 	}
 	for _, physical := range sortedKeys(purging) {
-		r.purge(ctx, purging[physical], len(comments[physical]) > 0)
+		inc := purging[physical]
+		if wanted[physical] {
+			// D2 naming is not injective: another key that is Pending,
+			// Active or Retiring desires this physical name. Arbiter
+			// admission prevents the collision; never drop its tables, and
+			// never report a purge whose drop did not happen.
+			r.setState(inc.Key(), inc.Seq, StatePurging)
+			r.d.Logger.Error("purging table shares its physical name with a live table; not dropping or reporting it",
+				"table", inc.Key(), "incarnation", inc.Seq, "physical", physical)
+			continue
+		}
+		r.purge(ctx, inc, len(comments[physical]) > 0)
 	}
-	desired := map[string]bool{}
-	for physical := range present {
-		desired[physical] = true
-	}
+	desired := maps.Clone(wanted)
 	for physical := range purging {
 		desired[physical] = true
 	}
@@ -468,17 +488,12 @@ func (r *Reconciler) targetFor(inc wire.TableIncarnation, genesisMode ddl.Mode) 
 
 // ensurePresent creates and verifies one table. The expected table comment
 // is empty for a genesis table and IncarnationComment(seq) for a chain one. A
-// local table with another comment is a leftover of an earlier incarnation
-// of the key when the registry records that incarnation (the marked one, or
-// for an unmarked table the key's genesis incarnation) as Purged or Refused;
-// it is dropped before the create. Any other comment is drift.
+// local table of a chain table with another comment is a leftover when the
+// registry records the incarnation it belongs to as Purged or Refused
+// (retiredLeftover); it is dropped before the create. Any other comment is
+// drift.
 func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistrySnapshot, t target, comments []string) error {
 	key := t.inc.Key()
-	// A genesis table keeps the role's own retry budget (its failures are
-	// returned), so only chain tables are skipped while backing off.
-	if t.inc.Origin != wire.TableOriginGenesis && !r.due(key) {
-		return nil
-	}
 	expected := ""
 	if t.marker != 0 {
 		expected = ddl.IncarnationComment(t.marker)
@@ -488,7 +503,7 @@ func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistryS
 		if comment == expected {
 			continue
 		}
-		if t.marker == 0 || !earlierRetired(snap, key, ownerOf(snap, key, comment), t.inc.Seq) {
+		if t.marker == 0 || !retiredLeftover(snap, key, comment, t.inc.Seq) {
 			err := fmt.Errorf("%w: %s tables carry comment %q, want %q (incarnation %d)", ddl.ErrProtocolTableDrift, key, comment, expected, t.inc.Seq)
 			r.fail(key, t.inc.Seq, StateCreating, err)
 			return err
@@ -542,6 +557,31 @@ func earlierRetired(snap wire.TableRegistrySnapshot, key string, owner, current 
 	}
 	inc := incarnation(snap, owner)
 	return inc != nil && inc.Key() == key && (inc.Status == wire.TableStatusPurged || inc.Status == wire.TableStatusRefused)
+}
+
+// retiredLeftover reports whether a local table under key's physical name
+// with comment is a leftover the registry has retired, so it may be dropped
+// before key's incarnation current is created:
+//   - an unmarked table whose owner is key's genesis incarnation, earlier than
+//     current and Purged or Refused;
+//   - a canonical marker naming a Purged or Refused incarnation of any key with
+//     the same D2 physical name (key itself, or a colliding key such as a
+//     Purged a__b.c under a newly admitted a.b__c, left on a node that was
+//     evicted before the purge and rejoined).
+//
+// An unparseable or unknown marker, and a marker of a live incarnation of any
+// key, is not a leftover.
+func retiredLeftover(snap wire.TableRegistrySnapshot, key, comment string, current uint64) bool {
+	if comment == "" {
+		return earlierRetired(snap, key, ownerOf(snap, key, comment), current)
+	}
+	seq, ok := ddl.ParseIncarnationComment(comment)
+	if !ok {
+		return false
+	}
+	inc := incarnation(snap, seq)
+	return inc != nil && inc.Seq != current && ddl.CHTableName(inc.Key()) == ddl.CHTableName(key) &&
+		(inc.Status == wire.TableStatusPurged || inc.Status == wire.TableStatusRefused)
 }
 
 // attributable reports whether every comment attributes its table to an
@@ -727,9 +767,20 @@ func (r *Reconciler) setState(key string, seq uint64, state State) {
 		r.tables[key] = ts
 	}
 	ts.state = state
+	// A non-failing transition ends any backoff: a nextAttempt left behind
+	// once expired would pin NextDelay at 0 and spin the loop. Only a
+	// converged table resets the consecutive-failure count.
+	ts.nextAttempt = time.Time{}
 	if state == StateReady || state == StatePurgeReported {
-		ts.failures, ts.nextAttempt = 0, time.Time{}
+		ts.failures = 0
 	}
+}
+
+// forget drops key's status.
+func (r *Reconciler) forget(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tables, key)
 }
 
 func (r *Reconciler) fail(key string, seq uint64, state State, err error) {
