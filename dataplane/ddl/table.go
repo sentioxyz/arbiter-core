@@ -66,7 +66,9 @@ func IncarnationIntents(p Pinned, t payloadexec.TableSchema, incarnationSeq uint
 // ClickHouse registering this node's hg_unsafe replica in Keeper and writing
 // the local table leaves the replica behind, and the next CREATE fails with
 // REPLICA_ALREADY_EXISTS; EnsureTable then removes the stale replica (refused
-// by ClickHouse while any server holds it active) and creates once more.
+// by ClickHouse while any server holds it active) and creates once more. It
+// does so only when the table is absent locally, attached or detached: a
+// detached table's replica is its own Keeper metadata, never stale.
 func EnsureTable(ctx context.Context, conn clickhouse.Conn, p Pinned, t payloadexec.TableSchema, incarnationSeq uint64, mode Mode) error {
 	if mode == ModeOff {
 		return nil
@@ -86,7 +88,7 @@ func EnsureTable(ctx context.Context, conn clickhouse.Conn, p Pinned, t payloade
 		for _, intent := range intents {
 			err := conn.Exec(ctx, intent.SQL())
 			if err != nil && intent.Engine == EngineReplicatedMergeTree && clickHouseCode(err) == codeReplicaAlreadyExists {
-				if dropErr := DropReplica(ctx, conn, p, t.TableID, p.NodeID); dropErr != nil {
+				if dropErr := dropStaleReplica(ctx, conn, p, t.TableID, intent); dropErr != nil {
 					return fmt.Errorf("ddl: create %s.%s: stale replica %s: %w", intent.Database, intent.Table, p.NodeID, dropErr)
 				}
 				err = conn.Exec(ctx, intent.SQL())
@@ -103,6 +105,26 @@ func EnsureTable(ctx context.Context, conn clickhouse.Conn, p Pinned, t payloade
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// dropStaleReplica removes this node's replica of tableID's hg_unsafe table
+// after its CREATE failed with REPLICA_ALREADY_EXISTS. The replica is stale
+// only if no local table of that name exists: a detached one (DETACH, DETACH
+// PERMANENTLY, or a table that failed to attach) still owns its Keeper
+// metadata, and SYSTEM DROP REPLICA would destroy it. Such a table fails the
+// create instead, for an operator to attach or drop.
+func dropStaleReplica(ctx context.Context, conn clickhouse.Conn, p Pinned, tableID string, intent TableIntent) error {
+	var attached, detached uint64
+	if err := conn.QueryRow(ctx, `SELECT count() FROM system.tables WHERE database = ? AND name = ?`, intent.Database, intent.Table).Scan(&attached); err != nil {
+		return fmt.Errorf("ddl: look up local table %s.%s: %w", intent.Database, intent.Table, err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT count() FROM system.detached_tables WHERE database = ? AND table = ?`, intent.Database, intent.Table).Scan(&detached); err != nil {
+		return fmt.Errorf("ddl: look up detached table %s.%s: %w", intent.Database, intent.Table, err)
+	}
+	if attached != 0 || detached != 0 {
+		return fmt.Errorf("ddl: %s.%s exists locally (attached %d, detached %d); not removing its keeper replica %s", intent.Database, intent.Table, attached, detached, p.NodeID)
+	}
+	return DropReplica(ctx, conn, p, tableID, p.NodeID)
 }
 
 // DropTable drops tableID's hg_promote, hg_safe and hg_unsafe tables, in that

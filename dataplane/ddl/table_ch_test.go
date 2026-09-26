@@ -216,3 +216,83 @@ func TestDropReplica_DecommissionedReplicaUnblocksSameNameRecreation(t *testing.
 		t.Fatalf("same-name recreation after the sweep: %v", err)
 	}
 }
+
+// FR-m1: a detached local hg_unsafe table still owns its Keeper replica, so
+// EnsureTable fails for an operator to resolve and leaves that replica, and
+// the table's data, untouched.
+func TestEnsureTable_DetachedTableKeepsItsKeeperReplica(t *testing.T) {
+	for _, permanently := range []bool{true, false} {
+		t.Run(fmt.Sprintf("permanently=%v", permanently), func(t *testing.T) {
+			ctx := context.Background()
+			conn := requireCH(t)
+			requireKeeper(t, conn)
+			p := testPinned(t)
+			dropDatabasesSync(t, conn, p)
+			sch := ensureSchema(t)
+			if err := EnsureTable(ctx, conn, p, sch, 6, ModeCreateAndVerify); err != nil {
+				t.Fatal(err)
+			}
+			unsafe := detachUnsafe(t, conn, p, sch, permanently)
+			if err := EnsureTable(ctx, conn, p, sch, 6, ModeCreateAndVerify); err == nil {
+				t.Fatal("EnsureTable over a detached hg_unsafe table must fail")
+			}
+			assertOwnReplicaAttaches(t, conn, p, sch, unsafe)
+		})
+	}
+}
+
+// FR-m1: the stale-replica recovery itself refuses a detached table. ClickHouse
+// 25.8 answers CREATE TABLE IF NOT EXISTS over a detached table of the same
+// name as a no-op rather than with REPLICA_ALREADY_EXISTS, so this drives the
+// recovery step directly: it is the step that would destroy the metadata.
+func TestDropStaleReplica_RefusesADetachedTable(t *testing.T) {
+	for _, permanently := range []bool{true, false} {
+		t.Run(fmt.Sprintf("permanently=%v", permanently), func(t *testing.T) {
+			ctx := context.Background()
+			conn := requireCH(t)
+			requireKeeper(t, conn)
+			p := testPinned(t)
+			dropDatabasesSync(t, conn, p)
+			sch := ensureSchema(t)
+			if err := EnsureTable(ctx, conn, p, sch, 6, ModeCreateAndVerify); err != nil {
+				t.Fatal(err)
+			}
+			unsafe := detachUnsafe(t, conn, p, sch, permanently)
+			if err := dropStaleReplica(ctx, conn, p, sch.TableID, unsafe); err == nil {
+				t.Fatal("the stale-replica recovery must refuse a detached local table")
+			}
+			assertOwnReplicaAttaches(t, conn, p, sch, unsafe)
+		})
+	}
+}
+
+func detachUnsafe(t *testing.T, conn clickhouse.Conn, p Pinned, sch payloadexec.TableSchema, permanently bool) TableIntent {
+	t.Helper()
+	unsafe, _, _, err := IncarnationIntents(p, sch, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := fmt.Sprintf("DETACH TABLE %s.%s", quoteIdent(unsafe.Database), quoteIdent(unsafe.Table))
+	if permanently {
+		q += " PERMANENTLY"
+	}
+	if err := conn.Exec(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	return unsafe
+}
+
+func assertOwnReplicaAttaches(t *testing.T, conn clickhouse.Conn, p Pinned, sch payloadexec.TableSchema, unsafe TableIntent) {
+	t.Helper()
+	ctx := context.Background()
+	replicas, err := KeeperReplicas(ctx, conn, p, sch.TableID)
+	if err != nil || !slices.Equal(replicas, []string{p.NodeID}) {
+		t.Fatalf("replicas = %v, %v; the detached table's replica must be untouched", replicas, err)
+	}
+	if err := conn.Exec(ctx, fmt.Sprintf("ATTACH TABLE %s.%s", quoteIdent(unsafe.Database), quoteIdent(unsafe.Table))); err != nil {
+		t.Fatalf("re-attach the detached table: %v", err)
+	}
+	if err := VerifyProtocolTable(ctx, conn, unsafe); err != nil {
+		t.Fatalf("the re-attached table must verify: %v", err)
+	}
+}
