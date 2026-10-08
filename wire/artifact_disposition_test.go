@@ -208,21 +208,125 @@ func TestArtifactDispositionCommandRootAcceptsEveryStorageRefShape(t *testing.T)
 		t.Fatalf("decoded command root = %q, want %q", got, registerRoot)
 	}
 
-	// The nil-array rule still polices every array the root does hash.
-	nilRoots := newRegister(nil)
-	nilRoots.Action.RegisterCandidate.Manifest.Tables[0].PartitionRoots = nil
-	if _, err := ArtifactDispositionCommandRoot(nilRoots); err == nil {
-		t.Fatal("nil partition roots accepted")
+	// The nil-array rule still polices every array the root hashes verbatim.
+	nilReceipts := dispositionCommand(ArtifactDispositionActionV1{PublishCandidate: &ArtifactDispositionPublishCandidateV1{
+		Manifest: newRegister(nil).Action.RegisterCandidate.Manifest,
+	}})
+	if _, err := ArtifactDispositionCommandRoot(nilReceipts); err == nil {
+		t.Fatal("nil transition receipts accepted")
 	}
-	nilTables := newRegister(nil)
-	nilTables.Action.RegisterCandidate.Manifest.Tables = nil
-	if _, err := ArtifactDispositionCommandRoot(nilTables); err == nil {
-		t.Fatal("nil tables accepted")
+	nilAdmins := dispositionCommand(ArtifactDispositionActionV1{BindPolicy: &ArtifactDispositionBindPolicyV1{
+		Policy: ArtifactDispositionPolicyV1{PolicyID: "p", Kind: "explicit_historical_window_v1"},
+	}})
+	if _, err := ArtifactDispositionCommandRoot(nilAdmins); err == nil {
+		t.Fatal("nil administrator addresses accepted")
 	}
 
 	// Skipping the field is only sound while the canonical DTO omits it.
 	if _, ok := reflect.TypeOf(canonicalPartManifestEntry{}).FieldByName("StorageRefs"); ok {
 		t.Fatal("canonical part DTO carries StorageRefs again; drop the canonicalProjectionOmits entry")
+	}
+	// Accepting a nil is only sound while the canonical DTO materializes it.
+	materialized, err := json.Marshal(canonicalManifest(replay.SafeSnapshotManifest{Tables: []replay.TableManifest{{}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(materialized), `"partition_roots":[],"active_parts":[]`) {
+		t.Fatalf("canonical manifest no longer materializes nil table arrays: %s", materialized)
+	}
+	materialized, err = json.Marshal(canonicalManifest(replay.SafeSnapshotManifest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(materialized), `"tables":[]`) {
+		t.Fatalf("canonical manifest no longer materializes nil tables: %s", materialized)
+	}
+}
+
+// TestArtifactDispositionManifestEmptyArraysSurviveProtobuf pins the gateway
+// view of a manifest whose repeated fields are empty: a table a table-set
+// transition just added, or an empty genesis table, has no partition roots and
+// no active parts. The sender hashes concrete [] arrays; protobuf has no
+// presence for repeated fields and ManifestFromPB decodes them to nil, so the
+// decoded command must be accepted and hash to the sender's root.
+func TestArtifactDispositionManifestEmptyArraysSurviveProtobuf(t *testing.T) {
+	emptyTable := replay.TableManifest{TableID: "db.t", SchemaHash: "0x1",
+		PartitionRoots: []replay.PartitionCommitment{}, ActiveParts: []replay.PartManifestEntry{}}
+	manifests := map[string]func() replay.SafeSnapshotManifest{
+		"empty table": func() replay.SafeSnapshotManifest {
+			return replay.SafeSnapshotManifest{SnapshotID: "snapshot", Tables: []replay.TableManifest{emptyTable}}
+		},
+		"empty and populated tables": func() replay.SafeSnapshotManifest {
+			return replay.SafeSnapshotManifest{SnapshotID: "snapshot", Tables: []replay.TableManifest{emptyTable, {
+				TableID: "db.u", SchemaHash: "0x2",
+				PartitionRoots: []replay.PartitionCommitment{{TableID: "db.u", PartitionID: "p", Root: "0xroot"}},
+				ActiveParts:    []replay.PartManifestEntry{{TableID: "db.u", PartitionID: "p", PartName: "part"}},
+			}}}
+		},
+		"no tables": func() replay.SafeSnapshotManifest {
+			return replay.SafeSnapshotManifest{SnapshotID: "snapshot", Tables: []replay.TableManifest{}}
+		},
+	}
+	actions := map[string]func(replay.SafeSnapshotManifest) ArtifactDispositionActionV1{
+		"register": func(m replay.SafeSnapshotManifest) ArtifactDispositionActionV1 {
+			return ArtifactDispositionActionV1{RegisterCandidate: &ArtifactDispositionRegisterCandidateV1{Manifest: m}}
+		},
+		"publish": func(m replay.SafeSnapshotManifest) ArtifactDispositionActionV1 {
+			return ArtifactDispositionActionV1{PublishCandidate: &ArtifactDispositionPublishCandidateV1{
+				Manifest: m, TransitionReceipts: []replay.ExecutorProfileTransitionReceipt{}}}
+		},
+	}
+	for manifestName, manifest := range manifests {
+		for actionName, action := range actions {
+			name := actionName + "/" + manifestName
+			sender := dispositionCommand(action(manifest()))
+			want, err := ArtifactDispositionCommandRoot(sender)
+			if err != nil {
+				t.Fatalf("%s: sender root: %v", name, err)
+			}
+			senderJSON, err := json.Marshal(sender)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			decoded := ArtifactDispositionCommandFromPB(ArtifactDispositionCommandToPB(sender))
+			got, err := ArtifactDispositionCommandRoot(decoded)
+			if err != nil {
+				t.Fatalf("%s: decoded command rejected: %v", name, err)
+			}
+			if got != want {
+				t.Fatalf("%s: decoded root = %q, want sender root %q", name, got, want)
+			}
+			// The administrator JWS commits to these exact bytes, so the
+			// decoded command must also marshal identically.
+			decodedJSON, err := json.Marshal(decoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(decodedJSON) != string(senderJSON) {
+				t.Fatalf("%s: decoded canonical JSON differs:\n got %s\nwant %s", name, decodedJSON, senderJSON)
+			}
+
+			raw, err := Encode(Command{ArtifactDisposition: &ArtifactDispositionCmd{Command: sender}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			replicated, err := Decode(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := ArtifactDispositionCommandRoot(replicated.ArtifactDisposition.Command); err != nil || got != want {
+				t.Fatalf("%s: Raft-decoded root = %q, %v; want %q", name, got, err, want)
+			}
+		}
+	}
+
+	// The probe from the gateway report, verbatim: a single bare table.
+	probe := dispositionCommand(ArtifactDispositionActionV1{RegisterCandidate: &ArtifactDispositionRegisterCandidateV1{
+		Manifest: replay.SafeSnapshotManifest{Tables: []replay.TableManifest{{TableID: "db.t", SchemaHash: "0x1"}}},
+	}})
+	if _, err := ArtifactDispositionCommandRoot(ArtifactDispositionCommandFromPB(ArtifactDispositionCommandToPB(probe))); err != nil {
+		t.Fatalf("probe command rejected: %v", err)
 	}
 }
 

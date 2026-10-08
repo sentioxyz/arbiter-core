@@ -90,6 +90,19 @@ var canonicalProjectionOmits = map[reflect.Type]map[string]bool{
 	reflect.TypeOf(replay.PartManifestEntry{}): {"StorageRefs": true},
 }
 
+// canonicalProjectionMaterializes names raw-record arrays that canonicalManifest
+// always emits as a concrete array, so a nil and an empty raw slice hash
+// identically and rejectNilSlices need not refuse the nil. This is not a
+// hypothetical shape: ManifestFromPB decodes through mapSlice, which turns
+// every empty repeated field into nil, so a table a table-set transition just
+// added (or an empty genesis table) reaches the gateway with nil PartitionRoots
+// and ActiveParts while its sender hashed []. Elements are still walked.
+// Keep an entry only while canonicalManifest really materializes the field.
+var canonicalProjectionMaterializes = map[reflect.Type]map[string]bool{
+	reflect.TypeOf(replay.SafeSnapshotManifest{}): {"Tables": true},
+	reflect.TypeOf(replay.TableManifest{}):        {"PartitionRoots": true, "ActiveParts": true},
+}
+
 func canonicalManifest(v replay.SafeSnapshotManifest) canonicalSafeSnapshotManifest {
 	out := canonicalSafeSnapshotManifest{
 		SnapshotID: v.SnapshotID, ParentSnapshotID: v.ParentSnapshotID, SafeBlockSeq: v.SafeBlockSeq,
@@ -99,8 +112,9 @@ func canonicalManifest(v replay.SafeSnapshotManifest) canonicalSafeSnapshotManif
 	}
 	for i, table := range v.Tables {
 		out.Tables[i] = canonicalTableManifest{
-			TableID: table.TableID, SchemaHash: table.SchemaHash, PartitionRoots: table.PartitionRoots,
-			ActiveParts: make([]canonicalPartManifestEntry, len(table.ActiveParts)),
+			TableID: table.TableID, SchemaHash: table.SchemaHash,
+			PartitionRoots: append([]replay.PartitionCommitment{}, table.PartitionRoots...),
+			ActiveParts:    make([]canonicalPartManifestEntry, len(table.ActiveParts)),
 		}
 		for j, part := range table.ActiveParts {
 			out.Tables[i].ActiveParts[j] = canonicalPartManifestEntry{
@@ -387,6 +401,8 @@ func ArtifactDispositionCommandRoot(command ArtifactDispositionCommandV1) (strin
 // replay records too, so a future action cannot silently reintroduce null
 // arrays, and skips the fields canonicalProjectionOmits excludes from the
 // hashed projection so a nil there cannot reject an otherwise valid command.
+// A nil in a canonicalProjectionMaterializes field is accepted for the same
+// reason: the projection hashes it as [].
 func rejectNilSlices(v reflect.Value) error {
 	if !v.IsValid() {
 		return nil
@@ -409,9 +425,13 @@ func rejectNilSlices(v reflect.Value) error {
 		}
 	case reflect.Struct:
 		omitted := canonicalProjectionOmits[v.Type()]
+		materialized := canonicalProjectionMaterializes[v.Type()]
 		for i := 0; i < v.NumField(); i++ {
 			field := v.Type().Field(i)
 			if field.PkgPath != "" || omitted[field.Name] {
+				continue
+			}
+			if materialized[field.Name] && v.Field(i).IsNil() {
 				continue
 			}
 			if err := rejectNilSlices(v.Field(i)); err != nil {
