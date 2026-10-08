@@ -24,6 +24,7 @@ go_library(
         "@housegate//pkg/replay/payloadexec",
         "@housegate//pkg/replay/snapshotquery",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//status",
     ],
 )
 
@@ -32,6 +33,7 @@ go_test(
     srcs = [
         "backends_test.go",
         "config_external_test.go",
+        "empty_scan_test.go",
         "historical_snapshot_query_adapter_test.go",
         "protocol_tables_test.go",
         "registry_test.go",

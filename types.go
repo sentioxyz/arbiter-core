@@ -203,8 +203,23 @@ type ByteSideScanMsg struct {
 }
 
 // Body returns the canonical hash/sign form.
+//
+// An empty Parts list is canonicalized to nil, so it hashes as JSON
+// "parts":null whether the producer built nil or a non-nil empty slice. That
+// is the only form a scan has after the wire boundary: wire.ScanFromPB (like
+// every repeated-field converter) decodes zero parts to nil, and the Arbiter
+// FSM recomputes scan_hash over that decoded message. Before this
+// normalization a producer that built make([]PartScan, 0) — the ClickHouse
+// scanner does for the empty scan of a table-set transition block — signed
+// "parts":[] and every submission was rejected with "scan_hash does not match
+// the scan body". For nil and non-empty Parts the body, and therefore every
+// hash the FSM computes for a decoded scan, is byte-identical to before.
 func (m ByteSideScanMsg) Body() ByteSideScanBody {
-	return ByteSideScanBody{ReplicaID: m.ReplicaID, BlockSeq: m.BlockSeq, Parts: m.Parts}
+	parts := m.Parts
+	if len(parts) == 0 {
+		parts = nil
+	}
+	return ByteSideScanBody{ReplicaID: m.ReplicaID, BlockSeq: m.BlockSeq, Parts: parts}
 }
 
 // AnchorRef references the L2 anchor of one L3 block (§5.2).

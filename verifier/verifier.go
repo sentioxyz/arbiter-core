@@ -13,6 +13,7 @@ import (
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 
 	"github.com/housegate/housegate/pkg/replay"
 	"github.com/housegate/housegate/pkg/replay/snapshotquery"
@@ -322,10 +323,12 @@ func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {
 		r.d.Logger.Warn("replay verify failed; refusing to attest", "block", m.GetBlockSeq(), "err", err)
 		return err
 	}
-	return r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
+	err = r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		_, err := pb.NewVerifierGatewayClient(conn).SubmitAttestation(ctx, wire.AttestationToPB(att))
 		return err
 	})
+	r.logSubmitFailure(ctx, "replay attestation", m.GetBlockSeq(), err, "receipt_hash", att.ReceiptHash)
+	return err
 }
 
 func (r *Role) handleSnapshotQueryJob(ctx context.Context, m *pb.SnapshotQueryJob) error {
@@ -370,13 +373,15 @@ func (r *Role) handleSnapshotQueryJob(ctx context.Context, m *pb.SnapshotQueryJo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
+	err = r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		_, err := pb.NewVerifierGatewayClient(conn).SubmitSnapshotQueryAttestation(ctx, wire.SnapshotQueryAttestationToPB(att))
 		return err
 	})
+	r.logSubmitFailure(ctx, "snapshot query attestation", m.GetBlockSeq(), err, "receipt_hash", att.ReceiptHash)
+	return err
 }
 
 // verifySnapshotQueryEnvelope authenticates the user's v3 envelope before any
@@ -404,8 +409,25 @@ func (r *Role) handleScanRequest(ctx context.Context, m *pb.ByteSideScanRequest)
 	}
 	msg.ScanHash = hash
 	msg.Signature = hex.EncodeToString(ed25519.Sign(r.priv, []byte(hash)))
-	return r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
+	err = r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		_, err := pb.NewVerifierGatewayClient(conn).SubmitByteSideScan(ctx, wire.ScanToPB(msg))
 		return err
 	})
+	r.logSubmitFailure(ctx, "byte-side scan", m.GetBlockSeq(), err, "scan_hash", hash, "parts", len(scans))
+	return err
+}
+
+// logSubmitFailure reports evidence the arbiter did not record. The gateway
+// answers an FSM rejection (for example "scan_hash does not match the scan
+// body") with InvalidArgument and logs nothing itself, and the subscription
+// loop that called the handler only debug-logs its error, so without this
+// line a deterministically rejected submission retries silently forever. It
+// is observability only: nothing here feeds any hashed or signed data.
+func (r *Role) logSubmitFailure(ctx context.Context, kind string, blockSeq uint64, err error, attrs ...any) {
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	st, _ := status.FromError(err)
+	args := append([]any{"kind", kind, "block", blockSeq, "replica", r.cfg.ReplicaID, "code", st.Code().String(), "err", err}, attrs...)
+	r.d.Logger.Warn("arbiter did not accept verifier evidence", args...)
 }

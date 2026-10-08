@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -35,6 +36,8 @@ type Config struct {
 	// MaxRecvMsgSize bounds each message received from the arbiter, in
 	// bytes. Zero or negative selects DefaultMaxRecvMsgSize.
 	MaxRecvMsgSize int
+	// Logger receives subscription diagnostics. Nil selects slog.Default().
+	Logger *slog.Logger
 }
 
 func (cfg Config) withDefaults() Config {
@@ -52,6 +55,9 @@ func (cfg Config) withDefaults() Config {
 	}
 	if cfg.MaxRecvMsgSize <= 0 {
 		cfg.MaxRecvMsgSize = DefaultMaxRecvMsgSize
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
 	}
 	return cfg
 }

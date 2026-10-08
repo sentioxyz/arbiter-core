@@ -28,6 +28,21 @@ func TestByteSideScanBodyExcludesHashAndSignature(t *testing.T) {
 	}
 }
 
+// An empty scan hashes in the form it has after the wire boundary (nil), not
+// as a non-nil empty slice; a non-empty scan keeps its parts untouched.
+func TestByteSideScanBodyCanonicalizesEmptyParts(t *testing.T) {
+	if b := (ByteSideScanMsg{ReplicaID: "r1", BlockSeq: 15, Parts: []PartScan{}}).Body(); b.Parts != nil {
+		t.Fatalf("empty parts body = %#v, want nil parts", b.Parts)
+	}
+	if b := (ByteSideScanMsg{ReplicaID: "r1", BlockSeq: 15}).Body(); b.Parts != nil {
+		t.Fatalf("nil parts body = %#v, want nil parts", b.Parts)
+	}
+	parts := []PartScan{{TableID: "db.t", PartitionID: "p"}}
+	if b := (ByteSideScanMsg{Parts: parts}).Body(); len(b.Parts) != 1 || &b.Parts[0] != &parts[0] {
+		t.Fatalf("non-empty parts body = %#v, want the message's parts", b.Parts)
+	}
+}
+
 func TestTablePartitionTextRoundTrip(t *testing.T) {
 	in := TablePartition{TableID: "db.table", PartitionID: "2026-07"}
 	b, err := in.MarshalText()
