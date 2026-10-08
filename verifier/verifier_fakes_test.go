@@ -66,6 +66,9 @@ type verifierFakeServer struct {
 	activeSubscriptions int
 	subscriptionRelease <-chan struct{}
 	subscriptionErr     error
+	// scanErr, when set, rejects every byte-side scan the way the gateway
+	// answers an FSM rejection; rejected scans are still recorded.
+	scanErr error
 }
 
 func newVerifierFakeServer() *verifierFakeServer {
@@ -138,6 +141,9 @@ func (s *verifierFakeServer) SubmitByteSideScan(_ context.Context, scan *pb.Byte
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scans = append(s.scans, scan)
+	if s.scanErr != nil {
+		return nil, s.scanErr
+	}
 	return &pb.Ack{}, nil
 }
 

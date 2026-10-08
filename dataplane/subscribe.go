@@ -68,7 +68,14 @@ func runSubscription[T any](
 				}
 				delivered = true
 				backoff = c.cfg.RetryBackoffMin
-				_ = deliver(msg)
+				// A handler error does not end the stream: the arbiter re-dispatches
+				// unrecorded work. Handlers own WARN-level reporting of their
+				// failures (the verifier logs rejected evidence submissions, the
+				// SNode logs failed promotion commands); this debug line keeps a
+				// handler that forgot to from failing silently.
+				if err := deliver(msg); err != nil && ctx.Err() == nil {
+					c.cfg.Logger.Debug("dataplane subscription handler returned an error; continuing", "peer", id, "err", err)
+				}
 				if err := ctx.Err(); err != nil {
 					return err
 				}
