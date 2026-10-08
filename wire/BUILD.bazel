@@ -36,6 +36,7 @@ go_test(
         "dispatch_from_test.go",
         "dispatch_table_set_test.go",
         "safe_state_reads_test.go",
+        "scan_hash_test.go",
         "snapshot_query_test.go",
         "table_registry_snapshot_test.go",
         "table_registry_test.go",
