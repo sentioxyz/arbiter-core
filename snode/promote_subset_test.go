@@ -684,3 +684,215 @@ func TestHandlePromote_WholePartitionStatementsArePinned(t *testing.T) {
 		t.Fatalf("whole-partition ALTER sequence changed:\n got %q\nwant %q", got, want)
 	}
 }
+
+func isPromoteDropPartition(role *Role, query string) bool {
+	return strings.HasPrefix(query, "ALTER TABLE "+role.cfg.PromoteDatabase+".") && strings.Contains(query, " DROP PARTITION ")
+}
+
+// newBasedSubsetFixture publishes and cleans statement 0, so the safe base is
+// non-empty and prepareShadow copies it into the shadow, then commits
+// `pending` more statements into the same partition.
+func newBasedSubsetFixture(t *testing.T, ctx context.Context, pending int) *subsetFixture {
+	t.Helper()
+	f := newSubsetFixture(t, ctx, promoteSchema(), 1)
+	f.promoteAndClean(t, ctx, 1, f.parts[0])
+	for i := 0; i < pending; i++ {
+		f.submit(t, ctx)
+	}
+	return f
+}
+
+func (f *subsetFixture) shadowPartNames(t *testing.T, ctx context.Context) []string {
+	t.Helper()
+	names, err := f.role.shadowPartitionParts(ctx, f.table(), f.schema, f.parts[0].PartitionID)
+	if err != nil {
+		t.Fatalf("shadow parts: %v", err)
+	}
+	return names
+}
+
+// TestHandlePromote_SubsetRedeliveryAfterFailedShadowCleanupConverges crashes
+// the subset promotion at each step and also fails the deferred shadow
+// DROP PARTITION, so the attempt leaves its shadow behind (at least the base
+// copy prepareShadow made). The redelivery's prepareShadow must drop that
+// leftover first and the promotion must converge on base ⊕ candidate.
+func TestHandlePromote_SubsetRedeliveryAfterFailedShadowCleanupConverges(t *testing.T) {
+	injected := errors.New("injected crash")
+	cleanupFailure := errors.New("injected shadow cleanup failure")
+	for _, tc := range []struct {
+		name  string
+		after bool
+		query bool
+		match func(r *Role, q string) bool
+	}{
+		{"before attach from unsafe", false, false, isAttachFromUnsafe},
+		{"after attach from unsafe", true, false, isAttachFromUnsafe},
+		{"before first shadow drop part", false, false, isPromoteDropPart},
+		{"after first shadow drop part", true, false, isPromoteDropPart},
+		{"shadow scan", false, true, isPromoteScan},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			// Base = statement 0; unsafe holds statements 1..3; candidate 2.
+			f := newBasedSubsetFixture(t, ctx, 3)
+			cmd := f.command(2, f.parts[2])
+			unsafeBefore := f.unsafePartNames(t, ctx)
+			base := f.role.d.Conn
+			hooks := &hookConn{Conn: base}
+			var crashed bool
+			var cleanupFailures int
+			fire := func(q string) bool {
+				if crashed || !tc.match(f.role, q) {
+					return false
+				}
+				crashed = true
+				return true
+			}
+			hooks.beforeExec = func(q string) error {
+				if crashed && isPromoteDropPartition(f.role, q) {
+					cleanupFailures++
+					return cleanupFailure
+				}
+				if !tc.after && !tc.query && fire(q) {
+					return injected
+				}
+				return nil
+			}
+			hooks.afterExec = func(q string) error {
+				if tc.after && fire(q) {
+					return injected
+				}
+				return nil
+			}
+			hooks.beforeQuery = func(q string) error {
+				if tc.query && fire(q) {
+					return injected
+				}
+				return nil
+			}
+			f.role.d.Conn = hooks
+			if err := f.promote(ctx, f.role, cmd); !errors.Is(err, injected) {
+				t.Fatalf("faulted promotion = %v, want the injected crash", err)
+			}
+			f.role.d.Conn = base
+			if cleanupFailures != 1 {
+				t.Fatalf("deferred shadow cleanup ran %d times, want once (and failed)", cleanupFailures)
+			}
+			if left := f.shadowPartNames(t, ctx); len(left) == 0 {
+				t.Fatal("the failed cleanup should have left the shadow partition behind")
+			}
+			f.assertSafeHoldsExactly(t, ctx, 0)
+			if _, pending := f.role.state.PendingPromotion(f.partitionKey()); pending {
+				t.Fatal("faulted promotion journaled an intent")
+			}
+			if got := len(f.claims.promotionAcks()); got != 1 {
+				t.Fatalf("faulted promotion sent an ack: %d acks", got)
+			}
+
+			deps := f.role.d
+			recorder := &hookConn{Conn: base}
+			deps.Conn = recorder
+			restarted, err := New(f.role.cfg, deps)
+			if err != nil {
+				t.Fatalf("restart role: %v", err)
+			}
+			if err := f.promote(ctx, restarted, cmd); err != nil {
+				t.Fatalf("redelivery: %v", err)
+			}
+			alters := recorder.alters()
+			promote := f.role.cfg.PromoteDatabase + "." + f.table()
+			wantPrefix := []string{
+				"ALTER TABLE " + promote + " DROP PARTITION 'p0'",
+				"ALTER TABLE " + promote + " ATTACH PARTITION 'p0' FROM " + f.role.cfg.SafeDatabase + "." + f.table(),
+			}
+			if len(alters) < 2 || !slices.Equal(alters[:2], wantPrefix) {
+				t.Fatalf("redelivery must wipe the leftover shadow first: %q", alters)
+			}
+			restarted.d.Conn = base
+			f.role = restarted
+			f.assertSafeHoldsExactly(t, ctx, 0, 2)
+			acks := f.claims.promotionAcks()
+			if len(acks) != 2 || !acks[1].Applied || acks[1].PromotionSeq != 2 {
+				t.Fatalf("acks after redelivery = %+v", acks)
+			}
+			assertExactSafePartMappings(t, ctx, restarted, f.schema, f.parts[2], acks[1].Parts)
+			assertCompleteSafeInventory(t, ctx, restarted, f.schema, f.parts[0].PartitionID, acks[1].SafePartitionParts)
+			assertNoPromotePartition(t, ctx, restarted, f.schema, f.parts[0].PartitionID)
+			if got := f.unsafePartNames(t, ctx); !slices.Equal(got, unsafeBefore) {
+				t.Fatalf("promotion changed hg_unsafe: %v -> %v", unsafeBefore, got)
+			}
+		})
+	}
+}
+
+// TestHandlePromote_SubsetRefusesVanishedBasePart removes a base part from the
+// shadow between the base listing and the attach from hg_unsafe. The
+// name-diff that identifies the unsafe-origin parts is then unsound, so the
+// promotion must fail closed before REPLACE.
+func TestHandlePromote_SubsetRefusesVanishedBasePart(t *testing.T) {
+	ctx := context.Background()
+	f := newBasedSubsetFixture(t, ctx, 2)
+	unsafeBefore := f.unsafePartNames(t, ctx)
+	base := f.role.d.Conn
+	hooks := &hookConn{Conn: base}
+	var removed string
+	hooks.beforeExec = func(q string) error {
+		if removed != "" || !isAttachFromUnsafe(f.role, q) {
+			return nil
+		}
+		names, err := f.role.shadowPartitionParts(ctx, f.table(), f.schema, f.parts[0].PartitionID)
+		if err != nil || len(names) == 0 {
+			return fmt.Errorf("fixture: no base part in the shadow: %v %v", names, err)
+		}
+		removed = names[0]
+		return base.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s DROP PART '%s'", f.role.cfg.PromoteDatabase, f.table(), removed))
+	}
+	f.role.d.Conn = hooks
+	err := f.promote(ctx, f.role, f.command(2, f.parts[1]))
+	f.role.d.Conn = base
+	if err == nil || !strings.Contains(err.Error(), "shadow base parts ["+removed+"] vanished") {
+		t.Fatalf("promotion = %v, want the vanished-base refusal naming %q", err, removed)
+	}
+	for _, q := range hooks.alters() {
+		if strings.Contains(q, " REPLACE PARTITION ") || isPromoteDropPart(f.role, q) {
+			t.Fatalf("refused promotion went on to %s", q)
+		}
+	}
+	f.assertRejectedUntouched(t, ctx, 1, unsafeBefore, 0)
+}
+
+// TestHandlePromote_SubsetRefusesUnexpectedShadowInventory adds a part to the
+// shadow after the non-candidates are dropped. The shadow is then not exactly
+// base ∪ matched candidates, so the promotion must fail closed before the
+// closure gate and REPLACE.
+func TestHandlePromote_SubsetRefusesUnexpectedShadowInventory(t *testing.T) {
+	ctx := context.Background()
+	f := newBasedSubsetFixture(t, ctx, 2)
+	unsafeBefore := f.unsafePartNames(t, ctx)
+	base := f.role.d.Conn
+	hooks := &hookConn{Conn: base}
+	var injected bool
+	hooks.afterExec = func(q string) error {
+		if injected || !isPromoteDropPart(f.role, q) {
+			return nil
+		}
+		injected = true
+		return base.Exec(ctx, fmt.Sprintf("INSERT INTO %s.%s (_hg_row_id, p, v) VALUES (unhex('%064x'), 'p0', 98)",
+			f.role.cfg.PromoteDatabase, f.table(), 98))
+	}
+	f.role.d.Conn = hooks
+	err := f.promote(ctx, f.role, f.command(2, f.parts[1]))
+	f.role.d.Conn = base
+	if !injected {
+		t.Fatal("the shadow write never fired")
+	}
+	if err == nil || !strings.Contains(err.Error(), "after dropping non-candidates, want base ∪ candidates") {
+		t.Fatalf("promotion = %v, want the shadow inventory refusal", err)
+	}
+	for _, q := range hooks.alters() {
+		if strings.Contains(q, " REPLACE PARTITION ") {
+			t.Fatalf("refused promotion reached REPLACE: %s", q)
+		}
+	}
+	f.assertRejectedUntouched(t, ctx, 1, unsafeBefore, 0)
+}

@@ -36,6 +36,9 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 	if err != nil {
 		return "", safePartMappings{}, err
 	}
+	if err := refuseDuplicateCandidates(cmd); err != nil {
+		return "", safePartMappings{}, err
+	}
 	if err := r.prepareShadow(ctx, cmd, sch, table, safe, promote, partition); err != nil {
 		return "", safePartMappings{}, err
 	}
@@ -62,13 +65,23 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 	if err != nil {
 		return "", safePartMappings{}, err
 	}
-	shadowRoot, err := r.partitionContentRoot(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID)
+	shadowRoot, shadowParts, err := r.partitionContentScan(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID)
 	if err != nil {
 		return "", safePartMappings{}, err
 	}
 	if shadowRoot != post {
 		_ = r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition)
 		return "", safePartMappings{}, shadowClosureMismatch(shadowRoot, post, partsInLogicalPartition(safeBefore, sch, cmd.PartitionID), cmd)
+	}
+	// REPLACE copies the shadow parts one to one, and safeMappings refuses a
+	// safe partition with two parts of equal row LtHash. Refuse it here, before
+	// the intent is journaled and REPLACE publishes duplicated rows. With
+	// duplicate candidates already refused, this catches a candidate whose
+	// content is already a base part (and a base that already holds a
+	// duplicate, which safeMappings would refuse after REPLACE as well).
+	if err := duplicateShadowPartHash(cmd, shadowParts); err != nil {
+		_ = r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition)
+		return "", safePartMappings{}, err
 	}
 	safeBefore = partsInLogicalPartition(safeBefore, sch, cmd.PartitionID)
 	intent := promotionIntentFor(cmd, post, safeBefore)
@@ -200,9 +213,16 @@ func samePromotionSafeParts(before []promotionSafePart, current []partInfo) bool
 // It uses the same chexec.ScanParts row derivation as the executor, so the
 // value is comparable to base ⊕ candidate hashes by construction.
 func (r *Role) partitionContentRoot(ctx context.Context, db, table string, sch payloadexec.TableSchema, partitionID string) (string, error) {
+	root, _, err := r.partitionContentScan(ctx, db, table, sch, partitionID)
+	return root, err
+}
+
+// partitionContentScan is partitionContentRoot that also returns each scanned
+// part with its canonical row LtHash.
+func (r *Role) partitionContentScan(ctx context.Context, db, table string, sch payloadexec.TableSchema, partitionID string) (string, []shadowPart, error) {
 	parts, err := activeParts(ctx, r.d.Conn, db, table)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var names []string
 	for _, p := range parts {
@@ -211,21 +231,60 @@ func (r *Role) partitionContentRoot(ctx context.Context, db, table string, sch p
 		}
 	}
 	if len(names) == 0 {
-		return accumulatorHex(lthash.New()), nil
+		return accumulatorHex(lthash.New()), nil, nil
 	}
 	scans, err := chexec.ScanParts(ctx, r.d.Conn, db+"."+table, sch, names)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	acc := lthash.New()
+	out := make([]shadowPart, 0, len(scans))
 	for _, s := range scans {
 		h, err := parseAccumulatorHex(s.RowLtHash)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		acc.AddHash(h)
+		out = append(out, shadowPart{Name: s.PartName, RowLtHash: accumulatorHex(h)})
 	}
-	return accumulatorHex(acc), nil
+	return accumulatorHex(acc), out, nil
+}
+
+// refuseDuplicateCandidates refuses, before any ClickHouse statement, a
+// command whose candidates are not each a valid, distinct row LtHash. Honest
+// operation never produces one: every part's rows carry _hg_row_ids unique to
+// (statement, ordinal), and intake convergence requires each derived row id
+// exactly once across a statement's parts. Two equal candidate hashes would
+// publish the same rows twice and, after REPLACE, fail safeMappings with the
+// intent journaled. Refusing first keeps hg_safe untouched; the redelivered
+// command stays refused.
+func refuseDuplicateCandidates(cmd arbiter.PromoteSafePartition) error {
+	want, err := candidateMultiset(cmd)
+	if err != nil {
+		return fmt.Errorf("promotion %d of %s/%s: %w", cmd.PromotionSeq, cmd.TableID, cmd.PartitionID, err)
+	}
+	for _, cp := range cmd.CandidateParts {
+		h, _ := parseAccumulatorHex(cp.PartRowLtHash)
+		if want[accumulatorHex(h)] > 1 {
+			return fmt.Errorf("promotion %d of %s/%s: duplicate candidate part_row_lthash %s (part %s): the promoted partition would hold the same rows twice",
+				cmd.PromotionSeq, cmd.TableID, cmd.PartitionID, abbreviateRoot(cp.PartRowLtHash), cp.PartName)
+		}
+	}
+	return nil
+}
+
+// duplicateShadowPartHash refuses a shadow in which two parts have the same
+// row LtHash, i.e. the published partition would hold the same rows twice.
+func duplicateShadowPartHash(cmd arbiter.PromoteSafePartition, parts []shadowPart) error {
+	seen := make(map[string]string, len(parts))
+	for _, p := range parts {
+		if other, dup := seen[p.RowLtHash]; dup {
+			return fmt.Errorf("promotion %d of %s/%s: duplicate part row LtHash %s in shadow parts %s and %s: the promoted partition would hold the same rows twice (a candidate already in the safe base, or a duplicate already in it)",
+				cmd.PromotionSeq, cmd.TableID, cmd.PartitionID, abbreviateRoot(p.RowLtHash), other, p.Name)
+		}
+		seen[p.RowLtHash] = p.Name
+	}
+	return nil
 }
 
 func (r *Role) prepareShadow(ctx context.Context, cmd arbiter.PromoteSafePartition, sch payloadexec.TableSchema, table, safe, promote, partition string) error {

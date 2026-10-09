@@ -44,18 +44,20 @@ type shadowPart struct {
 // dropped. The caller's closure gate still re-derives the shadow root and
 // rejects anything other than base ⊕ candidates.
 func (r *Role) attachCandidateSubset(ctx context.Context, cmd arbiter.PromoteSafePartition, sch payloadexec.TableSchema, table, promote, unsafe, partitionSQL string) (err error) {
-	if _, err := candidateMultiset(cmd); err != nil {
-		return err
-	}
-	base, err := r.shadowPartitionParts(ctx, table, sch, cmd.PartitionID)
-	if err != nil {
-		return err
-	}
+	// Registered first, so every failure in this function drops the shadow
+	// partition, including the prepareShadow base copy. The drop is
+	// best-effort: if it fails too, the leftover is harmless because nothing
+	// reads the shadow outside a promotion and the redelivered command's
+	// prepareShadow drops the partition before rebuilding it.
 	defer func() {
 		if err != nil {
 			_ = r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partitionSQL)
 		}
 	}()
+	base, err := r.shadowPartitionParts(ctx, table, sch, cmd.PartitionID)
+	if err != nil {
+		return err
+	}
 	if err := r.exec(ctx, fmt.Sprintf("ALTER TABLE %s ATTACH PARTITION %s FROM %s", promote, partitionSQL, unsafe)); err != nil {
 		return err
 	}

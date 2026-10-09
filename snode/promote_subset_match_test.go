@@ -30,6 +30,7 @@ func TestMatchShadowCandidates(t *testing.T) {
 		{"subset", []arbiter.PartRef{ref("u1", a)}, []shadowPart{{"s1", a}, {"s2", b}}, []string{"s1"}, []string{"s2"}, ""},
 		{"duplicate shadow content", []arbiter.PartRef{ref("u1", a)}, []shadowPart{{"s1", a}, {"s2", a}, {"s3", b}}, []string{"s1"}, []string{"s2", "s3"}, ""},
 		{"duplicate candidates", []arbiter.PartRef{ref("u1", a), ref("u2", a)}, []shadowPart{{"s1", a}, {"s2", a}}, []string{"s1", "s2"}, nil, ""},
+		{"duplicate candidates against duplicate shadow plus other", []arbiter.PartRef{ref("u1", a), ref("u2", a)}, []shadowPart{{"s1", a}, {"s2", a}, {"s3", b}}, []string{"s1", "s2"}, []string{"s3"}, ""},
 		{"duplicate candidates short", []arbiter.PartRef{ref("u1", a), ref("u2", a)}, []shadowPart{{"s1", a}, {"s2", b}}, nil, nil, "not present in hg_unsafe"},
 		{"zero-row shadow part", []arbiter.PartRef{ref("u1", a)}, []shadowPart{{"s1", a}, {"s2", ""}}, []string{"s1"}, []string{"s2"}, ""},
 		{"missing", []arbiter.PartRef{ref("u1", a), ref("u2", c)}, []shadowPart{{"s1", a}, {"s2", b}}, nil, nil, "u2"},

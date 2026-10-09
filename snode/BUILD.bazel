@@ -58,6 +58,7 @@ go_test(
         "native_fixture_test.go",
         "payload_mismatch_class_test.go",
         "prepare_test.go",
+        "promote_duplicate_test.go",
         "promote_fixtures_test.go",
         "promote_subset_match_test.go",
         "promote_subset_test.go",
