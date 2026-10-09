@@ -3,7 +3,6 @@ package snode
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -11,21 +10,6 @@ import (
 
 	"github.com/sentioxyz/arbiter-core"
 )
-
-func (r *Role) attachCandidatePart(ctx context.Context, table, promote, partName string) error {
-	src, err := r.unsafePartPath(ctx, table, partName)
-	if err != nil {
-		return err
-	}
-	dst, err := r.promoteDetachedPath(ctx, table, partName)
-	if err != nil {
-		return err
-	}
-	if err := hardlinkDir(src, dst); err != nil {
-		return fmt.Errorf("hardlink part %s: %w", partName, err)
-	}
-	return r.exec(ctx, fmt.Sprintf("ALTER TABLE %s ATTACH PART '%s'", promote, escapeSQLString(partName)))
-}
 
 func (r *Role) exec(ctx context.Context, query string) error {
 	if err := r.d.Conn.Exec(ctx, query); err != nil {
@@ -45,29 +29,6 @@ func (r *Role) dropPartitionIfPresent(ctx context.Context, db, table string, sch
 		}
 	}
 	return nil
-}
-
-func (r *Role) unsafePartPath(ctx context.Context, table, partName string) (string, error) {
-	var path string
-	if err := r.d.Conn.QueryRow(ctx, `
-		SELECT path
-		FROM system.parts
-		WHERE database = ? AND table = ? AND name = ? AND active
-		LIMIT 1`, r.cfg.UnsafeDatabase, table, partName).Scan(&path); err != nil {
-		return "", fmt.Errorf("unsafe part path %s: %w", partName, err)
-	}
-	return path, nil
-}
-
-func (r *Role) promoteDetachedPath(ctx context.Context, table, partName string) (string, error) {
-	var root string
-	if err := r.d.Conn.QueryRow(ctx, `
-		SELECT data_paths[1]
-		FROM system.tables
-		WHERE database = ? AND name = ?`, r.cfg.PromoteDatabase, table).Scan(&root); err != nil {
-		return "", fmt.Errorf("promote table path %s: %w", table, err)
-	}
-	return filepath.Join(root, "detached", partName), nil
 }
 
 func quotePartition(sch payloadexec.TableSchema, partitionID string) (string, error) {

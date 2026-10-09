@@ -80,6 +80,8 @@ The protocol-table mode is derived from `schema_source`: `network_state` and `ch
 
 `hg_promote` is created and verified together with `hg_unsafe` and `hg_safe`. A verify-only node whose protocol tables were never bootstrapped in create mode, or whose `hg_promote` table has drifted, now fails at startup instead of discovering the problem during the first promotion.
 
+SNode promotion reaches ClickHouse only through its TCP connection and needs no access to ClickHouse's filesystem, so the SNode may run in a different pod or on a different node. When a promotion's candidates are a strict subset of the active parts in the `hg_unsafe` partition, the SNode attaches the whole partition into `hg_promote`, matches the attached parts against the candidates by row LtHash (as a multiset), and drops every part that is not a candidate before the shadow closure gate and `REPLACE PARTITION`. An unmatched candidate or a scan failure aborts the promotion before `REPLACE`, leaving `hg_safe` untouched, and the command is redelivered. On both attach paths a promotion whose published partition would hold two parts with the same row LtHash (duplicate candidates, or a candidate already in the safe base) is refused before `REPLACE`; honest operation cannot produce one, because every row's `_hg_row_id` is unique to its statement and ordinal.
+
 ClickHouse-backed SNode tests are opt-in. The full DDL acceptance uses two
 ClickHouse 25.8 nodes sharing one Keeper:
 
