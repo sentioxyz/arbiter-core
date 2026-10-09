@@ -386,6 +386,11 @@ func Decode(b []byte) (Command, error) {
 		return Command{ResolveChallenge: &ResolveChallenge{
 			BlockSeq: cmd.ResolveChallenge.GetBlockSeq(), Verdict: ChallengeVerdict(cmd.ResolveChallenge.GetVerdict())}}, nil
 	case *pb.RaftCommand_RegisterNode:
+		// NodeRegistration.features is request-only (housegate spec 2026-10-09
+		// §5.6): refuse it here so a buggy encoder fails on every voter alike.
+		if len(cmd.RegisterNode.GetRegistration().GetFeatures()) != 0 {
+			return Command{}, fmt.Errorf("wire: NodeRegistration.features is request-only and never part of a RaftCommand")
+		}
 		return Command{RegisterNode: &RegisterNode{Registration: RegistrationFromPB(cmd.RegisterNode.GetRegistration())}}, nil
 	case *pb.RaftCommand_MarkActive:
 		return Command{MarkActive: &MarkActive{NodeID: cmd.MarkActive.GetNodeId()}}, nil

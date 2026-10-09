@@ -37,6 +37,7 @@ go_test(
         "dispatch_from_test.go",
         "dispatch_table_set_test.go",
         "legacy_command_golden_test.go",
+        "registration_request_only_test.go",
         "safe_state_reads_test.go",
         "scan_hash_test.go",
         "snapshot_query_test.go",

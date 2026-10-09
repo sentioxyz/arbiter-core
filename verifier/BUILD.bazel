@@ -36,6 +36,7 @@ go_test(
         "empty_scan_test.go",
         "historical_snapshot_query_adapter_test.go",
         "protocol_tables_test.go",
+        "registration_test.go",
         "registry_test.go",
         "scanner_test.go",
         "table_set_test.go",

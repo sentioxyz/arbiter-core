@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,8 +14,10 @@ import (
 
 // assertMirror pins a canonical Go mirror struct to its pb message: the set
 // of json tags must equal the set of proto field names. This is the same
-// freeze discipline as replay_wire_test.go, mechanized.
-func assertMirror(t *testing.T, goValue any, msg proto.Message) {
+// freeze discipline as replay_wire_test.go, mechanized. requestOnly names
+// proto fields that deliberately have no canonical Go mirror (they must never
+// enter replicated state); a Go tag of that name is itself an error.
+func assertMirror(t *testing.T, goValue any, msg proto.Message, requestOnly ...string) {
 	t.Helper()
 	goTags := map[string]bool{}
 	rt := reflect.TypeOf(goValue)
@@ -28,6 +31,13 @@ func assertMirror(t *testing.T, goValue any, msg proto.Message) {
 	fields := msg.ProtoReflect().Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
 		name := string(fields.Get(i).Name())
+		if slices.Contains(requestOnly, name) {
+			if goTags[name] {
+				t.Errorf("%s: request-only field %q must not have a Go mirror (it would enter replicated state)", rt.Name(), name)
+			}
+			delete(goTags, name)
+			continue
+		}
 		if !goTags[name] {
 			t.Errorf("%s: proto field %q has no Go mirror json tag", rt.Name(), name)
 		}
@@ -48,7 +58,7 @@ func TestArbiterMirrorsMatchProto(t *testing.T) {
 	assertMirror(t, arbiter.PartScan{}, &pb.PartScan{})
 	assertMirror(t, arbiter.ByteSideScanMsg{}, &pb.ByteSideScanMsg{})
 	assertMirror(t, arbiter.AnchorRef{}, &pb.AnchorRef{})
-	assertMirror(t, arbiter.NodeRegistration{}, &pb.NodeRegistration{})
+	assertMirror(t, arbiter.NodeRegistration{}, &pb.NodeRegistration{}, "features")
 	assertMirror(t, arbiter.SafePartMapping{}, &pb.SafePartMapping{})
 	assertMirror(t, arbiter.PromotionAck{}, &pb.PromotionAck{})
 	assertMirror(t, arbiter.CleanupAck{}, &pb.CleanupAck{})
