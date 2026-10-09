@@ -15,15 +15,26 @@ func TestClientLaneParamsValidate(t *testing.T) {
 }
 
 func TestConsensusParamsUpdateOmitsAbsentClientLanes(t *testing.T) {
-	b, _ := json.Marshal(ConsensusParamsUpdate{NetworkID: "n"})
-	var m map[string]any
-	_ = json.Unmarshal(b, &m)
-	if _, ok := m["client_lanes"]; ok {
+	b, err := json.Marshal(ConsensusParamsUpdate{NetworkID: "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var absent map[string]any
+	if err := json.Unmarshal(b, &absent); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := absent["client_lanes"]; ok {
 		t.Fatalf("absent client_lanes must be omitted from the canonical form: %s", b)
 	}
-	b, _ = json.Marshal(ConsensusParamsUpdate{NetworkID: "n", ClientLanes: &ClientLaneParams{MaxLanesPerAccount: 256}})
-	_ = json.Unmarshal(b, &m)
-	if got, ok := m["client_lanes"].(map[string]any); !ok || got["max_lanes_per_account"] != float64(256) {
+	b, err = json.Marshal(ConsensusParamsUpdate{NetworkID: "n", ClientLanes: &ClientLaneParams{MaxLanesPerAccount: 256}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var present map[string]any
+	if err := json.Unmarshal(b, &present); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := present["client_lanes"].(map[string]any); !ok || got["max_lanes_per_account"] != float64(256) {
 		t.Fatalf("client_lanes JSON = %s", b)
 	}
 }

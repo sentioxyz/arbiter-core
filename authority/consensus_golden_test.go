@@ -41,8 +41,14 @@ func TestNormalizeConsensusParamsUpdateClientLanes(t *testing.T) {
 	if err != nil || got.ClientLanes == params || *got.ClientLanes != *params {
 		t.Fatalf("normalised lanes %+v (%v): want an equal, independent copy", got.ClientLanes, err)
 	}
-	a, _ := ConsensusParamsUpdateHash(base)
-	b, _ := ConsensusParamsUpdateHash(withLanes)
+	a, err := ConsensusParamsUpdateHash(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ConsensusParamsUpdateHash(withLanes)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if a == b {
 		t.Fatal("client_lanes must be bound by the update hash")
 	}
