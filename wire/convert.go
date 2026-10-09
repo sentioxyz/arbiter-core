@@ -22,11 +22,11 @@ func mapSlice[I, O any](in []I, f func(I) O) []O {
 }
 
 func statementIDFromPB(m *pb.StatementID) arbiter.StatementID {
-	return arbiter.StatementID{ClientAccount: m.GetClientAccount(), ClientSeq: m.GetClientSeq(), ClientNonce: m.GetClientNonce()}
+	return arbiter.StatementID{ClientAccount: m.GetClientAccount(), ClientSeq: m.GetClientSeq(), ClientNonce: m.GetClientNonce(), ClientLane: m.GetClientLane()}
 }
 
 func statementIDToPB(v arbiter.StatementID) *pb.StatementID {
-	return &pb.StatementID{ClientAccount: v.ClientAccount, ClientSeq: v.ClientSeq, ClientNonce: v.ClientNonce}
+	return &pb.StatementID{ClientAccount: v.ClientAccount, ClientSeq: v.ClientSeq, ClientNonce: v.ClientNonce, ClientLane: v.ClientLane}
 }
 
 func EnvelopeFromPB(m *pb.StatementEnvelopeV2) arbiter.StatementEnvelope {

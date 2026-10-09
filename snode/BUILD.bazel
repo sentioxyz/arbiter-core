@@ -63,6 +63,7 @@ go_test(
         "protocol_tables_test.go",
         "recorded_bindings_test.go",
         "recreate_test.go",
+        "registration_test.go",
         "registry_test.go",
         "snode_test.go",
         "staged_backpressure_test.go",

@@ -109,6 +109,8 @@ type TableRegistrySnapshot struct {
 	Seeded       bool
 	Cursor       TableRegistryCursor
 	Incarnations []TableIncarnation
+	// ClientLanes is the committed client-lane parameter; nil until activation.
+	ClientLanes *arbiter.ClientLaneParams
 }
 
 // Live mirrors arbiter's TableRegistryView.Live: the newest incarnation of key
@@ -156,6 +158,12 @@ func TableRegistrySnapshotFromPB(m *pb.TableRegistrySnapshot) (TableRegistrySnap
 	if c := m.GetCursor(); c != nil {
 		out.Cursor = TableRegistryCursor{BlockNumber: c.GetBlockNumber(), BlockHash: c.GetBlockHash(), LogIndex: c.GetLogIndex(), BlockComplete: c.GetBlockComplete()}
 	}
+	if lanes := ClientLaneParamsFromPB(m.GetClientLanes()); lanes != nil {
+		if err := lanes.Validate(); err != nil {
+			return TableRegistrySnapshot{}, fmt.Errorf("table registry snapshot: %w", err)
+		}
+		out.ClientLanes = lanes
+	}
 	for i, inc := range m.GetIncarnations() {
 		if inc.GetSeq() != uint64(i)+1 {
 			return TableRegistrySnapshot{}, fmt.Errorf("table registry snapshot: incarnation %d has seq %d", i+1, inc.GetSeq())
@@ -196,6 +204,7 @@ func TableRegistrySnapshotToPB(s TableRegistrySnapshot) *pb.TableRegistrySnapsho
 		Params: TableRegistryParamsToPB(&params), Version: s.Version, Seeded: s.Seeded,
 		Cursor: &pb.TableRegistryCursor{BlockNumber: s.Cursor.BlockNumber, BlockHash: s.Cursor.BlockHash,
 			LogIndex: s.Cursor.LogIndex, BlockComplete: s.Cursor.BlockComplete},
+		ClientLanes: ClientLaneParamsToPB(s.ClientLanes),
 	}
 	for _, inc := range s.Incarnations {
 		out.Incarnations = append(out.Incarnations, &pb.TableIncarnation{

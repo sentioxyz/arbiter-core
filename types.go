@@ -11,11 +11,24 @@ import (
 	"strings"
 )
 
-// StatementCoord is the statement_id uniqueness coordinate: one statement
-// per (account, client_seq); client_nonce is NOT part of the key (§6.1).
+// StatementCoord is the statement_id uniqueness coordinate: one statement per
+// (account, lane, client_seq); client_nonce is NOT part of the key (§6.1).
+// Lane is empty for the legacy default lane.
 type StatementCoord struct {
 	Account   string `json:"account"`
+	Lane      string `json:"lane,omitempty"`
 	ClientSeq uint64 `json:"client_seq"`
+}
+
+// Subject is the accumulator key of the coordinate (housegate spec 2026-10-09
+// D12): the account for the legacy lane, "<account>:<lane>" for a client lane.
+// A legacy account is 0x + hex and never contains ':', so the two forms never
+// collide.
+func (c StatementCoord) Subject() string {
+	if c.Lane == "" {
+		return c.Account
+	}
+	return c.Account + ":" + c.Lane
 }
 
 // TablePartition addresses one partition of one logical table.
@@ -31,6 +44,33 @@ type TablePartition struct {
 // this string form is the cross-component linking id.
 func StatementIDString(clientAccount string, clientSeq uint64, clientNonce string) string {
 	return strings.ToLower(clientAccount) + ":" + strconv.FormatUint(clientSeq, 10) + ":" + clientNonce
+}
+
+// ClientLaneHexLen is the length of a client lane id: 8 random bytes in hex.
+const ClientLaneHexLen = 16
+
+// ValidClientLane reports whether lane is exactly 16 lowercase hex characters.
+func ValidClientLane(lane string) bool {
+	if len(lane) != ClientLaneHexLen {
+		return false
+	}
+	for i := 0; i < len(lane); i++ {
+		c := lane[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// StatementIDStringWithLane renders the canonical flat statement_id. An empty
+// lane renders the legacy three-segment form byte-identically, so every
+// historical _hg_row_id, partition root and state root is unchanged.
+func StatementIDStringWithLane(clientAccount, clientLane string, clientSeq uint64, clientNonce string) string {
+	if clientLane == "" {
+		return StatementIDString(clientAccount, clientSeq, clientNonce)
+	}
+	return strings.ToLower(clientAccount) + ":" + clientLane + ":" + strconv.FormatUint(clientSeq, 10) + ":" + clientNonce
 }
 
 // PartRef identifies a verified part by content commitment (design §8.1).
@@ -94,6 +134,8 @@ const (
 	// AdmissionCodeGapBudgetExceeded: the P0b K=64 open-range budget
 	// (arbiter-proto v0.2.0 append).
 	AdmissionCodeGapBudgetExceeded AdmissionCode = 8
+	// AdmissionCodeLaneBudgetExceeded: a new client lane above client_lanes.max_lanes_per_account (arbiter-proto client-lane append).
+	AdmissionCodeLaneBudgetExceeded AdmissionCode = 9
 )
 
 // NodeRole mirrors pb.NodeRole.
@@ -106,21 +148,23 @@ const (
 )
 
 // StatementID is the structured client-assigned statement identity
-// (uniqueness key = (client_account, client_seq); nonce is entropy, §6.1).
+// (uniqueness key = (client_account, client_lane, client_seq); nonce is
+// entropy, §6.1). ClientLane is empty for the legacy default lane.
 type StatementID struct {
 	ClientAccount string `json:"client_account"`
 	ClientSeq     uint64 `json:"client_seq"`
 	ClientNonce   string `json:"client_nonce"`
+	ClientLane    string `json:"client_lane,omitempty"`
 }
 
 // Flat renders the canonical flat statement_id string form.
 func (id StatementID) Flat() string {
-	return StatementIDString(id.ClientAccount, id.ClientSeq, id.ClientNonce)
+	return StatementIDStringWithLane(id.ClientAccount, id.ClientLane, id.ClientSeq, id.ClientNonce)
 }
 
 // Coord is the accumulator uniqueness coordinate (account normalized).
 func (id StatementID) Coord() StatementCoord {
-	return StatementCoord{Account: strings.ToLower(id.ClientAccount), ClientSeq: id.ClientSeq}
+	return StatementCoord{Account: strings.ToLower(id.ClientAccount), Lane: id.ClientLane, ClientSeq: id.ClientSeq}
 }
 
 // StatementEnvelope is the canonical Go form of pb.StatementEnvelopeV2 (the

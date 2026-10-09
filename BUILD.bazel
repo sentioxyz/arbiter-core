@@ -26,6 +26,9 @@ go_library(
 
 go_test(
     name = "arbiter-core_test",
-    srcs = ["types_test.go"],
+    srcs = [
+        "consensus_test.go",
+        "types_test.go",
+    ],
     embed = [":arbiter-core"],
 )

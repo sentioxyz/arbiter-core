@@ -13,6 +13,7 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
+	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
@@ -136,15 +137,22 @@ func New(cfg Config, d Deps) (*Role, error) {
 	return r, nil
 }
 
+// registrationRequest is the RegisterNode request this SNode sends. Features
+// are request-only: the leader records them outside replicated state.
+func registrationRequest(nodeID string) *pb.NodeRegistration {
+	return &pb.NodeRegistration{
+		NodeId:   nodeID,
+		Roles:    []pb.NodeRole{pb.NodeRole_NODE_ROLE_SNODE},
+		Features: arbiter.LocalNodeFeatures(),
+	}
+}
+
 func (r *Role) Register(ctx context.Context) error {
 	if err := r.ensureProtocolTables(ctx); err != nil {
 		return err
 	}
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, &pb.NodeRegistration{
-			NodeId: r.cfg.NodeID,
-			Roles:  []pb.NodeRole{pb.NodeRole_NODE_ROLE_SNODE},
-		})
+		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, registrationRequest(r.cfg.NodeID))
 		return err
 	}); err != nil {
 		return fmt.Errorf("register snode: %w", err)

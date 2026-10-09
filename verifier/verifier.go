@@ -110,17 +110,23 @@ func (r *Role) pinned() ddl.Pinned {
 	}
 }
 
+// registrationRequest is the RegisterNode request this verifier sends.
+func registrationRequest(replicaID string, pub ed25519.PublicKey) *pb.NodeRegistration {
+	return &pb.NodeRegistration{
+		NodeId:        replicaID,
+		Roles:         []pb.NodeRole{pb.NodeRole_NODE_ROLE_VERIFIER},
+		Ed25519Pubkey: pub,
+		Features:      arbiter.LocalNodeFeatures(),
+	}
+}
+
 func (r *Role) Register(ctx context.Context) error {
 	if err := r.ensureProtocolTables(ctx); err != nil {
 		return err
 	}
 	pub := r.priv.Public().(ed25519.PublicKey)
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, &pb.NodeRegistration{
-			NodeId:        r.cfg.ReplicaID,
-			Roles:         []pb.NodeRole{pb.NodeRole_NODE_ROLE_VERIFIER},
-			Ed25519Pubkey: pub,
-		})
+		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, registrationRequest(r.cfg.ReplicaID, pub))
 		return err
 	}); err != nil {
 		return fmt.Errorf("register verifier: %w", err)
