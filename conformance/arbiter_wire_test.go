@@ -67,7 +67,8 @@ func TestEnumNumbersMatchProto(t *testing.T) {
 		int32(arbiter.AdmissionCodeInvalidSignature) != int32(pb.AdmissionCode_ADMISSION_CODE_INVALID_SIGNATURE) ||
 		int32(arbiter.AdmissionCodeInvalidProof) != int32(pb.AdmissionCode_ADMISSION_CODE_INVALID_PROOF) ||
 		int32(arbiter.AdmissionCodeMalformed) != int32(pb.AdmissionCode_ADMISSION_CODE_MALFORMED) ||
-		int32(arbiter.AdmissionCodeGapBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_GAP_BUDGET_EXCEEDED) {
+		int32(arbiter.AdmissionCodeGapBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_GAP_BUDGET_EXCEEDED) ||
+		int32(arbiter.AdmissionCodeLaneBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_LANE_BUDGET_EXCEEDED) {
 		t.Fatal("AdmissionCode Go constants drifted from pb enum numbers")
 	}
 	if int32(arbiter.NodeRoleUnspecified) != int32(pb.NodeRole_NODE_ROLE_UNSPECIFIED) ||
