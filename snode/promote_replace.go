@@ -55,8 +55,9 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 	// shadow root diverges and we reject BEFORE the atomic REPLACE, so an
 	// unverified part can never reach hg_safe. The failure propagates (no ack);
 	// the orchestrator resends, and on retry the now-visible extra part makes
-	// candidatesCoverUnsafePartition false, so the per-part hardlink path runs
-	// and attaches only the candidates — the gate then passes (self-healing).
+	// candidatesCoverUnsafePartition false, so the subset path attaches the
+	// partition and drops every non-candidate part — the gate then passes
+	// (self-healing).
 	post, err := lthashCombineHexAll(cmd.BasePartitionRoot, candidateHashes(cmd))
 	if err != nil {
 		return "", safePartMappings{}, err
@@ -246,22 +247,19 @@ func (r *Role) prepareShadow(ctx context.Context, cmd arbiter.PromoteSafePartiti
 	return r.exec(ctx, fmt.Sprintf("ALTER TABLE %s ATTACH PARTITION %s FROM %s", promote, partition, safe))
 }
 
+// attachCandidateParts adds the candidates to the shadow through ClickHouse
+// statements only. When the candidates are exactly the active parts of the
+// hg_unsafe partition it attaches the whole partition; otherwise the candidates
+// are a strict subset and attachCandidateSubset attaches the partition and
+// drops every part that is not a candidate.
 func (r *Role) attachCandidateParts(ctx context.Context, cmd arbiter.PromoteSafePartition, sch payloadexec.TableSchema, table, promote, partitionSQL string) error {
+	unsafe := r.cfg.UnsafeDatabase + "." + table
 	if ok, err := r.candidatesCoverUnsafePartition(ctx, cmd, sch, table); err != nil {
 		return err
 	} else if ok {
-		unsafe := r.cfg.UnsafeDatabase + "." + table
 		return r.exec(ctx, fmt.Sprintf("ALTER TABLE %s ATTACH PARTITION %s FROM %s", promote, partitionSQL, unsafe))
 	}
-	for _, cp := range cmd.CandidateParts {
-		if cp.PartName == "" {
-			return fmt.Errorf("candidate part for %s/%s has empty part_name", cp.TableID, cp.PartitionID)
-		}
-		if err := r.attachCandidatePart(ctx, table, promote, cp.PartName); err != nil {
-			return err
-		}
-	}
-	return nil
+	return r.attachCandidateSubset(ctx, cmd, sch, table, promote, unsafe, partitionSQL)
 }
 
 func (r *Role) candidatesCoverUnsafePartition(ctx context.Context, cmd arbiter.PromoteSafePartition, sch payloadexec.TableSchema, table string) (bool, error) {
