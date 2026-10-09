@@ -58,6 +58,13 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 		}
 		cmd.TableRegistry = &registry
 	}
+	if cmd.ClientLanes != nil {
+		lanes := *cmd.ClientLanes
+		if err := lanes.Validate(); err != nil {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
+		}
+		cmd.ClientLanes = &lanes
+	}
 	return cmd, nil
 }
 

@@ -50,3 +50,33 @@ func TestDispatchedStatementIDIsOpaque(t *testing.T) {
 		t.Fatal("a lane-stripped flat id must derive different row ids")
 	}
 }
+
+func TestClientLaneParamsWire(t *testing.T) {
+	if ClientLaneParamsFromPB(nil) != nil || ClientLaneParamsToPB(nil) != nil {
+		t.Fatal("absent params must stay absent")
+	}
+	u := legacyGoldenUpdate()
+	u.ClientLanes = &arbiter.ClientLaneParams{MaxLanesPerAccount: 256}
+	got := ConsensusParamsUpdateFromPB(ConsensusParamsUpdateToPB(u))
+	if got.ClientLanes == nil || *got.ClientLanes != *u.ClientLanes || got.ClientLanes == u.ClientLanes {
+		t.Fatalf("update round trip = %+v", got.ClientLanes)
+	}
+}
+
+func TestTableRegistrySnapshotCarriesClientLanes(t *testing.T) {
+	s := TableRegistrySnapshot{Params: arbiter.TableRegistryParams{ChainID: 1, DatabasesContract: "0x00000000000000000000000000000000000000d1", ActivationBlock: 1, Confirmation: arbiter.TableRegistryConfirmationSafe}, Version: 3}
+	got, err := TableRegistrySnapshotFromPB(TableRegistrySnapshotToPB(s))
+	if err != nil || got.ClientLanes != nil {
+		t.Fatalf("disabled lanes: %+v, %v", got.ClientLanes, err)
+	}
+	s.ClientLanes = &arbiter.ClientLaneParams{MaxLanesPerAccount: 256}
+	got, err = TableRegistrySnapshotFromPB(TableRegistrySnapshotToPB(s))
+	if err != nil || got.ClientLanes == nil || got.ClientLanes.MaxLanesPerAccount != 256 {
+		t.Fatalf("enabled lanes: %+v, %v", got.ClientLanes, err)
+	}
+	m := TableRegistrySnapshotToPB(s)
+	m.ClientLanes.MaxLanesPerAccount = 0
+	if _, err := TableRegistrySnapshotFromPB(m); err == nil {
+		t.Fatal("a snapshot carrying client_lanes with max_lanes_per_account 0 must be refused")
+	}
+}

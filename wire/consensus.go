@@ -20,6 +20,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		ExpectedPromotionSeq:          m.GetExpectedPromotionSeq(),
 		ArtifactDispositionCapability: m.GetArtifactDispositionCapability(),
 		TableRegistry:                 TableRegistryParamsFromPB(m.GetTableRegistry()),
+		ClientLanes:                   ClientLaneParamsFromPB(m.GetClientLanes()),
 	}
 }
 
@@ -36,6 +37,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		ExpectedPromotionSeq:          v.ExpectedPromotionSeq,
 		ArtifactDispositionCapability: v.ArtifactDispositionCapability,
 		TableRegistry:                 TableRegistryParamsToPB(v.TableRegistry),
+		ClientLanes:                   ClientLaneParamsToPB(v.ClientLanes),
 	}
 }
 
@@ -56,6 +58,23 @@ func TableRegistryParamsToPB(v *arbiter.TableRegistryParams) *pb.TableRegistryPa
 	}
 	return &pb.TableRegistryParams{ChainId: v.ChainID, DatabasesContract: v.DatabasesContract,
 		SiIndexerId: v.SIIndexerID, ActivationBlock: v.ActivationBlock, Confirmation: v.Confirmation}
+}
+
+// ClientLaneParamsFromPB copies the transport fields; validation belongs to
+// authority normalisation. A missing message decodes to nil.
+func ClientLaneParamsFromPB(m *pb.ClientLaneParams) *arbiter.ClientLaneParams {
+	if m == nil {
+		return nil
+	}
+	return &arbiter.ClientLaneParams{MaxLanesPerAccount: m.GetMaxLanesPerAccount()}
+}
+
+// ClientLaneParamsToPB returns an independent transport message.
+func ClientLaneParamsToPB(v *arbiter.ClientLaneParams) *pb.ClientLaneParams {
+	if v == nil {
+		return nil
+	}
+	return &pb.ClientLaneParams{MaxLanesPerAccount: v.MaxLanesPerAccount}
 }
 
 // L2BlockRefFromPB copies the transport fields; a missing ref decodes to nil.

@@ -26,3 +26,24 @@ func TestConsensusParamsUpdateHashIsFrozen(t *testing.T) {
 		t.Fatalf("ConsensusParamsUpdateHash = %s, want %s", got, want)
 	}
 }
+
+func TestNormalizeConsensusParamsUpdateClientLanes(t *testing.T) {
+	base := arbiter.ConsensusParamsUpdate{NetworkID: "n", GenesisSnapshotID: "g", PreviousParamsDigest: "d",
+		AuthorityAddresses: []string{"0x9ef3a259d1d87c864431cab5ed5f6578ad5ad705"}, MaxWriters: 1}
+	withLanes := base
+	withLanes.ClientLanes = &arbiter.ClientLaneParams{}
+	if _, err := NormalizeConsensusParamsUpdate(withLanes); err == nil {
+		t.Fatal("max_lanes_per_account 0 must be refused")
+	}
+	params := &arbiter.ClientLaneParams{MaxLanesPerAccount: 256}
+	withLanes.ClientLanes = params
+	got, err := NormalizeConsensusParamsUpdate(withLanes)
+	if err != nil || got.ClientLanes == params || *got.ClientLanes != *params {
+		t.Fatalf("normalised lanes %+v (%v): want an equal, independent copy", got.ClientLanes, err)
+	}
+	a, _ := ConsensusParamsUpdateHash(base)
+	b, _ := ConsensusParamsUpdateHash(withLanes)
+	if a == b {
+		t.Fatal("client_lanes must be bound by the update hash")
+	}
+}
