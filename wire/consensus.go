@@ -21,6 +21,8 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		ArtifactDispositionCapability: m.GetArtifactDispositionCapability(),
 		TableRegistry:                 TableRegistryParamsFromPB(m.GetTableRegistry()),
 		ClientLanes:                   ClientLaneParamsFromPB(m.GetClientLanes()),
+		SIIndexers:                    SIIndexerEntriesFromPB(m.GetSiIndexers()),
+		Verifiers:                     VerifierEntriesFromPB(m.GetVerifiers()),
 	}
 }
 
@@ -38,6 +40,8 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		ArtifactDispositionCapability: v.ArtifactDispositionCapability,
 		TableRegistry:                 TableRegistryParamsToPB(v.TableRegistry),
 		ClientLanes:                   ClientLaneParamsToPB(v.ClientLanes),
+		SiIndexers:                    SIIndexerEntriesToPB(v.SIIndexers),
+		Verifiers:                     VerifierEntriesToPB(v.Verifiers),
 	}
 }
 
@@ -109,4 +113,44 @@ func L2EventRefToPB(v *arbiter.L2EventRef) *pb.L2EventRef {
 	}
 	return &pb.L2EventRef{BlockNumber: v.BlockNumber, BlockHash: v.BlockHash,
 		LogIndex: v.LogIndex, TxHash: v.TxHash}
+}
+
+// SIIndexerEntriesFromPB copies a repeated SIIndexerEntry; validation belongs to
+// authority normalisation. An empty list decodes to nil.
+func SIIndexerEntriesFromPB(ms []*pb.SIIndexerEntry) []arbiter.SIIndexerEntry {
+	return mapSlice(ms, func(m *pb.SIIndexerEntry) arbiter.SIIndexerEntry {
+		return arbiter.SIIndexerEntry{IndexerID: m.GetIndexerId(), ActivationBlock: m.GetActivationBlock(),
+			Signer: m.GetSigner(), SNodeNodeID: m.GetSnodeNodeId(), EnrollmentJWS: m.GetEnrollmentJws()}
+	})
+}
+
+// SIIndexerEntriesToPB returns independent transport messages (nil for an empty list).
+func SIIndexerEntriesToPB(v []arbiter.SIIndexerEntry) []*pb.SIIndexerEntry {
+	return mapSlice(v, func(e arbiter.SIIndexerEntry) *pb.SIIndexerEntry {
+		return &pb.SIIndexerEntry{IndexerId: e.IndexerID, ActivationBlock: e.ActivationBlock,
+			Signer: e.Signer, SnodeNodeId: e.SNodeNodeID, EnrollmentJws: e.EnrollmentJWS}
+	})
+}
+
+// VerifierEntriesFromPB copies a repeated VerifierEntry including each key's bytes;
+// an empty list and an empty key decode to nil.
+func VerifierEntriesFromPB(ms []*pb.VerifierEntry) []arbiter.VerifierEntry {
+	return mapSlice(ms, func(m *pb.VerifierEntry) arbiter.VerifierEntry {
+		return arbiter.VerifierEntry{NodeID: m.GetNodeId(), Ed25519Pubkey: cloneBytes(m.GetEd25519Pubkey())}
+	})
+}
+
+// VerifierEntriesToPB returns independent transport messages.
+func VerifierEntriesToPB(v []arbiter.VerifierEntry) []*pb.VerifierEntry {
+	return mapSlice(v, func(e arbiter.VerifierEntry) *pb.VerifierEntry {
+		return &pb.VerifierEntry{NodeId: e.NodeID, Ed25519Pubkey: cloneBytes(e.Ed25519Pubkey)}
+	})
+}
+
+// cloneBytes copies b; an empty slice becomes nil, the canonical empty form.
+func cloneBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return append([]byte(nil), b...)
 }

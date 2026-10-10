@@ -19,6 +19,10 @@ const (
 type SeedLegacyTables struct {
 	AtBlock arbiter.L2BlockRef
 	Tables  []arbiter.LegacyTable
+	// IndexerID names the SI indexer whose Legacy tables the seed records
+	// (housegate spec 2026-10-10 §6.3). Nil is the founding indexer's seed,
+	// the only form before the signed-claims activation; &0 is indexer 0.
+	IndexerID *uint64
 }
 
 // AddTable mirrors pb.AddTableCmd.
@@ -28,6 +32,20 @@ type AddTable struct {
 	SchemaVersion       uint32
 	SchemaHash          string
 	SchemaJSON          string
+	// OwnerIndexerID is the SI indexer hosting the database at the
+	// TableCreated block (spec D4): nil before the signed-claims activation,
+	// required after it.
+	OwnerIndexerID *uint64
+}
+
+// cloneUint64 copies an optional value; nil stays nil. Converters read the
+// generated pointer field, never its getter, which answers 0 for absent.
+func cloneUint64(p *uint64) *uint64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 // RetireTables mirrors pb.RetireTablesCmd.

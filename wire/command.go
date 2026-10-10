@@ -250,14 +250,15 @@ func Encode(c Command) ([]byte, error) {
 	if c.SeedLegacyTables != nil {
 		set++
 		out.Cmd = &pb.RaftCommand_SeedLegacyTables{SeedLegacyTables: &pb.SeedLegacyTablesCmd{
-			AtBlock: L2BlockRefToPB(&c.SeedLegacyTables.AtBlock), Tables: legacyTablesToPB(c.SeedLegacyTables.Tables)}}
+			AtBlock: L2BlockRefToPB(&c.SeedLegacyTables.AtBlock), Tables: legacyTablesToPB(c.SeedLegacyTables.Tables),
+			IndexerId: cloneUint64(c.SeedLegacyTables.IndexerID)}}
 	}
 	if c.AddTable != nil {
 		set++
 		a := c.AddTable
 		out.Cmd = &pb.RaftCommand_AddTable{AddTable: &pb.AddTableCmd{DatabaseId: a.DatabaseID, TableId: a.TableID,
 			Created: L2EventRefToPB(&a.Created), Schema: L2EventRefToPB(&a.Schema), SchemaVersion: a.SchemaVersion,
-			SchemaHash: a.SchemaHash, SchemaJson: a.SchemaJSON}}
+			SchemaHash: a.SchemaHash, SchemaJson: a.SchemaJSON, OwnerIndexerId: cloneUint64(a.OwnerIndexerID)}}
 	}
 	if c.RetireTables != nil {
 		set++
@@ -333,12 +334,14 @@ func Decode(b []byte) (Command, error) {
 
 	case *pb.RaftCommand_SeedLegacyTables:
 		m := cmd.SeedLegacyTables
-		return Command{SeedLegacyTables: &SeedLegacyTables{AtBlock: l2BlockRefValue(m.GetAtBlock()), Tables: legacyTablesFromPB(m.GetTables())}}, nil
+		return Command{SeedLegacyTables: &SeedLegacyTables{AtBlock: l2BlockRefValue(m.GetAtBlock()),
+			Tables: legacyTablesFromPB(m.GetTables()), IndexerID: cloneUint64(m.IndexerId)}}, nil
 	case *pb.RaftCommand_AddTable:
 		m := cmd.AddTable
 		return Command{AddTable: &AddTable{DatabaseID: m.GetDatabaseId(), TableID: m.GetTableId(),
 			Created: l2EventRefValue(m.GetCreated()), Schema: l2EventRefValue(m.GetSchema()),
-			SchemaVersion: m.GetSchemaVersion(), SchemaHash: m.GetSchemaHash(), SchemaJSON: m.GetSchemaJson()}}, nil
+			SchemaVersion: m.GetSchemaVersion(), SchemaHash: m.GetSchemaHash(), SchemaJSON: m.GetSchemaJson(),
+			OwnerIndexerID: cloneUint64(m.OwnerIndexerId)}}, nil
 	case *pb.RaftCommand_RetireTables:
 		m := cmd.RetireTables
 		return Command{RetireTables: &RetireTables{DatabaseID: m.GetDatabaseId(),
