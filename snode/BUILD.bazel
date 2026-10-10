@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "snode",
     srcs = [
+        "claims.go",
         "cleanup.go",
         "config.go",
         "converge.go",
@@ -48,6 +49,7 @@ go_test(
     name = "snode_test",
     srcs = [
         "ch_test.go",
+        "claims_test.go",
         "cleanup_test.go",
         "config_external_test.go",
         "converge_test.go",
@@ -79,6 +81,7 @@ go_test(
     deps = [
         "//:arbiter-core",
         "//authority",
+        "//authority/authoritytest",
         "//dataplane",
         "//dataplane/dastore",
         "//dataplane/ddl",

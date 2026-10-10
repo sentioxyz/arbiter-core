@@ -13,7 +13,6 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
-	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
@@ -34,6 +33,16 @@ type Deps struct {
 	// which runs it). Nil keeps the role on its configured tables exactly as
 	// before the dynamic table set.
 	Registry dataplane.RegistryView
+	// ClaimSigner is the indexer's on-chain signer key (housegate spec
+	// 2026-10-10 D6). Set, the SNode signs RegisterNode, MarkActive, RCs,
+	// promotion and cleanup acknowledgements and purge reports, keeps a
+	// durable registration_seq, advertises signed_claims_v1, and serves only
+	// Config.IndexerID's tables (spec §8). Nil is the legacy unsigned SNode,
+	// byte for byte, which serves every table.
+	ClaimSigner *authority.Signer
+	// Now is the clock of the registration_seq floor and of token issue
+	// times; nil is time.Now. Tests inject it.
+	Now func() time.Time
 }
 
 // contextMutex is a zero-value mutex whose acquisition can be canceled.
@@ -89,17 +98,26 @@ type Role struct {
 	ensureFn func(context.Context, ddl.Mode) error
 	// tables is the table-set reconciler; nil when the host owns DDL.
 	tables *tableset.Reconciler
+	// genesisID is the genesis snapshot id signed messages bind; empty without a claim signer.
+	genesisID string
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("snode config: %w", err)
 	}
+	if len(cfg.Tables) == 0 && (d.Registry == nil || d.ClaimSigner == nil) {
+		return nil, errors.New("snode config: at least one table schema is required; only a signing SNode that follows the table registry may own no genesis table")
+	}
 	if d.Client == nil {
 		return nil, fmt.Errorf("snode: dataplane client is required")
 	}
 	if d.Logger == nil {
 		d.Logger = slog.Default()
+	}
+	genesisID, err := claimGenesisSnapshotID(cfg, d.ClaimSigner != nil)
+	if err != nil {
+		return nil, fmt.Errorf("snode config: %w", err)
 	}
 	st, err := openStateStore(cfg.StateDir)
 	if err != nil {
@@ -115,13 +133,15 @@ func New(cfg Config, d Deps) (*Role, error) {
 		state:     st,
 		journal:   journal,
 		authority: authorityValidator(cfg.AuthorityAddresses),
+		genesisID: genesisID,
 	}
 	r.ensureFn = r.ensureProtocolTablesMode
 	if cfg.protocolTables != ddl.ModeOff && d.Conn != nil {
 		tables, err := tableset.New(tableset.Config{
 			Pinned: r.pinned(), Genesis: cfg.Tables, Interval: cfg.ProtocolTablesReconcile, SweepDecommissioned: true,
+			Owner: r.ownerFilter(),
 		}, tableset.Deps{
-			Conn: d.Conn, Registry: d.Registry, Arbiter: d.Client,
+			Conn: d.Conn, Registry: d.Registry, Arbiter: r.purgeArbiter(),
 			Quiescent: r.tableQuiescent, Dropped: r.forgetDroppedTable, Logger: d.Logger,
 		})
 		if err != nil {
@@ -134,31 +154,34 @@ func New(cfg Config, d Deps) (*Role, error) {
 		}
 		return nil, errors.New("snode: following the table registry requires a clickhouse connection")
 	}
+	if d.ClaimSigner != nil {
+		d.Logger.Info("snode signs its arbiter messages with the indexer key",
+			"node_id", cfg.NodeID, "indexer_id", cfg.IndexerID, "signer", d.ClaimSigner.Address(),
+			"network_id", cfg.NetworkID, "genesis_snapshot_id", genesisID)
+	}
 	return r, nil
 }
 
-// registrationRequest is the RegisterNode request this SNode sends. Features
-// are request-only: the leader records them outside replicated state.
-func registrationRequest(nodeID string) *pb.NodeRegistration {
-	return &pb.NodeRegistration{
-		NodeId:   nodeID,
-		Roles:    []pb.NodeRole{pb.NodeRole_NODE_ROLE_SNODE},
-		Features: arbiter.LocalNodeFeatures(),
-	}
-}
-
+// Register registers this SNode and marks it active. With a claim signer both
+// requests carry one durable registration_seq and the indexer key's
+// signatures; WithLeaderRetry resends the identical requests, so a retry
+// after an uncertain commit repeats the same seq.
 func (r *Role) Register(ctx context.Context) error {
 	if err := r.ensureProtocolTables(ctx); err != nil {
 		return err
 	}
+	reg, mark, err := r.registrationRequests()
+	if err != nil {
+		return fmt.Errorf("register snode: %w", err)
+	}
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, registrationRequest(r.cfg.NodeID))
+		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, reg)
 		return err
 	}); err != nil {
 		return fmt.Errorf("register snode: %w", err)
 	}
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewMembershipClient(conn).MarkActive(ctx, &pb.NodeRef{NodeId: r.cfg.NodeID})
+		_, err := pb.NewMembershipClient(conn).MarkActive(ctx, mark)
 		return err
 	}); err != nil {
 		return fmt.Errorf("mark snode active: %w", err)
@@ -172,6 +195,9 @@ func (r *Role) Register(ctx context.Context) error {
 // them in unsafe_latest mode (rewriter.StorageIntegrityReadState); pass the
 // Role straight into housegate.Options.StorageIntegrityReadState.
 func (r *Role) PromotedUnsafeParts(tableID string) ([]string, error) {
+	if err := r.requireOwned(tableID); err != nil {
+		return nil, err
+	}
 	return r.state.PromotedUnsafeParts(tableID)
 }
 

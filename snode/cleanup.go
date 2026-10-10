@@ -20,6 +20,11 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	if _, err := r.authority.AuthorizeCleanup(cmd, jws); err != nil {
 		return fmt.Errorf("cleanup authority: %w", err)
 	}
+	if err := r.requireOwned(cmd.TableID); err != nil {
+		r.d.Logger.Warn("ignoring a cleanup for a table this SNode does not own",
+			"promotion_seq", cmd.PromotionSeq, "table", cmd.TableID, "err", err)
+		return nil
+	}
 	table := CHTableName(cmd.TableID)
 	for _, p := range cmd.Parts {
 		if p.PartName == "" {
@@ -46,8 +51,12 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 }
 
 func (r *Role) sendCleanupAck(ctx context.Context, ack arbiter.CleanupAck) error {
+	req, err := r.cleanupAckRequest(ack)
+	if err != nil {
+		return err
+	}
 	return r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewPromotionGatewayClient(conn).AckCleanup(ctx, wire.CleanupAckToPB(ack))
+		_, err := pb.NewPromotionGatewayClient(conn).AckCleanup(ctx, req)
 		return err
 	})
 }

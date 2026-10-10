@@ -64,6 +64,9 @@ type localState struct {
 	// makes the read-state port fail closed until retry reconciliation either
 	// publishes or recognizes and finalizes the already-published partition.
 	PromotionIntents map[string]promotionIntent `json:"promotion_intents,omitempty"`
+	// RegistrationSeq is the last registration_seq this SNode reserved
+	// (housegate spec 2026-10-10 §6.5); see NextRegistrationSeq.
+	RegistrationSeq uint64 `json:"registration_seq,omitempty"`
 }
 
 type stateStore struct {
@@ -446,6 +449,23 @@ func (st *stateStore) persistStateLocked(next localState) error {
 	return nil
 }
 
+// NextRegistrationSeq reserves the registration_seq of the next Register
+// call: max(last reserved + 1, nowMillis). It is durable (temp file, fsync,
+// rename, directory fsync) before it is returned, so a crash after sending
+// never reuses it, and the clock floor keeps it above every earlier
+// registration even when state.json was lost (CONTRACT §3a).
+func (st *stateStore) NextRegistrationSeq(nowMillis uint64) (uint64, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	next := max(st.s.RegistrationSeq+1, nowMillis)
+	n := cloneLocalState(st.s)
+	n.RegistrationSeq = next
+	if err := st.persistStateLocked(n); err != nil {
+		return 0, fmt.Errorf("persist registration_seq: %w", err)
+	}
+	return next, nil
+}
+
 func cloneLocalState(s localState) localState {
 	next := localState{
 		Watermarks:          maps.Clone(s.Watermarks),
@@ -456,6 +476,7 @@ func cloneLocalState(s localState) localState {
 		IntakeParts:         maps.Clone(s.IntakeParts),
 		PromotedUnsafeParts: make(map[string][]string, len(s.PromotedUnsafeParts)),
 		PromotionIntents:    make(map[string]promotionIntent, len(s.PromotionIntents)),
+		RegistrationSeq:     s.RegistrationSeq,
 	}
 	for k, parts := range s.PromotedUnsafeParts {
 		next.PromotedUnsafeParts[k] = slices.Clone(parts)

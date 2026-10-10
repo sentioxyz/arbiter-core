@@ -16,6 +16,14 @@ func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jw
 	if _, err := r.authority.AuthorizePromotion(cmd, jws); err != nil {
 		return fmt.Errorf("promote authority: %w", err)
 	}
+	if err := r.requireOwned(cmd.TableID); err != nil {
+		// A leader that has not committed the signed-claims activation
+		// broadcasts to every SNode; only the owner acts, so a base-CAS
+		// refusal from this node can never consume another owner's promotion.
+		r.d.Logger.Warn("ignoring a promotion for a table this SNode does not own",
+			"promotion_seq", cmd.PromotionSeq, "table", cmd.TableID, "err", err)
+		return nil
+	}
 	k := partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}
 	mu := r.promotionLock(k)
 	mu.Lock()
@@ -127,8 +135,12 @@ func (r *Role) finishAppliedPromotion(ctx context.Context, k partitionKey, cmd a
 }
 
 func (r *Role) sendAck(ctx context.Context, ack arbiter.PromotionAck) error {
+	req, err := r.promotionAckRequest(ack)
+	if err != nil {
+		return err
+	}
 	return r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewPromotionGatewayClient(conn).AckPromotion(ctx, wire.PromotionAckToPB(ack))
+		_, err := pb.NewPromotionGatewayClient(conn).AckPromotion(ctx, req)
 		return err
 	})
 }

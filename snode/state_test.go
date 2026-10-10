@@ -307,3 +307,31 @@ func testAccumulatorHexS(t *testing.T, seed string) string {
 	h.Add([]byte(seed))
 	return "0x" + hex.EncodeToString(h.Bytes())
 }
+
+func TestStateStore_RegistrationSeqIsDurableAndSurvivesEveryTransition(t *testing.T) {
+	dir := t.TempDir()
+	st, err := openStateStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.NextRegistrationSeq(100); err != nil || got != 100 {
+		t.Fatalf("first = %d, %v: want the clock floor", got, err)
+	}
+	if got, err := st.NextRegistrationSeq(50); err != nil || got != 101 {
+		t.Fatalf("second = %d, %v: a slower clock must still advance", got, err)
+	}
+	// RecordAck rebuilds the whole state through cloneLocalState: the seq
+	// must survive it.
+	k := partitionKey{Table: "db.t", Partition: "p0"}
+	ack := arbiter.PromotionAck{NodeID: "s1", PromotionSeq: 7, TableID: "db.t", PartitionID: "p0", Applied: true}
+	if err := st.RecordAck(k, 7, ack, "0xbase", "snap-7"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openStateStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := reopened.NextRegistrationSeq(0); err != nil || got != 102 {
+		t.Fatalf("after reopen = %d, %v: want 102", got, err)
+	}
+}
