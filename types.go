@@ -136,6 +136,8 @@ const (
 	AdmissionCodeGapBudgetExceeded AdmissionCode = 8
 	// AdmissionCodeLaneBudgetExceeded: a new client lane above client_lanes.max_lanes_per_account (arbiter-proto client-lane append).
 	AdmissionCodeLaneBudgetExceeded AdmissionCode = 9
+	// AdmissionCodeSourceUnavailable: the target's owner SNode is not registered and Active (housegate spec 2026-10-10 §6.4); nothing changed, retryable.
+	AdmissionCodeSourceUnavailable AdmissionCode = 10
 )
 
 // NodeRole mirrors pb.NodeRole.
@@ -281,6 +283,12 @@ type NodeRegistration struct {
 	Roles         []NodeRole `json:"roles"`
 	Ed25519Pubkey []byte     `json:"ed25519_pubkey"`
 	DialAddr      string     `json:"dial_addr,omitempty"`
+	// RegistrationSeq orders one node's registrations once signed claims are
+	// active (housegate spec 2026-10-10 §6.5): Apply accepts only a value
+	// above the last one it applied for the node. It is part of the signed
+	// body. Zero (omitted) keeps every pre-activation registration and its
+	// canonical form byte-identical.
+	RegistrationSeq uint64 `json:"registration_seq,omitempty"`
 }
 
 // SafePartMapping records where a promoted part landed in hg_safe.

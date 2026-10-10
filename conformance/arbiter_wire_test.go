@@ -54,16 +54,20 @@ func TestArbiterMirrorsMatchProto(t *testing.T) {
 	assertMirror(t, arbiter.StatementEnvelope{}, &pb.StatementEnvelopeV2{})
 	assertMirror(t, arbiter.CandidatePart{}, &pb.CandidatePart{})
 	assertMirror(t, arbiter.PartitionLtHashSum{}, &pb.PartitionLtHashSum{})
-	assertMirror(t, arbiter.RCRecord{}, &pb.RCRecord{})
+	// source_jws signs the canonical body; it rides beside it in RegisterRCCmd.
+	assertMirror(t, arbiter.RCRecord{}, &pb.RCRecord{}, "source_jws")
 	assertMirror(t, arbiter.PartScan{}, &pb.PartScan{})
 	assertMirror(t, arbiter.ByteSideScanMsg{}, &pb.ByteSideScanMsg{})
 	assertMirror(t, arbiter.AnchorRef{}, &pb.AnchorRef{})
-	assertMirror(t, arbiter.NodeRegistration{}, &pb.NodeRegistration{}, "features")
+	// registration_seq is canonical (signed); the signatures and features are not.
+	assertMirror(t, arbiter.NodeRegistration{}, &pb.NodeRegistration{}, "features", "signer_jws", "ed25519_signature")
 	assertMirror(t, arbiter.SafePartMapping{}, &pb.SafePartMapping{})
-	assertMirror(t, arbiter.PromotionAck{}, &pb.PromotionAck{})
-	assertMirror(t, arbiter.CleanupAck{}, &pb.CleanupAck{})
+	assertMirror(t, arbiter.PromotionAck{}, &pb.PromotionAck{}, "source_jws")
+	assertMirror(t, arbiter.CleanupAck{}, &pb.CleanupAck{}, "source_jws")
 	assertMirror(t, arbiter.TableRegistryParams{}, &pb.TableRegistryParams{})
 	assertMirror(t, arbiter.ClientLaneParams{}, &pb.ClientLaneParams{})
+	assertMirror(t, arbiter.SIIndexerEntry{}, &pb.SIIndexerEntry{})
+	assertMirror(t, arbiter.VerifierEntry{}, &pb.VerifierEntry{})
 	assertMirror(t, arbiter.L2BlockRef{}, &pb.L2BlockRef{})
 	assertMirror(t, arbiter.L2EventRef{}, &pb.L2EventRef{})
 	assertMirror(t, arbiter.LegacyTable{}, &pb.LegacyTable{})
@@ -79,7 +83,8 @@ func TestEnumNumbersMatchProto(t *testing.T) {
 		int32(arbiter.AdmissionCodeInvalidProof) != int32(pb.AdmissionCode_ADMISSION_CODE_INVALID_PROOF) ||
 		int32(arbiter.AdmissionCodeMalformed) != int32(pb.AdmissionCode_ADMISSION_CODE_MALFORMED) ||
 		int32(arbiter.AdmissionCodeGapBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_GAP_BUDGET_EXCEEDED) ||
-		int32(arbiter.AdmissionCodeLaneBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_LANE_BUDGET_EXCEEDED) {
+		int32(arbiter.AdmissionCodeLaneBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_LANE_BUDGET_EXCEEDED) ||
+		int32(arbiter.AdmissionCodeSourceUnavailable) != int32(pb.AdmissionCode_ADMISSION_CODE_SOURCE_UNAVAILABLE) {
 		t.Fatal("AdmissionCode Go constants drifted from pb enum numbers")
 	}
 	if int32(arbiter.NodeRoleUnspecified) != int32(pb.NodeRole_NODE_ROLE_UNSPECIFIED) ||
