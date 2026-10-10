@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -60,6 +61,8 @@ type Deps struct {
 	// once to attest a transition that adds one. A *CHScanner Scanner must
 	// follow this same view (NewRegistryScanner), or none when it is nil.
 	Registry dataplane.RegistryView
+	// Now is the registration_seq clock; nil is time.Now.
+	Now func() time.Time
 }
 
 type Role struct {
@@ -69,6 +72,11 @@ type Role struct {
 	ensureFn func(context.Context, ddl.Mode) error
 	// tables is the table-set reconciler; nil when the host owns DDL.
 	tables *tableset.Reconciler
+	// genesisID is the genesis snapshot id signed messages bind.
+	genesisID string
+	// seqMu guards lastSeq, the last registration_seq this process reserved.
+	seqMu   sync.Mutex
+	lastSeq uint64
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -87,12 +95,20 @@ func New(cfg Config, d Deps) (*Role, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	r := &Role{cfg: cfg, d: d, priv: ed25519.NewKeyFromSeed(cfg.Ed25519Seed)}
+	genesisID := cfg.GenesisSnapshotID
+	if genesisID == "" {
+		var err error
+		if genesisID, err = dataplane.GenesisSnapshotID(cfg.NetworkID, cfg.SchemaSnapshotID, cfg.ExecutorProfileID, cfg.Tables); err != nil {
+			return nil, fmt.Errorf("verifier: %w", err)
+		}
+	}
+	r := &Role{cfg: cfg, d: d, priv: ed25519.NewKeyFromSeed(cfg.Ed25519Seed), genesisID: genesisID}
 	r.ensureFn = r.ensureProtocolTablesMode
 	if cfg.protocolTables != ddl.ModeOff {
 		tables, err := tableset.New(tableset.Config{
 			Pinned: r.pinned(), Genesis: cfg.Tables, Interval: cfg.ProtocolTablesReconcile,
-		}, tableset.Deps{Conn: d.Conn, Registry: d.Registry, Arbiter: d.Client, Logger: d.Logger})
+		}, tableset.Deps{Conn: d.Conn, Registry: d.Registry,
+			Arbiter: dataplane.PurgeReporter{Client: d.Client, Sign: r.signTablePurged}, Logger: d.Logger})
 		if err != nil {
 			return nil, fmt.Errorf("verifier: %w", err)
 		}
@@ -110,29 +126,22 @@ func (r *Role) pinned() ddl.Pinned {
 	}
 }
 
-// registrationRequest is the RegisterNode request this verifier sends.
-func registrationRequest(replicaID string, pub ed25519.PublicKey) *pb.NodeRegistration {
-	return &pb.NodeRegistration{
-		NodeId:        replicaID,
-		Roles:         []pb.NodeRole{pb.NodeRole_NODE_ROLE_VERIFIER},
-		Ed25519Pubkey: pub,
-		Features:      arbiter.LocalNodeFeatures(),
-	}
-}
-
 func (r *Role) Register(ctx context.Context) error {
 	if err := r.ensureProtocolTables(ctx); err != nil {
 		return err
 	}
-	pub := r.priv.Public().(ed25519.PublicKey)
+	reg, mark, err := r.registrationRequests()
+	if err != nil {
+		return fmt.Errorf("register verifier: %w", err)
+	}
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, registrationRequest(r.cfg.ReplicaID, pub))
+		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, reg)
 		return err
 	}); err != nil {
 		return fmt.Errorf("register verifier: %w", err)
 	}
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewMembershipClient(conn).MarkActive(ctx, &pb.NodeRef{NodeId: r.cfg.ReplicaID})
+		_, err := pb.NewMembershipClient(conn).MarkActive(ctx, mark)
 		return err
 	}); err != nil {
 		return fmt.Errorf("mark verifier active: %w", err)
