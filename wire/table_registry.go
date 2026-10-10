@@ -59,10 +59,14 @@ type RetireTables struct {
 // AdvanceL2Cursor mirrors pb.AdvanceL2CursorCmd.
 type AdvanceL2Cursor struct{ To arbiter.L2BlockRef }
 
-// RecordTablePurged mirrors pb.RecordTablePurgedCmd.
+// RecordTablePurged mirrors pb.RecordTablePurgedCmd, which is also the
+// SubmitTablePurged request. An SNODE reporter signs SignerJWS, a VERIFIER
+// reporter Ed25519Signature; both stay empty before the activation.
 type RecordTablePurged struct {
-	NodeID         string
-	IncarnationSeq uint64
+	NodeID           string
+	IncarnationSeq   uint64
+	SignerJWS        string
+	Ed25519Signature string
 }
 
 // l2BlockRefValue adapts the pointer-returning L2BlockRefFromPB (defined in

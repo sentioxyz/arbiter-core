@@ -50,6 +50,8 @@ func assertMirror(t *testing.T, goValue any, msg proto.Message, requestOnly ...s
 
 func TestArbiterMirrorsMatchProto(t *testing.T) {
 	assertMirror(t, arbiter.ConsensusParamsUpdate{}, &pb.ConsensusParamsUpdate{})
+	// EvictNodeCommand is the signed body of ConsensusAdmin.EvictNode.
+	assertMirror(t, arbiter.EvictNodeCommand{}, &pb.EvictNodeRequest{}, "authority_jws")
 	assertMirror(t, arbiter.StatementID{}, &pb.StatementID{})
 	assertMirror(t, arbiter.StatementEnvelope{}, &pb.StatementEnvelopeV2{})
 	assertMirror(t, arbiter.CandidatePart{}, &pb.CandidatePart{})
