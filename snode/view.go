@@ -13,8 +13,8 @@ import (
 )
 
 // sourceClaimRoot is the diagnostic state root the source attaches to its
-// RC. With an enabled registry it covers the tables still in the state root
-// (Active and Retiring incarnations) and derives the schema root from their
+// RC. With an enabled registry it covers this SNode's own Active and
+// Retiring incarnations (the tables still in its state root) and derives the schema root from their
 // registry hashes; otherwise it covers the configured tables and the
 // configured schema root. Nothing compares it: the FSM's check 1 ignores the
 // receipt's MatchSourceRoot (arbiter fsm/threeway.go).
@@ -55,7 +55,7 @@ func (r *Role) stateRootTables() (string, map[string]string) {
 		return r.cfg.SchemaRoot, hashes
 	}
 	for _, inc := range snap.Incarnations {
-		if inc.Status == wire.TableStatusActive || inc.Status == wire.TableStatusRetiring {
+		if (inc.Status == wire.TableStatusActive || inc.Status == wire.TableStatusRetiring) && r.owns(snap, inc) {
 			hashes[inc.Key()] = inc.SchemaHash
 		}
 	}

@@ -71,6 +71,14 @@ type Config struct {
 	// every Keeper replica of a purged table that is not in the arbiter's
 	// purge node set. Only the source SNode sets it.
 	SweepDecommissioned bool
+	// Owner, when set, restricts this reconciler to the incarnations owned
+	// by that SI indexer (housegate spec 2026-10-10 §8): an SNode creates,
+	// verifies, purges, reports and sweeps only its own tables. An
+	// incarnation recorded before the signed-claims activation names no
+	// owner and belongs to the founding indexer (TableRegistryParams.
+	// SIIndexerID). Nil reconciles every incarnation: verifiers, and SNodes
+	// without a claim signer. It has no effect while the registry is disabled.
+	Owner *uint64
 }
 
 // Deps are the reconciler's collaborators.
@@ -152,6 +160,10 @@ func New(cfg Config, d Deps) (*Reconciler, error) {
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = ddl.DefaultReconcileInterval
+	}
+	if cfg.Owner != nil {
+		owner := *cfg.Owner
+		cfg.Owner = &owner
 	}
 	if d.Logger == nil {
 		d.Logger = slog.Default()
@@ -379,14 +391,22 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 	purging := map[string]wire.TableIncarnation{} // physical name -> incarnation to purge
 	history := map[string][]string{}              // physical name -> keys whose live incarnation is Purged/Refused/Legacy
 	seen := map[string]bool{}
+	notOwned := map[string]bool{}
 	var fatal, genesisErrs []error
 	for _, inc := range snap.Incarnations {
 		key := inc.Key()
-		if seen[key] {
+		if seen[key] || notOwned[key] {
+			continue
+		}
+		live := snap.Live(key)
+		if !r.owns(snap, *live) {
+			// Another SI indexer's table (spec §8): never created, verified,
+			// purged, reported or swept here; forgetAbsent drops any status
+			// and its local tables, if any, are reported as unknown.
+			notOwned[key] = true
 			continue
 		}
 		seen[key] = true
-		live := snap.Live(key)
 		physical := ddl.CHTableName(key)
 		switch {
 		case live.Status == wire.TableStatusPurging:
@@ -639,6 +659,11 @@ func incarnation(snap wire.TableRegistrySnapshot, seq uint64) *wire.TableIncarna
 		}
 	}
 	return nil
+}
+
+// owns reports whether this reconciler serves inc's key (Config.Owner).
+func (r *Reconciler) owns(snap wire.TableRegistrySnapshot, inc wire.TableIncarnation) bool {
+	return r.cfg.Owner == nil || snap.Owner(inc) == *r.cfg.Owner
 }
 
 // purge drops one Purging incarnation's tables and reports it. hasLocal is

@@ -53,3 +53,26 @@ func TestNormalizeConsensusParamsUpdateClientLanes(t *testing.T) {
 		t.Fatal("client_lanes must be bound by the update hash")
 	}
 }
+
+// TestConsensusParamsUpdateWithLanesHashIsFrozen pins the digest of the update
+// shape a network commits after client lanes (artifact disposition and lanes
+// set, no signed-claims field). si_indexers and verifiers are omitted while
+// absent, so adding them must leave it unchanged. Never regenerate this value.
+func TestConsensusParamsUpdateWithLanesHashIsFrozen(t *testing.T) {
+	update := arbiter.ConsensusParamsUpdate{
+		NetworkID: "devnet2", GenesisSnapshotID: "0xgenesis", ExpectedEpoch: 2, PreviousParamsDigest: "0xdigest",
+		AuthorityAddresses: []string{"0x9Ef3A259D1D87C864431CAb5Ed5F6578Ad5Ad705"}, MaxWriters: 1, ExpectedPromotionSeq: 3,
+		ArtifactDispositionCapability: 1,
+		TableRegistry: &arbiter.TableRegistryParams{ChainID: 7892301, DatabasesContract: "0x00000000000000000000000000000000000000D1",
+			SIIndexerID: 0, ActivationBlock: 5508931, Confirmation: arbiter.TableRegistryConfirmationSafe},
+		ClientLanes: &arbiter.ClientLaneParams{MaxLanesPerAccount: 256},
+	}
+	got, err := ConsensusParamsUpdateHash(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "0xebfe1e7715581d067ce52f54e561d7b401a7250084695d4b96432a94f70fdb42"
+	if got != want {
+		t.Fatalf("ConsensusParamsUpdateHash = %s, want %s", got, want)
+	}
+}

@@ -10,13 +10,18 @@ import (
 	"github.com/sentioxyz/arbiter-core"
 )
 
-func TestVerifierRegistrationAdvertisesClientLanes(t *testing.T) {
-	pub := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey)
-	req := registrationRequest("v1", pub)
-	if req.GetNodeId() != "v1" || !slices.Equal(req.GetRoles(), []pb.NodeRole{pb.NodeRole_NODE_ROLE_VERIFIER}) || !slices.Equal(req.GetEd25519Pubkey(), []byte(pub)) {
-		t.Fatalf("registration = %v", req)
+func TestVerifierRegistrationAdvertisesSignedClaims(t *testing.T) {
+	role, _ := newRoleHarnessV(t, &fakeReplayCore{}, &fakeScanner{})
+	pub := ed25519.NewKeyFromSeed(testSeedV()).Public().(ed25519.PublicKey)
+	req, ref, err := role.registrationRequests()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !slices.Contains(req.GetFeatures(), arbiter.ClientLanesFeature) {
-		t.Fatalf("features = %v, want %s", req.GetFeatures(), arbiter.ClientLanesFeature)
+	if req.GetNodeId() != "v1" || !slices.Equal(req.GetRoles(), []pb.NodeRole{pb.NodeRole_NODE_ROLE_VERIFIER}) ||
+		!slices.Equal(req.GetEd25519Pubkey(), []byte(pub)) || ref.GetNodeId() != "v1" {
+		t.Fatalf("registration = %v, activation = %v", req, ref)
+	}
+	if !slices.Contains(req.GetFeatures(), arbiter.ClientLanesFeature) || !slices.Contains(req.GetFeatures(), arbiter.SignedClaimsFeature) {
+		t.Fatalf("features = %v, want %s and %s", req.GetFeatures(), arbiter.ClientLanesFeature, arbiter.SignedClaimsFeature)
 	}
 }

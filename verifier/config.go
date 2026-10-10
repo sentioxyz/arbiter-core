@@ -48,6 +48,13 @@ type Config struct {
 	// AddTransitionReadyWait bounds the attestation gate's wait for added
 	// tables (0 = DefaultAddTransitionReadyWait).
 	AddTransitionReadyWait time.Duration
+	// StateDir holds registration.json, the verifier's last registration_seq
+	// (housegate spec 2026-10-10 §6.5). The verifier kept no on-disk state
+	// before this; empty keeps the sequence in memory, still clock-floored.
+	StateDir string
+	// GenesisSnapshotID is bound into every signed message. Empty derives it
+	// from Tables, the network's genesis table set every verifier holds.
+	GenesisSnapshotID string
 }
 
 func (c *Config) validate() error {

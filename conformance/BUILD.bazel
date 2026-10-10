@@ -5,6 +5,7 @@ go_test(
     srcs = [
         "arbiter_wire_test.go",
         "replay_wire_test.go",
+        "signed_claims_test.go",
         "snapshot_query_wire_test.go",
         "statement_envelope_golden_test.go",
         "statement_kind_test.go",
@@ -20,6 +21,7 @@ go_test(
         "@housegate//pkg/replay/snapshotquery",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 

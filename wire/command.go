@@ -37,7 +37,14 @@ type SubmitStatement struct {
 }
 type SealL3Block struct{}
 type MarkReplaying struct{ BlockSeq uint64 }
-type RegisterRC struct{ RC arbiter.RCRecord }
+
+// RegisterRC mirrors pb.RegisterRCCmd. SourceJWS is the bound source's
+// ES256K signature over RC (authority.SNodeMessageResultClaim); empty before
+// the signed-claims activation.
+type RegisterRC struct {
+	RC        arbiter.RCRecord
+	SourceJWS string
+}
 type RecordAttestation struct{ Attestation replay.ReplayAttestation }
 type RecordByteSideScan struct{ Scan arbiter.ByteSideScanMsg }
 type RecordAnchorFinality struct {
@@ -50,13 +57,23 @@ type RecordPromotionIssued struct {
 	Promote      arbiter.PromoteSafePartition
 	AuthorityJWS string
 }
-type RecordPromotionAck struct{ Ack arbiter.PromotionAck }
+
+// RecordPromotionAck mirrors pb.RecordPromotionAckCmd.
+type RecordPromotionAck struct {
+	Ack       arbiter.PromotionAck
+	SourceJWS string
+}
 type PublishSafeSnapshot struct{ Manifest replay.SafeSnapshotManifest }
 type ScheduleUnsafeCleanup struct {
 	Cleanup      arbiter.UnsafeCleanup
 	AuthorityJWS string
 }
-type RecordCleanupAck struct{ Ack arbiter.CleanupAck }
+
+// RecordCleanupAck mirrors pb.RecordCleanupAckCmd.
+type RecordCleanupAck struct {
+	Ack       arbiter.CleanupAck
+	SourceJWS string
+}
 type OpenChallenge struct {
 	BlockSeq uint64
 	Reason   string
@@ -66,11 +83,37 @@ type ResolveChallenge struct {
 	BlockSeq uint64
 	Verdict  ChallengeVerdict
 }
-type RegisterNode struct{ Registration arbiter.NodeRegistration }
-type MarkActive struct{ NodeID string }
+
+// RegisterNode mirrors pb.RegisterNodeCmd. An SNODE registration carries
+// SignerJWS, a VERIFIER registration Ed25519Signature; Registration.
+// RegistrationSeq rides inside the registration. All three stay empty before
+// the signed-claims activation.
+type RegisterNode struct {
+	Registration     arbiter.NodeRegistration
+	SignerJWS        string
+	Ed25519Signature string
+}
+
+// MarkActive mirrors pb.MarkActiveCmd.
+type MarkActive struct {
+	NodeID           string
+	RegistrationSeq  uint64
+	SignerJWS        string
+	Ed25519Signature string
+}
+
+// EvictNode mirrors pb.EvictNodeCmd. ExpectedRegistrationSeq and AuthorityJWS
+// are set only by the authority-signed EvictNode RPC after the activation.
 type EvictNode struct {
-	NodeID string
-	Reason string
+	NodeID                  string
+	Reason                  string
+	ExpectedRegistrationSeq uint64
+	AuthorityJWS            string
+}
+
+// Canonical is the eviction's signing form (authority.EvictNodeHash).
+func (c EvictNode) Canonical() arbiter.EvictNodeCommand {
+	return arbiter.EvictNodeCommand{NodeID: c.NodeID, ExpectedRegistrationSeq: c.ExpectedRegistrationSeq, Reason: c.Reason}
 }
 
 type UpdateConsensusParams struct {
@@ -135,7 +178,7 @@ func Encode(c Command) ([]byte, error) {
 	}
 	if c.RegisterRC != nil {
 		set++
-		out.Cmd = &pb.RaftCommand_RegisterRc{RegisterRc: &pb.RegisterRCCmd{Rc: RCToPB(c.RegisterRC.RC)}}
+		out.Cmd = &pb.RaftCommand_RegisterRc{RegisterRc: &pb.RegisterRCCmd{Rc: RCToPB(c.RegisterRC.RC), SourceJws: c.RegisterRC.SourceJWS}}
 	}
 	if c.RecordAttestation != nil {
 		set++
@@ -158,7 +201,8 @@ func Encode(c Command) ([]byte, error) {
 	}
 	if c.RecordPromotionAck != nil {
 		set++
-		out.Cmd = &pb.RaftCommand_RecordPromotionAck{RecordPromotionAck: &pb.RecordPromotionAckCmd{Ack: PromotionAckToPB(c.RecordPromotionAck.Ack)}}
+		out.Cmd = &pb.RaftCommand_RecordPromotionAck{RecordPromotionAck: &pb.RecordPromotionAckCmd{
+			Ack: PromotionAckToPB(c.RecordPromotionAck.Ack), SourceJws: c.RecordPromotionAck.SourceJWS}}
 	}
 	if c.PublishSafeSnapshot != nil {
 		set++
@@ -171,7 +215,8 @@ func Encode(c Command) ([]byte, error) {
 	}
 	if c.RecordCleanupAck != nil {
 		set++
-		out.Cmd = &pb.RaftCommand_RecordCleanupAck{RecordCleanupAck: &pb.RecordCleanupAckCmd{Ack: CleanupAckToPB(c.RecordCleanupAck.Ack)}}
+		out.Cmd = &pb.RaftCommand_RecordCleanupAck{RecordCleanupAck: &pb.RecordCleanupAckCmd{
+			Ack: CleanupAckToPB(c.RecordCleanupAck.Ack), SourceJws: c.RecordCleanupAck.SourceJWS}}
 	}
 	if c.OpenChallenge != nil {
 		set++
@@ -185,15 +230,21 @@ func Encode(c Command) ([]byte, error) {
 	}
 	if c.RegisterNode != nil {
 		set++
-		out.Cmd = &pb.RaftCommand_RegisterNode{RegisterNode: &pb.RegisterNodeCmd{Registration: RegistrationToPB(c.RegisterNode.Registration)}}
+		out.Cmd = &pb.RaftCommand_RegisterNode{RegisterNode: &pb.RegisterNodeCmd{
+			Registration: RegistrationToPB(c.RegisterNode.Registration),
+			SignerJws:    c.RegisterNode.SignerJWS, Ed25519Signature: c.RegisterNode.Ed25519Signature}}
 	}
 	if c.MarkActive != nil {
 		set++
-		out.Cmd = &pb.RaftCommand_MarkActive{MarkActive: &pb.MarkActiveCmd{NodeId: c.MarkActive.NodeID}}
+		m := c.MarkActive
+		out.Cmd = &pb.RaftCommand_MarkActive{MarkActive: &pb.MarkActiveCmd{
+			NodeId: m.NodeID, RegistrationSeq: m.RegistrationSeq, SignerJws: m.SignerJWS, Ed25519Signature: m.Ed25519Signature}}
 	}
 	if c.EvictNode != nil {
 		set++
-		out.Cmd = &pb.RaftCommand_EvictNode{EvictNode: &pb.EvictNodeCmd{NodeId: c.EvictNode.NodeID, Reason: c.EvictNode.Reason}}
+		e := c.EvictNode
+		out.Cmd = &pb.RaftCommand_EvictNode{EvictNode: &pb.EvictNodeCmd{NodeId: e.NodeID, Reason: e.Reason,
+			ExpectedRegistrationSeq: e.ExpectedRegistrationSeq, AuthorityJws: e.AuthorityJWS}}
 	}
 	if c.UpdateConsensusParams != nil {
 		set++
@@ -250,14 +301,15 @@ func Encode(c Command) ([]byte, error) {
 	if c.SeedLegacyTables != nil {
 		set++
 		out.Cmd = &pb.RaftCommand_SeedLegacyTables{SeedLegacyTables: &pb.SeedLegacyTablesCmd{
-			AtBlock: L2BlockRefToPB(&c.SeedLegacyTables.AtBlock), Tables: legacyTablesToPB(c.SeedLegacyTables.Tables)}}
+			AtBlock: L2BlockRefToPB(&c.SeedLegacyTables.AtBlock), Tables: legacyTablesToPB(c.SeedLegacyTables.Tables),
+			IndexerId: cloneUint64(c.SeedLegacyTables.IndexerID)}}
 	}
 	if c.AddTable != nil {
 		set++
 		a := c.AddTable
 		out.Cmd = &pb.RaftCommand_AddTable{AddTable: &pb.AddTableCmd{DatabaseId: a.DatabaseID, TableId: a.TableID,
 			Created: L2EventRefToPB(&a.Created), Schema: L2EventRefToPB(&a.Schema), SchemaVersion: a.SchemaVersion,
-			SchemaHash: a.SchemaHash, SchemaJson: a.SchemaJSON}}
+			SchemaHash: a.SchemaHash, SchemaJson: a.SchemaJSON, OwnerIndexerId: cloneUint64(a.OwnerIndexerID)}}
 	}
 	if c.RetireTables != nil {
 		set++
@@ -272,8 +324,7 @@ func Encode(c Command) ([]byte, error) {
 	}
 	if c.RecordTablePurged != nil {
 		set++
-		out.Cmd = &pb.RaftCommand_RecordTablePurged{RecordTablePurged: &pb.RecordTablePurgedCmd{
-			NodeId: c.RecordTablePurged.NodeID, IncarnationSeq: c.RecordTablePurged.IncarnationSeq}}
+		out.Cmd = &pb.RaftCommand_RecordTablePurged{RecordTablePurged: RecordTablePurgedToRequest(*c.RecordTablePurged)}
 	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
@@ -333,12 +384,14 @@ func Decode(b []byte) (Command, error) {
 
 	case *pb.RaftCommand_SeedLegacyTables:
 		m := cmd.SeedLegacyTables
-		return Command{SeedLegacyTables: &SeedLegacyTables{AtBlock: l2BlockRefValue(m.GetAtBlock()), Tables: legacyTablesFromPB(m.GetTables())}}, nil
+		return Command{SeedLegacyTables: &SeedLegacyTables{AtBlock: l2BlockRefValue(m.GetAtBlock()),
+			Tables: legacyTablesFromPB(m.GetTables()), IndexerID: cloneUint64(m.IndexerId)}}, nil
 	case *pb.RaftCommand_AddTable:
 		m := cmd.AddTable
 		return Command{AddTable: &AddTable{DatabaseID: m.GetDatabaseId(), TableID: m.GetTableId(),
 			Created: l2EventRefValue(m.GetCreated()), Schema: l2EventRefValue(m.GetSchema()),
-			SchemaVersion: m.GetSchemaVersion(), SchemaHash: m.GetSchemaHash(), SchemaJSON: m.GetSchemaJson()}}, nil
+			SchemaVersion: m.GetSchemaVersion(), SchemaHash: m.GetSchemaHash(), SchemaJSON: m.GetSchemaJson(),
+			OwnerIndexerID: cloneUint64(m.OwnerIndexerId)}}, nil
 	case *pb.RaftCommand_RetireTables:
 		m := cmd.RetireTables
 		return Command{RetireTables: &RetireTables{DatabaseID: m.GetDatabaseId(),
@@ -347,8 +400,8 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_AdvanceL2Cursor:
 		return Command{AdvanceL2Cursor: &AdvanceL2Cursor{To: l2BlockRefValue(cmd.AdvanceL2Cursor.GetTo())}}, nil
 	case *pb.RaftCommand_RecordTablePurged:
-		m := cmd.RecordTablePurged
-		return Command{RecordTablePurged: &RecordTablePurged{NodeID: m.GetNodeId(), IncarnationSeq: m.GetIncarnationSeq()}}, nil
+		v := RecordTablePurgedFromRequest(cmd.RecordTablePurged)
+		return Command{RecordTablePurged: &v}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{
@@ -358,7 +411,11 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_MarkReplaying:
 		return Command{MarkReplaying: &MarkReplaying{BlockSeq: cmd.MarkReplaying.GetBlockSeq()}}, nil
 	case *pb.RaftCommand_RegisterRc:
-		return Command{RegisterRC: &RegisterRC{RC: RCFromPB(cmd.RegisterRc.GetRc())}}, nil
+		rc := cmd.RegisterRc.GetRc()
+		if rc.GetSourceJws() != "" {
+			return Command{}, errRequestOnly("RCRecord.source_jws", "RegisterRCCmd.source_jws")
+		}
+		return Command{RegisterRC: &RegisterRC{RC: RCFromPB(rc), SourceJWS: cmd.RegisterRc.GetSourceJws()}}, nil
 	case *pb.RaftCommand_RecordAttestation:
 		return Command{RecordAttestation: &RecordAttestation{Attestation: AttestationFromPB(cmd.RecordAttestation.GetAttestation())}}, nil
 	case *pb.RaftCommand_RecordByteSideScan:
@@ -371,14 +428,22 @@ func Decode(b []byte) (Command, error) {
 		return Command{RecordPromotionIssued: &RecordPromotionIssued{
 			Promote: PromoteFromPB(cmd.RecordPromotionIssued.GetPromote()), AuthorityJWS: cmd.RecordPromotionIssued.GetAuthorityJws()}}, nil
 	case *pb.RaftCommand_RecordPromotionAck:
-		return Command{RecordPromotionAck: &RecordPromotionAck{Ack: PromotionAckFromPB(cmd.RecordPromotionAck.GetAck())}}, nil
+		ack := cmd.RecordPromotionAck.GetAck()
+		if ack.GetSourceJws() != "" {
+			return Command{}, errRequestOnly("PromotionAck.source_jws", "RecordPromotionAckCmd.source_jws")
+		}
+		return Command{RecordPromotionAck: &RecordPromotionAck{Ack: PromotionAckFromPB(ack), SourceJWS: cmd.RecordPromotionAck.GetSourceJws()}}, nil
 	case *pb.RaftCommand_PublishSafeSnapshot:
 		return Command{PublishSafeSnapshot: &PublishSafeSnapshot{Manifest: ManifestFromPB(cmd.PublishSafeSnapshot.GetManifest())}}, nil
 	case *pb.RaftCommand_ScheduleUnsafeCleanup:
 		return Command{ScheduleUnsafeCleanup: &ScheduleUnsafeCleanup{
 			Cleanup: CleanupFromPB(cmd.ScheduleUnsafeCleanup.GetCleanup()), AuthorityJWS: cmd.ScheduleUnsafeCleanup.GetAuthorityJws()}}, nil
 	case *pb.RaftCommand_RecordCleanupAck:
-		return Command{RecordCleanupAck: &RecordCleanupAck{Ack: CleanupAckFromPB(cmd.RecordCleanupAck.GetAck())}}, nil
+		ack := cmd.RecordCleanupAck.GetAck()
+		if ack.GetSourceJws() != "" {
+			return Command{}, errRequestOnly("CleanupAck.source_jws", "RecordCleanupAckCmd.source_jws")
+		}
+		return Command{RecordCleanupAck: &RecordCleanupAck{Ack: CleanupAckFromPB(ack), SourceJWS: cmd.RecordCleanupAck.GetSourceJws()}}, nil
 	case *pb.RaftCommand_OpenChallenge:
 		return Command{OpenChallenge: &OpenChallenge{
 			BlockSeq: cmd.OpenChallenge.GetBlockSeq(), Reason: cmd.OpenChallenge.GetReason(), OpenedBy: cmd.OpenChallenge.GetOpenedBy()}}, nil
@@ -388,15 +453,31 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_RegisterNode:
 		// NodeRegistration.features is request-only (housegate spec 2026-10-09
 		// §5.6): refuse it here so a buggy encoder fails on every voter alike.
-		if len(cmd.RegisterNode.GetRegistration().GetFeatures()) != 0 {
+		reg := cmd.RegisterNode.GetRegistration()
+		if len(reg.GetFeatures()) != 0 {
 			return Command{}, fmt.Errorf("wire: NodeRegistration.features is request-only and never part of a RaftCommand")
 		}
-		return Command{RegisterNode: &RegisterNode{Registration: RegistrationFromPB(cmd.RegisterNode.GetRegistration())}}, nil
+		if reg.GetSignerJws() != "" || reg.GetEd25519Signature() != "" {
+			return Command{}, errRequestOnly("NodeRegistration.signer_jws / ed25519_signature", "RegisterNodeCmd.signer_jws / ed25519_signature")
+		}
+		return Command{RegisterNode: &RegisterNode{Registration: RegistrationFromPB(reg),
+			SignerJWS: cmd.RegisterNode.GetSignerJws(), Ed25519Signature: cmd.RegisterNode.GetEd25519Signature()}}, nil
 	case *pb.RaftCommand_MarkActive:
-		return Command{MarkActive: &MarkActive{NodeID: cmd.MarkActive.GetNodeId()}}, nil
+		m := cmd.MarkActive
+		return Command{MarkActive: &MarkActive{NodeID: m.GetNodeId(), RegistrationSeq: m.GetRegistrationSeq(),
+			SignerJWS: m.GetSignerJws(), Ed25519Signature: m.GetEd25519Signature()}}, nil
 	case *pb.RaftCommand_EvictNode:
-		return Command{EvictNode: &EvictNode{NodeID: cmd.EvictNode.GetNodeId(), Reason: cmd.EvictNode.GetReason()}}, nil
+		e := cmd.EvictNode
+		return Command{EvictNode: &EvictNode{NodeID: e.GetNodeId(), Reason: e.GetReason(),
+			ExpectedRegistrationSeq: e.GetExpectedRegistrationSeq(), AuthorityJWS: e.GetAuthorityJws()}}, nil
 	default:
 		return Command{}, fmt.Errorf("wire: RaftCommand has no command set")
 	}
+}
+
+// errRequestOnly refuses a signature inside the request-only copy of a
+// command's payload: the Raft command carries it in its own field, so a buggy
+// encoder fails on every voter instead of being applied by some.
+func errRequestOnly(field, carrier string) error {
+	return fmt.Errorf("wire: %s is request-only; the Raft command carries it in %s", field, carrier)
 }

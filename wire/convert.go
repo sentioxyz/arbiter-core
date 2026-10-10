@@ -144,13 +144,13 @@ func AnchorRefToPB(v arbiter.AnchorRef) *pb.AnchorRef {
 func RegistrationFromPB(m *pb.NodeRegistration) arbiter.NodeRegistration {
 	return arbiter.NodeRegistration{NodeID: m.GetNodeId(),
 		Roles:         mapSlice(m.GetRoles(), func(r pb.NodeRole) arbiter.NodeRole { return arbiter.NodeRole(r) }),
-		Ed25519Pubkey: m.GetEd25519Pubkey(), DialAddr: m.GetDialAddr()}
+		Ed25519Pubkey: m.GetEd25519Pubkey(), DialAddr: m.GetDialAddr(), RegistrationSeq: m.GetRegistrationSeq()}
 }
 
 func RegistrationToPB(v arbiter.NodeRegistration) *pb.NodeRegistration {
 	return &pb.NodeRegistration{NodeId: v.NodeID,
 		Roles:         mapSlice(v.Roles, func(r arbiter.NodeRole) pb.NodeRole { return pb.NodeRole(r) }),
-		Ed25519Pubkey: v.Ed25519Pubkey, DialAddr: v.DialAddr}
+		Ed25519Pubkey: v.Ed25519Pubkey, DialAddr: v.DialAddr, RegistrationSeq: v.RegistrationSeq}
 }
 
 func partRefFromPB(m *pb.PartRef) arbiter.PartRef {

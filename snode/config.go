@@ -58,6 +58,15 @@ type Config struct {
 	// source. Configuring it together with a non-zero HardPartsPerPartition is
 	// a validation error, so a half-configured disable is not expressible.
 	DisableHardParts bool
+	// IndexerID is the SI indexer this SNode serves (housegate spec
+	// 2026-10-10 D5, §8). With Deps.ClaimSigner it is the owner filter of the
+	// reconciler and of every owner-scoped read; without one it is unused.
+	IndexerID uint64
+	// GenesisSnapshotID is the network's genesis snapshot id, bound into every
+	// signed message (spec §6.5). Empty derives it from Tables with
+	// dataplane.GenesisSnapshotID, which only the founding indexer's SNode
+	// can; a signing SNode without genesis tables must set it.
+	GenesisSnapshotID string
 }
 
 func (c *Config) validate() error {
@@ -73,9 +82,6 @@ func (c *Config) validate() error {
 	}
 	if c.ExecutorProfileID == "" {
 		errs = append(errs, errors.New("executor profile id is required"))
-	}
-	if len(c.Tables) == 0 {
-		errs = append(errs, errors.New("at least one table schema is required"))
 	}
 	if err := ddl.ValidatePhysicalTableNames(c.Tables); err != nil {
 		errs = append(errs, err)

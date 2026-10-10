@@ -2,6 +2,7 @@ package wire
 
 import (
 	"fmt"
+	"slices"
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 
@@ -76,6 +77,10 @@ type TableIncarnation struct {
 	AddBlockSeq    uint64
 	RetireBlockSeq uint64
 	PurgedBy       []string
+	// OwnerIndexerID is the SI indexer owning the incarnation (housegate spec
+	// 2026-10-10 D4); nil for one recorded before the signed-claims
+	// activation, whose owner is the founding indexer (see Owner).
+	OwnerIndexerID *uint64
 }
 
 // Key is the logical table id <database>.<table>.
@@ -111,6 +116,12 @@ type TableRegistrySnapshot struct {
 	Incarnations []TableIncarnation
 	// ClientLanes is the committed client-lane parameter; nil until activation.
 	ClientLanes *arbiter.ClientLaneParams
+	// SIIndexers is the committed si_indexers list sorted by IndexerID; nil
+	// until the signed-claims activation.
+	SIIndexers []arbiter.SIIndexerEntry
+	// SeededIndexers lists, ascending, the SI indexers whose Legacy seed is
+	// recorded; nil before the activation (Seeded keeps the founding flag).
+	SeededIndexers []uint64
 }
 
 // Live mirrors arbiter's TableRegistryView.Live: the newest incarnation of key
@@ -144,6 +155,55 @@ func (s TableRegistrySnapshot) ActiveTables() []TableIncarnation {
 	return out
 }
 
+// SignedClaimsActive reports whether the snapshot carries si_indexers, i.e.
+// the signed-claims activation is committed (housegate spec 2026-10-10 §6.7).
+func (s TableRegistrySnapshot) SignedClaimsActive() bool { return len(s.SIIndexers) > 0 }
+
+// SIIndexer returns indexerID's enrolled entry.
+func (s TableRegistrySnapshot) SIIndexer(indexerID uint64) (arbiter.SIIndexerEntry, bool) {
+	for _, e := range s.SIIndexers {
+		if e.IndexerID == indexerID {
+			return e, true
+		}
+	}
+	return arbiter.SIIndexerEntry{}, false
+}
+
+// Owner returns the SI indexer owning inc: its recorded OwnerIndexerID, or,
+// for an incarnation recorded before the signed-claims activation (which
+// names no owner), the founding indexer Params.SIIndexerID.
+func (s TableRegistrySnapshot) Owner(inc TableIncarnation) uint64 {
+	if inc.OwnerIndexerID != nil {
+		return *inc.OwnerIndexerID
+	}
+	return s.Params.SIIndexerID
+}
+
+// signedClaimsFromPB decodes si_indexers and seeded_indexers. The arbiter
+// keeps entries sorted and every seeded id enrolled; anything else is a
+// corrupt view, refused like an unknown status.
+func signedClaimsFromPB(m *pb.TableRegistrySnapshot) ([]arbiter.SIIndexerEntry, []uint64, error) {
+	entries := SIIndexerEntriesFromPB(m.GetSiIndexers())
+	for i, e := range entries {
+		if err := e.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("table registry snapshot: %w", err)
+		}
+		if i > 0 && entries[i-1].IndexerID >= e.IndexerID {
+			return nil, nil, fmt.Errorf("table registry snapshot: si_indexers must be sorted by indexer_id without duplicates")
+		}
+	}
+	seeded := mapSlice(m.GetSeededIndexers(), func(id uint64) uint64 { return id })
+	for i, id := range seeded {
+		if i > 0 && seeded[i-1] >= id {
+			return nil, nil, fmt.Errorf("table registry snapshot: seeded_indexers must be ascending without duplicates")
+		}
+		if !slices.ContainsFunc(entries, func(e arbiter.SIIndexerEntry) bool { return e.IndexerID == id }) {
+			return nil, nil, fmt.Errorf("table registry snapshot: seeded indexer %d has no si_indexers entry", id)
+		}
+	}
+	return entries, seeded, nil
+}
+
 // TableRegistrySnapshotFromPB decodes a snapshot. Every status and origin must
 // be a known, specified value and every retire reason a known value; the
 // incarnations must be numbered 1..n in order.
@@ -164,9 +224,20 @@ func TableRegistrySnapshotFromPB(m *pb.TableRegistrySnapshot) (TableRegistrySnap
 		}
 		out.ClientLanes = lanes
 	}
+	entries, seeded, err := signedClaimsFromPB(m)
+	if err != nil {
+		return TableRegistrySnapshot{}, err
+	}
+	out.SIIndexers, out.SeededIndexers = entries, seeded
 	for i, inc := range m.GetIncarnations() {
 		if inc.GetSeq() != uint64(i)+1 {
 			return TableRegistrySnapshot{}, fmt.Errorf("table registry snapshot: incarnation %d has seq %d", i+1, inc.GetSeq())
+		}
+		owner := cloneUint64(inc.OwnerIndexerId)
+		if owner != nil {
+			if _, ok := out.SIIndexer(*owner); !ok {
+				return TableRegistrySnapshot{}, fmt.Errorf("table registry snapshot: incarnation %d is owned by indexer %d, which has no si_indexers entry", inc.GetSeq(), *owner)
+			}
 		}
 		status, ok := tableStatusFromPB[inc.GetStatus()]
 		if !ok {
@@ -190,7 +261,8 @@ func TableRegistrySnapshotFromPB(m *pb.TableRegistrySnapshot) (TableRegistrySnap
 			RefusedReason: inc.GetRefusedReason(), RefusedCode: inc.GetRefusedCode(),
 			Deleted: L2EventRefFromPB(inc.GetDeleted()), RetireReason: reason,
 			AddBlockSeq: inc.GetAddBlockSeq(), RetireBlockSeq: inc.GetRetireBlockSeq(),
-			PurgedBy: mapSlice(inc.GetPurgedBy(), func(id string) string { return id }),
+			PurgedBy:       mapSlice(inc.GetPurgedBy(), func(id string) string { return id }),
+			OwnerIndexerID: owner,
 		})
 	}
 	return out, nil
@@ -204,7 +276,9 @@ func TableRegistrySnapshotToPB(s TableRegistrySnapshot) *pb.TableRegistrySnapsho
 		Params: TableRegistryParamsToPB(&params), Version: s.Version, Seeded: s.Seeded,
 		Cursor: &pb.TableRegistryCursor{BlockNumber: s.Cursor.BlockNumber, BlockHash: s.Cursor.BlockHash,
 			LogIndex: s.Cursor.LogIndex, BlockComplete: s.Cursor.BlockComplete},
-		ClientLanes: ClientLaneParamsToPB(s.ClientLanes),
+		ClientLanes:    ClientLaneParamsToPB(s.ClientLanes),
+		SiIndexers:     SIIndexerEntriesToPB(s.SIIndexers),
+		SeededIndexers: mapSlice(s.SeededIndexers, func(id uint64) uint64 { return id }),
 	}
 	for _, inc := range s.Incarnations {
 		out.Incarnations = append(out.Incarnations, &pb.TableIncarnation{
@@ -215,7 +289,8 @@ func TableRegistrySnapshotToPB(s TableRegistrySnapshot) *pb.TableRegistrySnapsho
 			RefusedReason: inc.RefusedReason, RefusedCode: inc.RefusedCode,
 			Deleted: L2EventRefToPB(inc.Deleted), RetireReason: pb.TableRetireReason(inc.RetireReason),
 			AddBlockSeq: inc.AddBlockSeq, RetireBlockSeq: inc.RetireBlockSeq,
-			PurgedBy: mapSlice(inc.PurgedBy, func(id string) string { return id }),
+			PurgedBy:       mapSlice(inc.PurgedBy, func(id string) string { return id }),
+			OwnerIndexerId: cloneUint64(inc.OwnerIndexerID),
 		})
 	}
 	return out

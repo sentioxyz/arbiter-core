@@ -23,6 +23,12 @@ import (
 // before any journal record or ClickHouse write, and a retry can succeed.
 var ErrTableNotReady = errors.New("snode: target table is not ready on this source")
 
+// ErrTableNotOwned refuses work on a table the registry assigns to another SI
+// indexer (housegate spec 2026-10-10 D8): this SNode never materialised it.
+// It wraps ErrSchemaUnknown, so callers that treat an unknown target as
+// terminal keep doing so.
+var ErrTableNotOwned = fmt.Errorf("%w (owned by another SI indexer)", ErrSchemaUnknown)
+
 // registryView returns the followed registry snapshot; enabled is false when
 // the role follows no registry or the registry is disabled.
 func (r *Role) registryView() (wire.TableRegistrySnapshot, bool) {
@@ -72,6 +78,9 @@ func (r *Role) requireAdmissible(tableID, schemaHash string) error {
 	switch {
 	case live == nil:
 		return fmt.Errorf("table %s is not in the table registry: %w", tableID, ErrSchemaUnknown)
+	case !r.owns(snap, *live):
+		return fmt.Errorf("table %s is owned by SI indexer %d, not by this source's indexer %d: %w",
+			tableID, snap.Owner(*live), r.cfg.IndexerID, ErrTableNotOwned)
 	case live.Status == wire.TableStatusPending:
 		return fmt.Errorf("table %s is pending in the table registry: %w", tableID, ErrTableNotReady)
 	case live.Status != wire.TableStatusActive:

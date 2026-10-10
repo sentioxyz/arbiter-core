@@ -26,6 +26,9 @@ func (r *Role) LookupPreparedStatement(ctx context.Context, statementID string) 
 	if rec.Lifecycle == LifecycleCleaned {
 		return PreparedLocalResult{}, false, nil
 	}
+	if err := r.requireOwned(rec.Envelope.TargetTableID); err != nil {
+		return PreparedLocalResult{}, false, err
+	}
 	if err := validateRecordedBindings(rec); err != nil {
 		return PreparedLocalResult{}, false, err
 	}

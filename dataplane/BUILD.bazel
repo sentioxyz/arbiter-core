@@ -4,6 +4,7 @@ go_library(
     name = "dataplane",
     srcs = [
         "client.go",
+        "genesis.go",
         "manifests.go",
         "registry_follower.go",
         "registry_schema.go",
@@ -37,6 +38,7 @@ go_test(
         "registry_schema_test.go",
         "snapshot_restore_test.go",
         "subscribe_test.go",
+        "table_purge_test.go",
     ],
     embed = [":dataplane"],
     deps = [

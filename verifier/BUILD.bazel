@@ -4,8 +4,10 @@ go_library(
     name = "verifier",
     srcs = [
         "backends.go",
+        "claims.go",
         "config.go",
         "historical_snapshot_query_adapter.go",
+        "registration_state.go",
         "registry.go",
         "verifier.go",
     ],
@@ -13,6 +15,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//:arbiter-core",
+        "//authority",
         "//dataplane",
         "//dataplane/ddl",
         "//dataplane/tableset",
@@ -32,6 +35,7 @@ go_test(
     name = "verifier_test",
     srcs = [
         "backends_test.go",
+        "claims_test.go",
         "config_external_test.go",
         "empty_scan_test.go",
         "historical_snapshot_query_adapter_test.go",
@@ -47,6 +51,8 @@ go_test(
     embed = [":verifier"],
     deps = [
         "//:arbiter-core",
+        "//authority",
+        "//authority/authoritytest",
         "//dataplane",
         "//dataplane/ddl",
         "//dataplane/tableset",

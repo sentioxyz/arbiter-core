@@ -1,6 +1,8 @@
 package authority
 
 import (
+	"bytes"
+	"cmp"
 	"encoding/hex"
 	"fmt"
 	"slices"
@@ -65,7 +67,75 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 		}
 		cmd.ClientLanes = &lanes
 	}
+	siIndexers, err := normalizeSIIndexers(cmd.SIIndexers, cmd.MaxWriters)
+	if err != nil {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
+	}
+	verifiers, err := normalizeVerifiers(cmd.Verifiers)
+	if err != nil {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
+	}
+	cmd.SIIndexers, cmd.Verifiers = siIndexers, verifiers
 	return cmd, nil
+}
+
+// normalizeSIIndexers returns a validated copy sorted by indexer id with
+// lowercase signers. An absent or empty list stays nil (never []), so it is
+// omitted from the canonical form.
+func normalizeSIIndexers(in []arbiter.SIIndexerEntry, maxWriters uint64) ([]arbiter.SIIndexerEntry, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]arbiter.SIIndexerEntry, len(in))
+	for i, e := range in {
+		e.Signer = strings.ToLower(e.Signer)
+		if err := e.Validate(); err != nil {
+			return nil, err
+		}
+		out[i] = e
+	}
+	slices.SortFunc(out, func(a, b arbiter.SIIndexerEntry) int { return cmp.Compare(a.IndexerID, b.IndexerID) })
+	nodes := make(map[string]bool, len(out))
+	for i, e := range out {
+		if i > 0 && out[i-1].IndexerID == e.IndexerID {
+			return nil, fmt.Errorf("si_indexers: duplicate indexer_id %d", e.IndexerID)
+		}
+		if nodes[e.SNodeNodeID] {
+			return nil, fmt.Errorf("si_indexers: snode_node_id %q is enrolled twice", e.SNodeNodeID)
+		}
+		nodes[e.SNodeNodeID] = true
+	}
+	if maxWriters < uint64(len(out)) {
+		return nil, fmt.Errorf("si_indexers: max_writers %d is below the %d enrolled indexers", maxWriters, len(out))
+	}
+	return out, nil
+}
+
+// normalizeVerifiers returns a validated deep copy sorted by node id. An
+// absent or empty list stays nil.
+func normalizeVerifiers(in []arbiter.VerifierEntry) ([]arbiter.VerifierEntry, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]arbiter.VerifierEntry, len(in))
+	for i, v := range in {
+		if err := v.Validate(); err != nil {
+			return nil, err
+		}
+		out[i] = arbiter.VerifierEntry{NodeID: v.NodeID, Ed25519Pubkey: bytes.Clone(v.Ed25519Pubkey)}
+	}
+	slices.SortFunc(out, func(a, b arbiter.VerifierEntry) int { return strings.Compare(a.NodeID, b.NodeID) })
+	keys := make(map[string]bool, len(out))
+	for i, v := range out {
+		if i > 0 && out[i-1].NodeID == v.NodeID {
+			return nil, fmt.Errorf("verifiers: duplicate node_id %q", v.NodeID)
+		}
+		if keys[string(v.Ed25519Pubkey)] {
+			return nil, fmt.Errorf("verifiers: %s reuses another verifier's ed25519_pubkey", v.NodeID)
+		}
+		keys[string(v.Ed25519Pubkey)] = true
+	}
+	return out, nil
 }
 
 // ConsensusParamsUpdateHash binds every transition field after address-set

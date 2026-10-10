@@ -17,7 +17,6 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
-	"github.com/sentioxyz/arbiter-core/wire"
 )
 
 // stagedNativeEncoding is the only payload format the SI lane admits
@@ -390,8 +389,12 @@ func (r *Role) RegisterPreparedClaim(ctx context.Context, statementID string) (C
 		return ClaimOutcome{}, fmt.Errorf("statement %s has no durable prepared claim: %w", statementID, ErrNotPrepared)
 	}
 
+	req, err := r.resultClaimRequest(*rec.RC)
+	if err != nil {
+		return ClaimOutcome{}, err
+	}
 	err = r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewSourceClaimsClient(conn).RegisterResultClaim(ctx, wire.RCToPB(*rec.RC))
+		_, err := pb.NewSourceClaimsClient(conn).RegisterResultClaim(ctx, req)
 		return err
 	})
 	switch {
