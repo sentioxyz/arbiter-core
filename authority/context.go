@@ -50,11 +50,17 @@ func (s *Signer) SignCleanupWithContextAt(cmd arbiter.UnsafeCleanup, context Con
 }
 
 func (s *Signer) signWithContext(hash string, context ConsensusContext, iat int64) (string, error) {
+	return s.signWithContextPurpose(hash, PromotionPurpose, context, iat)
+}
+
+// signWithContextPurpose signs hash under purpose with the three consensus
+// context fields every context-bound authority token carries.
+func (s *Signer) signWithContextPurpose(hash, purpose string, context ConsensusContext, iat int64) (string, error) {
 	if strings.TrimSpace(context.NetworkID) == "" || strings.TrimSpace(context.GenesisSnapshotID) == "" {
 		return "", fmt.Errorf("authority context: network ID and genesis snapshot ID must be non-empty")
 	}
 	return s.signPayload(JWSCommandPayload{
-		Iat: iat, Purpose: PromotionPurpose, CmdHash: hash,
+		Iat: iat, Purpose: purpose, CmdHash: hash,
 		NetworkID: context.NetworkID, GenesisSnapshotID: context.GenesisSnapshotID, AuthorityEpoch: &context.AuthorityEpoch,
 	})
 }

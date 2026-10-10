@@ -147,3 +147,14 @@ type ConsensusParamsUpdate struct {
 	// Absent until set with SIIndexers; then carried by every update.
 	Verifiers []VerifierEntry `json:"verifiers,omitempty"`
 }
+
+// EvictNodeCommand is the canonical signing form of an authority-signed
+// eviction (housegate spec 2026-10-10 §6.5); its wire form is
+// pb.EvictNodeRequest minus authority_jws. ExpectedRegistrationSeq is a
+// compare-and-swap on the node's last applied registration_seq, so a token
+// can never evict a later registration of the same node.
+type EvictNodeCommand struct {
+	NodeID                  string `json:"node_id"`
+	ExpectedRegistrationSeq uint64 `json:"expected_registration_seq"`
+	Reason                  string `json:"reason"`
+}
