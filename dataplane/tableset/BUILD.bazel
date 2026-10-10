@@ -18,9 +18,14 @@ go_library(
 
 go_test(
     name = "tableset_test",
-    srcs = ["reconciler_ch_test.go"],
+    srcs = [
+        "owner_ch_test.go",
+        "owner_test.go",
+        "reconciler_ch_test.go",
+    ],
     embed = [":tableset"],
     deps = [
+        "//:arbiter-core",
         "//dataplane/ddl",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
