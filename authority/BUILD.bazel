@@ -28,6 +28,7 @@ go_test(
         "artifact_disposition_test.go",
         "authority_test.go",
         "consensus_golden_test.go",
+        "consensus_signed_claims_test.go",
         "consensus_test.go",
         "context_test.go",
         "query_profile_activation_test.go",

@@ -1,6 +1,12 @@
 package arbiter
 
-import "fmt"
+import (
+	"crypto/ed25519"
+	"fmt"
+	"regexp"
+	"strings"
+	"unicode"
+)
 
 // ConsensusAdminProtocolVersion advertises support for the ConsensusAdmin
 // capability/read/update RPCs and the replicated parameter-update command.
@@ -12,8 +18,19 @@ const ConsensusAdminProtocolVersion uint32 = 1
 // 2026-10-09 §5.6).
 const ClientLanesFeature = "client_lanes_v1"
 
+// SignedClaimsFeature is the capability string of a binary that signs and
+// verifies SNode and verifier messages (housegate spec 2026-10-10 §6.5,
+// §6.7). The signed-claims activation gate requires it from every voter and
+// every registered data-plane node.
+const SignedClaimsFeature = "signed_claims_v1"
+
 // LocalNodeFeatures returns this binary's capability strings in a fresh slice.
-func LocalNodeFeatures() []string { return []string{ClientLanesFeature} }
+func LocalNodeFeatures() []string { return []string{ClientLanesFeature, SignedClaimsFeature} }
+
+// signerAddressPattern is a normalized (lowercase) 20-byte address.
+var signerAddressPattern = regexp.MustCompile(`^0x[0-9a-f]{40}$`)
+
+const zeroAddress = "0x0000000000000000000000000000000000000000"
 
 // ClientLaneParams enables client_seq lanes (housegate spec 2026-10-09 D13).
 // Absent from every update until an authority sets it; afterwards every
@@ -55,6 +72,38 @@ type SIIndexerEntry struct {
 type VerifierEntry struct {
 	NodeID        string `json:"node_id"`
 	Ed25519Pubkey []byte `json:"ed25519_pubkey"`
+}
+
+// Validate checks one normalized entry (lowercase Signer). Whether its
+// enrolment statement verifies, and every rule over committed state, is the
+// FSM's.
+func (e SIIndexerEntry) Validate() error {
+	switch {
+	case e.ActivationBlock == 0:
+		return fmt.Errorf("si_indexers: indexer %d: activation_block must be at least 1", e.IndexerID)
+	case !signerAddressPattern.MatchString(e.Signer) || e.Signer == zeroAddress:
+		return fmt.Errorf("si_indexers: indexer %d: signer must be a non-zero lowercase 0x-prefixed 20-byte address", e.IndexerID)
+	case !validNodeID(e.SNodeNodeID):
+		return fmt.Errorf("si_indexers: indexer %d: snode_node_id must be non-empty and free of whitespace and control characters", e.IndexerID)
+	case strings.TrimSpace(e.EnrollmentJWS) == "":
+		return fmt.Errorf("si_indexers: indexer %d: enrollment_jws is required", e.IndexerID)
+	}
+	return nil
+}
+
+// Validate checks one verifier entry.
+func (e VerifierEntry) Validate() error {
+	switch {
+	case strings.TrimSpace(e.NodeID) == "":
+		return fmt.Errorf("verifiers: node_id is required")
+	case len(e.Ed25519Pubkey) != ed25519.PublicKeySize:
+		return fmt.Errorf("verifiers: %s: ed25519_pubkey must be %d bytes, got %d", e.NodeID, ed25519.PublicKeySize, len(e.Ed25519Pubkey))
+	}
+	return nil
+}
+
+func validNodeID(id string) bool {
+	return id != "" && !strings.ContainsFunc(id, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 }
 
 // ConsensusParamsUpdate is the canonical signing form of a complete mutable
