@@ -24,8 +24,18 @@ const ClientLanesFeature = "client_lanes_v1"
 // every registered data-plane node.
 const SignedClaimsFeature = "signed_claims_v1"
 
+// TrackManifestsFeature is the capability string of a binary that decodes,
+// validates and replays against track-aware safe-snapshot manifests and
+// decodes the tracks-stage commands (housegate spec 2026-10-10 §7.3, §7.6).
+// The tracks activation gate requires it from every voter and every
+// registered data-plane node; after the activation the leader refuses a
+// data-plane registration without it.
+const TrackManifestsFeature = "track_manifests_v1"
+
 // LocalNodeFeatures returns this binary's capability strings in a fresh slice.
-func LocalNodeFeatures() []string { return []string{ClientLanesFeature, SignedClaimsFeature} }
+func LocalNodeFeatures() []string {
+	return []string{ClientLanesFeature, SignedClaimsFeature, TrackManifestsFeature}
+}
 
 // signerAddressPattern is a normalized (lowercase) 20-byte address.
 var signerAddressPattern = regexp.MustCompile(`^0x[0-9a-f]{40}$`)
@@ -146,6 +156,12 @@ type ConsensusParamsUpdate struct {
 	// Verifiers is the governed verifier set (spec D7), sorted by NodeID.
 	// Absent until set with SIIndexers; then carried by every update.
 	Verifiers []VerifierEntry `json:"verifiers,omitempty"`
+	// TracksEnabled is the tracks activation (housegate spec 2026-10-10 §7.6).
+	// False, and omitted from the canonical form so every earlier digest is
+	// unchanged, until one authority-signed update after the signed-claims
+	// activation sets it; afterwards every update carries it and it is never
+	// lowered. The raise-only and carry rules are the FSM's.
+	TracksEnabled bool `json:"tracks_enabled,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed
@@ -157,4 +173,39 @@ type EvictNodeCommand struct {
 	NodeID                  string `json:"node_id"`
 	ExpectedRegistrationSeq uint64 `json:"expected_registration_seq"`
 	Reason                  string `json:"reason"`
+}
+
+// QuarantineIndexerCommand is the canonical signing form of an
+// authority-signed quarantine (housegate spec 2026-10-10 §7.4); its wire form
+// is pb.QuarantineIndexerCmd minus authority_jws. ExpectedGeneration is a
+// compare-and-swap on the indexer's quarantine_generation, which every applied
+// quarantine, release and automatic quarantine increments, so a token can
+// never be replayed against a later state of the same indexer. Indexer 0 and
+// generation 0 are signed like any other value (no omitempty).
+type QuarantineIndexerCommand struct {
+	IndexerID          uint64 `json:"indexer_id"`
+	ExpectedGeneration uint64 `json:"expected_generation"`
+	Reason             string `json:"reason"`
+}
+
+// ReleaseIndexerCommand is the canonical signing form of an authority-signed
+// release (spec §7.4, §7.5); its wire form is pb.ReleaseIndexerCmd minus
+// authority_jws. AcknowledgedRejectedBlocks lists, sorted ascending without
+// duplicates, exactly the track's rejected blocks the release acknowledges;
+// it is nil, and omitted from the canonical form, when there are none.
+type ReleaseIndexerCommand struct {
+	IndexerID                  uint64   `json:"indexer_id"`
+	ExpectedGeneration         uint64   `json:"expected_generation"`
+	AcknowledgedRejectedBlocks []uint64 `json:"acknowledged_rejected_blocks,omitempty"`
+}
+
+// Validate refuses an acknowledged list that is not sorted ascending without
+// duplicates, so no one signs, and the FSM never compares, an ambiguous list.
+func (c ReleaseIndexerCommand) Validate() error {
+	for i := 1; i < len(c.AcknowledgedRejectedBlocks); i++ {
+		if c.AcknowledgedRejectedBlocks[i-1] >= c.AcknowledgedRejectedBlocks[i] {
+			return fmt.Errorf("release indexer %d: acknowledged_rejected_blocks must be sorted ascending without duplicates", c.IndexerID)
+		}
+	}
+	return nil
 }

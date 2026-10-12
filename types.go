@@ -102,6 +102,12 @@ type UnsafeCleanup struct {
 	PartitionID  string    `json:"partition_id"`
 	PromotionSeq uint64    `json:"promotion_seq"`
 	Parts        []PartRef `json:"parts"`
+	// RejectedBlockSeq is non-zero only for a rejected-part cleanup (housegate
+	// spec 2026-10-10 §7.5, plan S2-A clarification C4): PromotionSeq is then
+	// 0 and Parts are candidate parts of block RejectedBlockSeq's Rejected
+	// statements that were never promoted. Zero (omitted) keeps every
+	// promotion cleanup's cmd_hash byte-identical.
+	RejectedBlockSeq uint64 `json:"rejected_block_seq,omitempty"`
 }
 
 // ---- Canonical Go mirror types (P1a, design §3) ----
@@ -138,6 +144,8 @@ const (
 	AdmissionCodeLaneBudgetExceeded AdmissionCode = 9
 	// AdmissionCodeSourceUnavailable: the target's owner SNode is not registered and Active (housegate spec 2026-10-10 §6.4); nothing changed, retryable.
 	AdmissionCodeSourceUnavailable AdmissionCode = 10
+	// AdmissionCodeIndexerQuarantined: the target's owner SI indexer is quarantined (housegate spec 2026-10-10 §7.4); returned only after the tracks activation; nothing changed, the coordinate is unspent; not retryable until the indexer is released.
+	AdmissionCodeIndexerQuarantined AdmissionCode = 11
 )
 
 // NodeRole mirrors pb.NodeRole.
@@ -319,6 +327,10 @@ type CleanupAck struct {
 	PromotionSeq uint64 `json:"promotion_seq"`
 	TableID      string `json:"table_id"`
 	PartitionID  string `json:"partition_id"`
+	// RejectedBlockSeq echoes UnsafeCleanup.RejectedBlockSeq (clarification
+	// C4). Zero (omitted) keeps every promotion cleanup acknowledgement's
+	// canonical and signed body byte-identical.
+	RejectedBlockSeq uint64 `json:"rejected_block_seq,omitempty"`
 }
 
 // MarshalText/UnmarshalText let TablePartition key JSON maps in FSM

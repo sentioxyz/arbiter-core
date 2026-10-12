@@ -288,16 +288,35 @@ func tableManifestToPB(v replay.TableManifest) *pb.TableManifest {
 		ActiveParts:    mapSlice(v.ActiveParts, partManifestEntryToPB)}
 }
 
+// TrackFrontierFromPB converts one track_frontiers entry (housegate spec
+// 2026-10-10 §7.3); indexer 0 and zero values are ordinary values.
+func TrackFrontierFromPB(m *pb.TrackFrontier) replay.TrackFrontier {
+	return replay.TrackFrontier{IndexerID: m.GetIndexerId(), SafeBlockSeq: m.GetSafeBlockSeq(), AppliedPromotionSeq: m.GetAppliedPromotionSeq()}
+}
+
+// TrackFrontierToPB is TrackFrontierFromPB's inverse; arbiter's track-state
+// read builds its frontiers with it.
+func TrackFrontierToPB(v replay.TrackFrontier) *pb.TrackFrontier {
+	return &pb.TrackFrontier{IndexerId: v.IndexerID, SafeBlockSeq: v.SafeBlockSeq, AppliedPromotionSeq: v.AppliedPromotionSeq}
+}
+
+// ManifestFromPB copies every field explicitly: a field it dropped would change
+// the manifest root the receiver recomputes, and every verifier would refuse
+// the manifest (housegate spec 2026-10-10 §7.3). An empty track_frontiers
+// decodes to nil, the form of every manifest published before the tracks
+// activation.
 func ManifestFromPB(m *pb.SafeSnapshotManifest) replay.SafeSnapshotManifest {
 	return replay.SafeSnapshotManifest{SnapshotID: m.GetSnapshotId(), ParentSnapshotID: m.GetParentSnapshotId(),
 		SafeBlockSeq: m.GetSafeBlockSeq(), StateRoot: m.GetStateRoot(), SchemaSnapshotID: m.GetSchemaSnapshotId(),
 		SchemaRoot: m.GetSchemaRoot(), ExecutorProfileID: m.GetExecutorProfileId(), DataRoot: m.GetDataRoot(),
-		ManifestRoot: m.GetManifestRoot(), Tables: mapSlice(m.GetTables(), tableManifestFromPB)}
+		ManifestRoot: m.GetManifestRoot(), Tables: mapSlice(m.GetTables(), tableManifestFromPB),
+		TrackFrontiers: mapSlice(m.GetTrackFrontiers(), TrackFrontierFromPB)}
 }
 
 func ManifestToPB(v replay.SafeSnapshotManifest) *pb.SafeSnapshotManifest {
 	return &pb.SafeSnapshotManifest{SnapshotId: v.SnapshotID, ParentSnapshotId: v.ParentSnapshotID,
 		SafeBlockSeq: v.SafeBlockSeq, StateRoot: v.StateRoot, SchemaSnapshotId: v.SchemaSnapshotID,
 		SchemaRoot: v.SchemaRoot, ExecutorProfileId: v.ExecutorProfileID, DataRoot: v.DataRoot,
-		ManifestRoot: v.ManifestRoot, Tables: mapSlice(v.Tables, tableManifestToPB)}
+		ManifestRoot: v.ManifestRoot, Tables: mapSlice(v.Tables, tableManifestToPB),
+		TrackFrontiers: mapSlice(v.TrackFrontiers, TrackFrontierToPB)}
 }

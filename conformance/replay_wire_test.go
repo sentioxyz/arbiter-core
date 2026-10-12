@@ -59,6 +59,7 @@ func TestReplayWireTypesMirrorPkgReplay(t *testing.T) {
 		{"ReplayAttestation", replay.ReplayAttestation{}, &pb.ReplayAttestation{}},
 		{"TableManifest", replay.TableManifest{}, &pb.TableManifest{}},
 		{"SafeSnapshotManifest", replay.SafeSnapshotManifest{}, &pb.SafeSnapshotManifest{}},
+		{"TrackFrontier", replay.TrackFrontier{}, &pb.TrackFrontier{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

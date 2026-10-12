@@ -28,6 +28,7 @@ go_test(
     name = "arbiter-core_test",
     srcs = [
         "consensus_test.go",
+        "tracks_test.go",
         "types_test.go",
     ],
     embed = [":arbiter-core"],

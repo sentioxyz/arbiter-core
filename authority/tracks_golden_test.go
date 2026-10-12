@@ -30,3 +30,22 @@ func TestCleanupCommandHashWithoutRejectedBlockIsFrozen(t *testing.T) {
 		t.Fatalf("CleanupCommandHash = %s, want %s", got, want)
 	}
 }
+
+// TestRejectedPartCleanupHashIsFrozen pins the cmd_hash of a rejected-part
+// cleanup (promotion_seq 0, rejected_block_seq 12, clarification C4):
+// rejected_block_seq is the last member of the canonical form. Computed
+// outside Go over
+// {"table_id":"db1.t","partition_id":"all","promotion_seq":0,"parts":[{"table_id":"db1.t","partition_id":"all","part_row_lthash":"0xaa","part_name":"all_1_1_0"}],"rejected_block_seq":12}.
+// Never regenerate this value.
+func TestRejectedPartCleanupHashIsFrozen(t *testing.T) {
+	cleanup := goldenCleanup()
+	cleanup.PromotionSeq, cleanup.RejectedBlockSeq = 0, 12
+	got, err := CleanupCommandHash(cleanup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "0x461a6ab7fff34ef5c2c0c03050b5e24f008811c0cacdd81fe207c2a14d9f7477"
+	if got != want {
+		t.Fatalf("CleanupCommandHash = %s, want %s", got, want)
+	}
+}

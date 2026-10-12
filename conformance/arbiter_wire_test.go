@@ -52,6 +52,11 @@ func TestArbiterMirrorsMatchProto(t *testing.T) {
 	assertMirror(t, arbiter.ConsensusParamsUpdate{}, &pb.ConsensusParamsUpdate{})
 	// EvictNodeCommand is the signed body of ConsensusAdmin.EvictNode.
 	assertMirror(t, arbiter.EvictNodeCommand{}, &pb.EvictNodeRequest{}, "authority_jws")
+	// QuarantineIndexerCmd and ReleaseIndexerCmd are both the ConsensusAdmin
+	// request and the Raft command; authority_jws signs the canonical body
+	// beside it (plan S2-A contract §1-§2).
+	assertMirror(t, arbiter.QuarantineIndexerCommand{}, &pb.QuarantineIndexerCmd{}, "authority_jws")
+	assertMirror(t, arbiter.ReleaseIndexerCommand{}, &pb.ReleaseIndexerCmd{}, "authority_jws")
 	assertMirror(t, arbiter.StatementID{}, &pb.StatementID{})
 	assertMirror(t, arbiter.StatementEnvelope{}, &pb.StatementEnvelopeV2{})
 	assertMirror(t, arbiter.CandidatePart{}, &pb.CandidatePart{})
@@ -86,7 +91,8 @@ func TestEnumNumbersMatchProto(t *testing.T) {
 		int32(arbiter.AdmissionCodeMalformed) != int32(pb.AdmissionCode_ADMISSION_CODE_MALFORMED) ||
 		int32(arbiter.AdmissionCodeGapBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_GAP_BUDGET_EXCEEDED) ||
 		int32(arbiter.AdmissionCodeLaneBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_LANE_BUDGET_EXCEEDED) ||
-		int32(arbiter.AdmissionCodeSourceUnavailable) != int32(pb.AdmissionCode_ADMISSION_CODE_SOURCE_UNAVAILABLE) {
+		int32(arbiter.AdmissionCodeSourceUnavailable) != int32(pb.AdmissionCode_ADMISSION_CODE_SOURCE_UNAVAILABLE) ||
+		int32(arbiter.AdmissionCodeIndexerQuarantined) != int32(pb.AdmissionCode_ADMISSION_CODE_INDEXER_QUARANTINED) {
 		t.Fatal("AdmissionCode Go constants drifted from pb enum numbers")
 	}
 	if int32(arbiter.NodeRoleUnspecified) != int32(pb.NodeRole_NODE_ROLE_UNSPECIFIED) ||

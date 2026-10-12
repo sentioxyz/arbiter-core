@@ -43,7 +43,8 @@ func TestConsensusParamsUpdateOmitsAbsentClientLanes(t *testing.T) {
 
 func TestLocalNodeFeatures(t *testing.T) {
 	got := LocalNodeFeatures()
-	if !slices.Equal(got, []string{"client_lanes_v1", "signed_claims_v1"}) || ClientLanesFeature != "client_lanes_v1" || SignedClaimsFeature != "signed_claims_v1" {
+	if !slices.Equal(got, []string{"client_lanes_v1", "signed_claims_v1", "track_manifests_v1"}) || ClientLanesFeature != "client_lanes_v1" ||
+		SignedClaimsFeature != "signed_claims_v1" || TrackManifestsFeature != "track_manifests_v1" {
 		t.Fatalf("LocalNodeFeatures = %v", got)
 	}
 	got[0] = "mutated"

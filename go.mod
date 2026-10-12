@@ -11,7 +11,7 @@ replace github.com/ClickHouse/clickhouse-go/v2 => github.com/sentioxyz/clickhous
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/ethereum/go-ethereum v1.17.2
-	github.com/sentioxyz/arbiter-proto v0.10.0
+	github.com/sentioxyz/arbiter-proto v0.11.0
 	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 )
@@ -24,9 +24,9 @@ require (
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
-	github.com/housegate/rewriter-go v0.11.1-0.20260920014131-4e4a14a70841 // indirect
-	github.com/housegate/rewriter-proto v0.2.1-0.20260918115349-d3844a56d7b4 // indirect
-	github.com/tobilg/polyglot/packages/go v0.10.0 // indirect
+	github.com/housegate/rewriter-go v0.17.0 // indirect
+	github.com/housegate/rewriter-proto v0.4.0 // indirect
+	github.com/tobilg/polyglot/packages/go v0.13.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
@@ -42,7 +42,7 @@ require (
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
-	github.com/housegate/housegate v0.14.2-0.20260923160348-db46c31d5501
+	github.com/housegate/housegate v0.19.0
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect

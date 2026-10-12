@@ -85,9 +85,13 @@ type canonicalPartManifestEntry struct {
 // this it would police an array that cannot reach the root: partManifestEntryFromPB
 // appends onto a nil slice, so every part decoded from protobuf with no storage
 // refs carries nil, and such a command must still hash to the root its sender
-// computed. Keep an entry only while the canonical DTO really omits the field.
+// computed. A manifest's track_frontiers (housegate spec 2026-10-10 §7.3) is
+// nil on every manifest published before the tracks activation; the C1 DTO
+// predates it and binds it only through manifest_root. Keys are Go field
+// names. Keep an entry only while the canonical DTO really omits the field.
 var canonicalProjectionOmits = map[reflect.Type]map[string]bool{
-	reflect.TypeOf(replay.PartManifestEntry{}): {"StorageRefs": true},
+	reflect.TypeOf(replay.PartManifestEntry{}):    {"StorageRefs": true},
+	reflect.TypeOf(replay.SafeSnapshotManifest{}): {"TrackFrontiers": true},
 }
 
 // canonicalProjectionMaterializes names raw-record arrays that canonicalManifest
