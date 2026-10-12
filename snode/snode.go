@@ -226,9 +226,16 @@ func (r *Role) Run(ctx context.Context) error {
 // their own lifecycle after readiness. A cancellation already observed before
 // the callback suppresses it. If ready panics, all barrier workers are canceled
 // and joined before the panic continues.
+//
+// From the start, and for as long as it runs, the Role re-sends in the
+// background the cleanup acknowledgements it owes the arbiter
+// (Config.CleanupAckResendInterval). Startup does not wait for them: the purge
+// gate holds only the tables they belong to, including in the startup pass.
 func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	stopResender := r.startCleanupAckResender(runCtx)
+	defer stopResender()
 	// The periodic verifier first fires after an interval. Ensure before
 	// Prepare so startup convergence never touches ClickHouse in an unverified
 	// protocol-table state, including when Run is called without Register.

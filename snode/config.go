@@ -17,6 +17,9 @@ const (
 	// DefaultHardPartsPerPartition stays below the pinned ClickHouse
 	// parts_to_throw_insert setting and mirrors ingress back-pressure.
 	DefaultHardPartsPerPartition = 2950
+	// DefaultCleanupAckResendInterval is Config.CleanupAckResendInterval's
+	// default.
+	DefaultCleanupAckResendInterval = 10 * time.Second
 )
 
 type Config struct {
@@ -67,6 +70,12 @@ type Config struct {
 	// dataplane.GenesisSnapshotID, which only the founding indexer's SNode
 	// can; a signing SNode without genesis tables must set it.
 	GenesisSnapshotID string
+	// CleanupAckResendInterval is how often the SNode re-sends, in the
+	// background from startup on, the cleanup acknowledgements it owes the
+	// arbiter (a cleanup ran, but AckCleanup has not yet succeeded), and it
+	// bounds each such pass. The purge of a table waits while one of its
+	// acknowledgements is owed. 0 = DefaultCleanupAckResendInterval (10s).
+	CleanupAckResendInterval time.Duration
 }
 
 func (c *Config) validate() error {
@@ -116,6 +125,11 @@ func (c *Config) validate() error {
 	}
 	if c.ProtocolTablesMaxFailures < 0 {
 		errs = append(errs, errors.New("protocol tables reconcile max failures must not be negative"))
+	}
+	if c.CleanupAckResendInterval < 0 {
+		errs = append(errs, errors.New("cleanup ack resend interval must not be negative"))
+	} else if c.CleanupAckResendInterval == 0 {
+		c.CleanupAckResendInterval = DefaultCleanupAckResendInterval
 	}
 	mode, modeErr := ddl.ModeFromSchemaSource(c.SchemaSource)
 	if modeErr != nil {

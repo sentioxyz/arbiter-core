@@ -58,6 +58,7 @@ go_test(
         "intake_test.go",
         "journal_test.go",
         "native_fixture_test.go",
+        "owed_cleanup_ack_test.go",
         "payload_mismatch_class_test.go",
         "prepare_test.go",
         "promote_duplicate_test.go",

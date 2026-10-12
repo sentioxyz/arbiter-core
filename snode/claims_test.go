@@ -30,7 +30,8 @@ import (
 
 // claimsFakeS records every request an SNode sends to the arbiter.
 // failRegistrations makes the first RegisterNode calls answer Unavailable
-// after recording them (an uncertain commit).
+// after recording them (an uncertain commit). refuseCleanupAcks makes
+// AckCleanup answer an error; the zero value accepts every request.
 type claimsFakeS struct {
 	pb.UnimplementedMembershipServer
 	pb.UnimplementedSourceClaimsServer
@@ -43,6 +44,8 @@ type claimsFakeS struct {
 	claims            []*pb.RCRecord
 	acks              []*pb.PromotionAck
 	cleanups          []*pb.CleanupAck
+	cleanupAckErr     error
+	refusedCleanups   []*pb.CleanupAck
 }
 
 func (f *claimsFakeS) RegisterNode(_ context.Context, m *pb.NodeRegistration) (*pb.Ack, error) {
@@ -80,8 +83,27 @@ func (f *claimsFakeS) AckPromotion(_ context.Context, m *pb.PromotionAck) (*pb.A
 func (f *claimsFakeS) AckCleanup(_ context.Context, m *pb.CleanupAck) (*pb.Ack, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.cleanupAckErr != nil {
+		f.refusedCleanups = append(f.refusedCleanups, m)
+		return nil, f.cleanupAckErr
+	}
 	f.cleanups = append(f.cleanups, m)
 	return &pb.Ack{}, nil
+}
+
+// refuseCleanupAcks makes every later AckCleanup answer err after recording
+// the request as refused (not in sent); nil accepts them again.
+func (f *claimsFakeS) refuseCleanupAcks(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleanupAckErr = err
+}
+
+// refused returns the cleanup acknowledgements AckCleanup answered with an error.
+func (f *claimsFakeS) refused() []*pb.CleanupAck {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.refusedCleanups)
 }
 
 func (f *claimsFakeS) registrations() ([]*pb.NodeRegistration, []*pb.NodeRef) {

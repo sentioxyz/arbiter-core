@@ -67,12 +67,23 @@ type localState struct {
 	// RegistrationSeq is the last registration_seq this SNode reserved
 	// (housegate spec 2026-10-10 §6.5); see NextRegistrationSeq.
 	RegistrationSeq uint64 `json:"registration_seq,omitempty"`
+	// OwedCleanupAcks are the cleanup acknowledgements this SNode owes the
+	// arbiter, keyed by cleanupAckKey (one cleanup, one entry): the cleanup's
+	// DROPs ran and were journaled, but AckCleanup has not yet returned
+	// success (RecordExecutedCleanup, ConfirmCleanupAck). While one is owed,
+	// the purge gate and ForgetTable hold its table. A v0.14.0 state file has
+	// none and loads unchanged; a v0.14.0 binary ignores the field.
+	OwedCleanupAcks map[string]arbiter.CleanupAck `json:"owed_cleanup_acks,omitempty"`
 }
 
 type stateStore struct {
 	path string
 	mu   sync.Mutex
 	s    localState
+	// beforeWrite, when set, sees every state persistStateLocked is about to
+	// write, under mu, and fails the write with its error. Only tests set it,
+	// to count and inspect the writes of one operation or to fail one.
+	beforeWrite func(next localState) error
 }
 
 func openStateStore(dir string) (*stateStore, error) {
@@ -124,6 +135,9 @@ func (s *localState) ensureMaps() {
 	}
 	if s.PromotionIntents == nil {
 		s.PromotionIntents = map[string]promotionIntent{}
+	}
+	if s.OwedCleanupAcks == nil {
+		s.OwedCleanupAcks = map[string]arbiter.CleanupAck{}
 	}
 }
 
@@ -254,36 +268,36 @@ func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arb
 	return st.persistStateLocked(next)
 }
 
-// RecordCleanup forgets promoted unsafe parts once their cleanup ran. It is
-// journaled before the cleanup ack is sent: the parts are already dropped
-// from ClickHouse, so even if the ack send fails the exclusion list must not
-// keep naming parts that no longer exist. The important direction is never to
-// drop a name before the part is gone.
+// RecordCleanup forgets promoted unsafe parts once their cleanup ran, in one
+// state write (none when no name was awaiting cleanup). The important
+// direction is never to drop a name before the part is gone. handleCleanup
+// journals this together with the rest of an executed cleanup through
+// RecordExecutedCleanup.
 func (st *stateStore) RecordCleanup(k partitionKey, partNames []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	ks := key(k.Table, k.Partition)
 	next := cloneLocalState(st.s)
-	existing := next.PromotedUnsafeParts[ks]
-	if len(existing) == 0 {
+	if !next.forgetPromotedParts(k, partNames) {
 		return nil
 	}
-	drop := make(map[string]bool, len(partNames))
-	for _, p := range partNames {
-		drop[p] = true
-	}
-	kept := make([]string, 0, len(existing))
-	for _, p := range existing {
-		if !drop[p] {
-			kept = append(kept, p)
-		}
+	return st.persistStateLocked(next)
+}
+
+// forgetPromotedParts removes partNames from k's promoted unsafe parts and
+// reports whether any was there.
+func (s *localState) forgetPromotedParts(k partitionKey, partNames []string) bool {
+	ks := key(k.Table, k.Partition)
+	existing := s.PromotedUnsafeParts[ks]
+	kept := slices.DeleteFunc(slices.Clone(existing), func(p string) bool { return slices.Contains(partNames, p) })
+	if len(kept) == len(existing) {
+		return false
 	}
 	if len(kept) == 0 {
-		delete(next.PromotedUnsafeParts, ks)
+		delete(s.PromotedUnsafeParts, ks)
 	} else {
-		next.PromotedUnsafeParts[ks] = kept
+		s.PromotedUnsafeParts[ks] = kept
 	}
-	return st.persistStateLocked(next)
+	return true
 }
 
 // PromotedUnsafeParts returns the sorted union, over every partition of
@@ -391,14 +405,14 @@ func (st *stateStore) RemoveUnpromotedPart(k partitionKey, partName, partLtHashH
 // promotionSeq is not 0: a rejected-part cleanup carries none (plan S2-A
 // clarification C4), and a part a promotion applied has already left
 // UnpromotedSums through RecordAppliedPromotion, which keeps its intake record,
-// so RemoveRejectedParts would subtract its hash a second time. It also refuses
-// a part that does not belong to k (the DROP targets the command's table, so
-// such a part would be dropped from one place and accounted for under another),
-// a part without a name, and a part that intake recorded under k with a row
-// LtHash other than the one the command names, because the command then does
-// not describe that part; the last fails closed like RemoveUnpromotedPart's
-// hash mismatch. A part that was never recorded, or whose record already holds
-// the removed marker, passes.
+// so the accounting of RecordExecutedCleanup would subtract its hash a second
+// time. It also refuses a part that does not belong to k (the DROP targets the
+// command's table, so such a part would be dropped from one place and accounted
+// for under another), a part without a name, and a part that intake recorded
+// under k with a row LtHash other than the one the command names, because the
+// command then does not describe that part; the last fails closed like
+// RemoveUnpromotedPart's hash mismatch. A part that was never recorded, or
+// whose record already holds the removed marker, passes.
 func (st *stateStore) CheckRejectedParts(k partitionKey, promotionSeq uint64, parts []arbiter.PartRef) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -425,48 +439,137 @@ func (s *localState) checkRejectedParts(k partitionKey, promotionSeq uint64, par
 	return nil
 }
 
-// RemoveRejectedParts takes the parts a rejected-part cleanup of partition k
-// dropped out of the unpromoted accounting, in one state write after the DROPs:
-// each part intake recorded with exactly the named row LtHash leaves k's
-// UnpromotedSums entry and gets the removed marker RemoveUnpromotedPart uses.
-// A rejected statement is never promoted, so nothing else would subtract those
-// rows, and the purge gate (quiescent) and ForgetTable refuse a non-zero sum.
-// A part that was never recorded, or whose record already holds the marker, is
-// skipped: a redelivered cleanup writes nothing, and an unrecorded part cannot
-// drive a sum negative. It repeats CheckRejectedParts under the lock, so the
-// accounting never runs for a command that carries a promotion_seq and never
-// uses another key than the DROPs did.
-func (st *stateStore) RemoveRejectedParts(k partitionKey, promotionSeq uint64, parts []arbiter.PartRef) error {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if err := st.s.checkRejectedParts(k, promotionSeq, parts); err != nil {
-		return err
-	}
-	next := cloneLocalState(st.s)
+// removeRejectedParts takes the parts a rejected-part cleanup of partition k
+// dropped out of the unpromoted accounting: each part intake recorded with
+// exactly the named row LtHash leaves k's UnpromotedSums entry and gets the
+// removed marker RemoveUnpromotedPart uses. A rejected statement is never
+// promoted, so nothing else would subtract those rows, and the purge gate
+// (quiescent) and ForgetTable refuse a non-zero sum. A part that was never
+// recorded, or whose record already holds the marker, is skipped: a
+// redelivered cleanup changes nothing, and an unrecorded part cannot drive a
+// sum negative. It reports whether anything changed.
+func (s *localState) removeRejectedParts(k partitionKey, parts []arbiter.PartRef) (bool, error) {
 	ks := key(k.Table, k.Partition)
 	changed := false
 	for _, p := range parts {
 		partKey := intakePartKey(k, p.PartName)
-		if recorded, ok := next.IntakeParts[partKey]; !ok || recorded == "" {
+		if recorded, ok := s.IntakeParts[partKey]; !ok || recorded == "" {
 			continue
 		}
-		acc, err := parseAccumulatorHex(next.UnpromotedSums[ks])
+		acc, err := parseAccumulatorHex(s.UnpromotedSums[ks])
 		if err != nil {
-			return err
+			return false, err
 		}
 		part, err := parseAccumulatorHex(p.PartRowLtHash)
 		if err != nil {
-			return err
+			return false, err
 		}
 		acc.SubHash(part)
-		next.UnpromotedSums[ks] = accumulatorHex(acc)
-		next.IntakeParts[partKey] = ""
+		s.UnpromotedSums[ks] = accumulatorHex(acc)
+		s.IntakeParts[partKey] = ""
+		changed = true
+	}
+	return changed, nil
+}
+
+// cleanupAckKey keys the acknowledgement of one cleanup: its table,
+// partition, promotion_seq and rejected_block_seq.
+func cleanupAckKey(ack arbiter.CleanupAck) string {
+	return fmt.Sprintf("%s\x00%d\x00%d", key(ack.TableID, ack.PartitionID), ack.PromotionSeq, ack.RejectedBlockSeq)
+}
+
+// RecordExecutedCleanup journals cmd, a cleanup whose DROPs all succeeded, in
+// one state write: for a rejected-part cleanup the accounting of
+// removeRejectedParts, after re-running CheckRejectedParts under the lock (so
+// it never runs for a command that carries a promotion_seq, and never uses
+// another key than the DROPs did); then RecordCleanup's effect; and ack, the
+// acknowledgement this SNode now owes the arbiter for cmd. The purge gate
+// (quiescent) and ForgetTable count an owed acknowledgement as work that still
+// references its table, so no state, a crash included, opens the gate between
+// the DROPs and the arbiter accepting ack: before this write the cleanup's
+// promoted-part exclusion or unpromoted rows hold it, after it the owed entry
+// does, until ConfirmCleanupAck. A redelivered cmd writes nothing while its
+// entry is owed, and records it again once it was confirmed; the arbiter takes
+// the repeated acknowledgement as a no-op. ack must be cmd's acknowledgement,
+// so that one cleanup keys one entry; another is refused.
+func (st *stateStore) RecordExecutedCleanup(cmd arbiter.UnsafeCleanup, ack arbiter.CleanupAck) error {
+	if ack.TableID != cmd.TableID || ack.PartitionID != cmd.PartitionID ||
+		ack.PromotionSeq != cmd.PromotionSeq || ack.RejectedBlockSeq != cmd.RejectedBlockSeq {
+		return fmt.Errorf("acknowledgement of %s/%s (promotion_seq %d, rejected_block_seq %d) is not the acknowledgement of the cleanup of %s/%s (promotion_seq %d, rejected_block_seq %d)",
+			ack.TableID, ack.PartitionID, ack.PromotionSeq, ack.RejectedBlockSeq,
+			cmd.TableID, cmd.PartitionID, cmd.PromotionSeq, cmd.RejectedBlockSeq)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	k := partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}
+	next := cloneLocalState(st.s)
+	changed := false
+	if cmd.RejectedBlockSeq != 0 {
+		if err := st.s.checkRejectedParts(k, cmd.PromotionSeq, cmd.Parts); err != nil {
+			return err
+		}
+		removed, err := next.removeRejectedParts(k, cmd.Parts)
+		if err != nil {
+			return err
+		}
+		changed = removed
+	}
+	names := make([]string, 0, len(cmd.Parts))
+	for _, p := range cmd.Parts {
+		names = append(names, p.PartName)
+	}
+	if next.forgetPromotedParts(k, names) {
+		changed = true
+	}
+	ak := cleanupAckKey(ack)
+	if owed, ok := next.OwedCleanupAcks[ak]; !ok || owed != ack {
+		next.OwedCleanupAcks[ak] = ack
 		changed = true
 	}
 	if !changed {
 		return nil
 	}
 	return st.persistStateLocked(next)
+}
+
+// ConfirmCleanupAck clears ack's owed entry, in a state write of its own, once
+// the arbiter accepted ack (AckCleanup returned success). When the write
+// fails the entry stays, on disk and in memory, and ack is sent again later;
+// the arbiter takes an acknowledgement it already has as a no-op. An entry
+// that is not owed (another sender confirmed it first) writes nothing.
+func (st *stateStore) ConfirmCleanupAck(ack arbiter.CleanupAck) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	ak := cleanupAckKey(ack)
+	if owed, ok := st.s.OwedCleanupAcks[ak]; !ok || owed != ack {
+		return nil
+	}
+	next := cloneLocalState(st.s)
+	delete(next.OwedCleanupAcks, ak)
+	return st.persistStateLocked(next)
+}
+
+// OwedCleanupAcks returns the cleanup acknowledgements this SNode owes the
+// arbiter, in key order; nil when none.
+func (st *stateStore) OwedCleanupAcks() []arbiter.CleanupAck {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var out []arbiter.CleanupAck
+	for _, ak := range slices.Sorted(maps.Keys(st.s.OwedCleanupAcks)) {
+		out = append(out, st.s.OwedCleanupAcks[ak])
+	}
+	return out
+}
+
+// owedCleanupAckOf returns the first owed acknowledgement, in key order, of a
+// cleanup of table.
+func (s *localState) owedCleanupAckOf(table string) (arbiter.CleanupAck, bool) {
+	for _, ak := range slices.Sorted(maps.Keys(s.OwedCleanupAcks)) {
+		if ack := s.OwedCleanupAcks[ak]; ack.TableID == table {
+			return ack, true
+		}
+	}
+	return arbiter.CleanupAck{}, false
 }
 
 func (st *stateStore) DrainUnpromoted(k partitionKey, partLtHashHexes []string) error {
@@ -497,6 +600,11 @@ func (st *stateStore) persistLocked() error {
 // cloned next state so a failed write cannot advance an in-memory watermark
 // or discard an unresolved intent.
 func (st *stateStore) persistStateLocked(next localState) error {
+	if st.beforeWrite != nil {
+		if err := st.beforeWrite(next); err != nil {
+			return err
+		}
+	}
 	b, err := json.Marshal(next)
 	if err != nil {
 		return err
@@ -560,6 +668,7 @@ func cloneLocalState(s localState) localState {
 		PromotedUnsafeParts: make(map[string][]string, len(s.PromotedUnsafeParts)),
 		PromotionIntents:    make(map[string]promotionIntent, len(s.PromotionIntents)),
 		RegistrationSeq:     s.RegistrationSeq,
+		OwedCleanupAcks:     maps.Clone(s.OwedCleanupAcks),
 	}
 	for k, parts := range s.PromotedUnsafeParts {
 		next.PromotedUnsafeParts[k] = slices.Clone(parts)

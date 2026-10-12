@@ -107,8 +107,17 @@ func (r *Role) TableSetStats() tableset.Stats {
 }
 
 // tableQuiescent is the purge gate: no promotion intent, no promoted part
-// awaiting cleanup, no unpromoted rows and no unfinished intake still
-// reference tableID.
+// awaiting cleanup, no unpromoted rows, no unfinished intake and no cleanup
+// acknowledgement owed to the arbiter still reference tableID.
+//
+// The owed acknowledgement keeps the stage-1 obligation that no role reports a
+// table purged while an unsafe cleanup of it is unacknowledged. A cleanup's
+// own journaling forgets the exclusion or the unpromoted rows that held the
+// gate, in the same write that records its acknowledgement as owed
+// (RecordExecutedCleanup); only the arbiter's acceptance clears that entry. A
+// table purged earlier would leave the arbiter redelivering the cleanup to a
+// missing table, or let a stale cleanup reach a re-created table of the same
+// name (spec D9).
 //
 // It holds intakeMu, the lock every intake transition holds from its
 // admission check to its durable journal record. A prepare that passed
@@ -165,6 +174,9 @@ func (st *stateStore) quiescent(table string) (bool, error) {
 			return false, nil
 		}
 	}
+	if _, owed := st.s.owedCleanupAckOf(table); owed {
+		return false, nil
+	}
 	return true, nil
 }
 
@@ -183,9 +195,10 @@ func (r *Role) forgetDroppedTable(_ context.Context, tableID string) error {
 // ForgetTable durably removes every BaseRoots, BaseSnapshotIDs,
 // UnpromotedSums, LastAcks and IntakeParts entry of table in one state write;
 // watermarks stay, because promotion seqs are global. It is idempotent (no
-// entry, no write). It refuses while the table still has promotion work
-// (the purge gate's quiescence): an unresolved intent, a promoted part
-// awaiting cleanup or unpromoted rows are never discarded silently.
+// entry, no write). It refuses while the table still has promotion or cleanup
+// work (the purge gate's quiescence): an unresolved intent, a promoted part
+// awaiting cleanup, unpromoted rows or a cleanup acknowledgement the arbiter
+// has not accepted are never discarded silently.
 func (st *stateStore) ForgetTable(table string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -212,6 +225,10 @@ func (st *stateStore) ForgetTable(table string) error {
 		if !bytes.Equal(acc.Bytes(), zero) {
 			return fmt.Errorf("snode: forget table %s: partition %s has unpromoted rows", table, strings.TrimPrefix(ks, prefix))
 		}
+	}
+	if ack, owed := st.s.owedCleanupAckOf(table); owed {
+		return fmt.Errorf("snode: forget table %s: the acknowledgement of the cleanup of partition %s (promotion_seq %d, rejected_block_seq %d) is owed to the arbiter",
+			table, ack.PartitionID, ack.PromotionSeq, ack.RejectedBlockSeq)
 	}
 	next := cloneLocalState(st.s)
 	changed := false
