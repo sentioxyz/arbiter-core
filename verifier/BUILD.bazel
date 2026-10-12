@@ -44,6 +44,7 @@ go_test(
         "registry_test.go",
         "scanner_test.go",
         "table_set_test.go",
+        "tracks_test.go",
         "verifier_fakes_test.go",
         "verifier_test.go",
     ],

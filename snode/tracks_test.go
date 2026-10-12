@@ -141,3 +141,30 @@ func TestHandleCleanup_RejectedPartsAreDroppedWithoutAPromotion(t *testing.T) {
 		t.Fatalf("cleanup acknowledgements = %+v, want [%+v]", acks, want)
 	}
 }
+
+// TestSNodeRegistrationAdvertisesTrackManifests: every SNode built from this
+// release advertises track_manifests_v1, signed or not; the filter drops only
+// signed_claims_v1, and only without a claim signer (plan S2-A contract §2).
+func TestSNodeRegistrationAdvertisesTrackManifests(t *testing.T) {
+	legacy, _, err := (&Role{cfg: Config{NodeID: "s1"}}).registrationRequests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{arbiter.ClientLanesFeature, arbiter.TrackManifestsFeature}; !slices.Equal(legacy.GetFeatures(), want) {
+		t.Fatalf("unsigned SNode features = %v, want %v", legacy.GetFeatures(), want)
+	}
+	fake := &claimsFakeS{}
+	now := fixtureMillis
+	role, err := New(signingConfigS(t), Deps{Client: startClaimsFakeS(t, fake),
+		ClaimSigner: authoritytest.MustSigner(t, authoritytest.IndexerKeyHex1), Now: clockS(&now)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := role.Register(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	regs, _ := fake.registrations()
+	if len(regs) != 1 || !slices.Equal(regs[0].GetFeatures(), arbiter.LocalNodeFeatures()) {
+		t.Fatalf("signing SNode registrations = %v, want features %v", regs, arbiter.LocalNodeFeatures())
+	}
+}

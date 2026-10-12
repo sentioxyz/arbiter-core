@@ -33,6 +33,7 @@ go_test(
     srcs = [
         "client_test.go",
         "manifests_test.go",
+        "manifests_tracks_test.go",
         "registry_follower_size_test.go",
         "registry_follower_test.go",
         "registry_schema_test.go",
