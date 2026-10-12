@@ -23,6 +23,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		ClientLanes:                   ClientLaneParamsFromPB(m.GetClientLanes()),
 		SIIndexers:                    SIIndexerEntriesFromPB(m.GetSiIndexers()),
 		Verifiers:                     VerifierEntriesFromPB(m.GetVerifiers()),
+		TracksEnabled:                 m.GetTracksEnabled(),
 	}
 }
 
@@ -42,6 +43,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		ClientLanes:                   ClientLaneParamsToPB(v.ClientLanes),
 		SiIndexers:                    SIIndexerEntriesToPB(v.SIIndexers),
 		Verifiers:                     VerifierEntriesToPB(v.Verifiers),
+		TracksEnabled:                 v.TracksEnabled,
 	}
 }
 

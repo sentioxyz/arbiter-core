@@ -181,15 +181,16 @@ func PromoteToPB(v arbiter.PromoteSafePartition) *pb.PromoteSafePartition {
 		CandidateParts: mapSlice(v.CandidateParts, partRefToPB)}
 }
 
-// CleanupFromPB converts an unsafe cleanup command from its wire form.
+// CleanupFromPB converts an unsafe cleanup command from its wire form,
+// rejected_block_seq included: it is part of the authority-signed cmd_hash.
 func CleanupFromPB(m *pb.UnsafeCleanup) arbiter.UnsafeCleanup {
 	return arbiter.UnsafeCleanup{TableID: m.GetTableId(), PartitionID: m.GetPartitionId(), PromotionSeq: m.GetPromotionSeq(),
-		Parts: PartRefsFromPB(m.GetParts())}
+		Parts: PartRefsFromPB(m.GetParts()), RejectedBlockSeq: m.GetRejectedBlockSeq()}
 }
 
 func CleanupToPB(v arbiter.UnsafeCleanup) *pb.UnsafeCleanup {
 	return &pb.UnsafeCleanup{TableId: v.TableID, PartitionId: v.PartitionID, PromotionSeq: v.PromotionSeq,
-		Parts: mapSlice(v.Parts, partRefToPB)}
+		Parts: mapSlice(v.Parts, partRefToPB), RejectedBlockSeq: v.RejectedBlockSeq}
 }
 
 func safePartMappingFromPB(m *pb.SafePartMapping) arbiter.SafePartMapping {
@@ -215,11 +216,13 @@ func PromotionAckToPB(v arbiter.PromotionAck) *pb.PromotionAck {
 }
 
 func CleanupAckFromPB(m *pb.CleanupAck) arbiter.CleanupAck {
-	return arbiter.CleanupAck{NodeID: m.GetNodeId(), PromotionSeq: m.GetPromotionSeq(), TableID: m.GetTableId(), PartitionID: m.GetPartitionId()}
+	return arbiter.CleanupAck{NodeID: m.GetNodeId(), PromotionSeq: m.GetPromotionSeq(), TableID: m.GetTableId(), PartitionID: m.GetPartitionId(),
+		RejectedBlockSeq: m.GetRejectedBlockSeq()}
 }
 
 func CleanupAckToPB(v arbiter.CleanupAck) *pb.CleanupAck {
-	return &pb.CleanupAck{NodeId: v.NodeID, PromotionSeq: v.PromotionSeq, TableId: v.TableID, PartitionId: v.PartitionID}
+	return &pb.CleanupAck{NodeId: v.NodeID, PromotionSeq: v.PromotionSeq, TableId: v.TableID, PartitionId: v.PartitionID,
+		RejectedBlockSeq: v.RejectedBlockSeq}
 }
 
 func partitionCommitmentFromPB(m *pb.PartitionCommitment) replay.PartitionCommitment {
