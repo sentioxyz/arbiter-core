@@ -37,6 +37,7 @@ go_test(
         "query_profile_activation_test.go",
         "snapshot_query_abort_test.go",
         "snode_messages_test.go",
+        "tracks_golden_test.go",
     ],
     embed = [":authority"],
     deps = [

@@ -48,6 +48,7 @@ go_test(
         "snapshot_query_test.go",
         "table_registry_snapshot_test.go",
         "table_registry_test.go",
+        "tracks_golden_test.go",
         "wire_test.go",
     ],
     embed = [":wire"],
