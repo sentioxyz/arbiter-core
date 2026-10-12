@@ -51,7 +51,7 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 		}
 		err := r.exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s DROP PART '%s'",
 			r.cfg.UnsafeDatabase, table, escapeSQLString(p.PartName)))
-		if err != nil && !isMissingPartErr(err) {
+		if err != nil && !isCleanupGoneErr(err) {
 			return fmt.Errorf("drop part %s: %w", p.PartName, err)
 		}
 	}
@@ -181,4 +181,14 @@ func (r *Role) cleanupAckResendInterval() time.Duration {
 func isMissingPartErr(err error) bool {
 	var exception *clickhouseproto.Exception
 	return errors.As(err, &exception) && exception.Code == int32(chproto.ErrNoSuchDataPart)
+}
+
+// isCleanupGoneErr reports whether a cleanup's DROP PART found nothing left to
+// drop: the part is gone (NO_SUCH_DATA_PART), or its whole table is
+// (UNKNOWN_TABLE), as when this SNode purged the table before an earlier
+// release had delivered the cleanup's acknowledgement. Only the cleanup path
+// accepts UNKNOWN_TABLE; every other DROP keeps isMissingPartErr.
+func isCleanupGoneErr(err error) bool {
+	var exception *clickhouseproto.Exception
+	return isMissingPartErr(err) || (errors.As(err, &exception) && exception.Code == int32(chproto.ErrUnknownTable))
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net"
@@ -479,6 +480,131 @@ func TestRedeliveredCleanupResendsAnAcceptedButUnclearedAck(t *testing.T) {
 	}
 	if !purgeGateOpenS(t, role) {
 		t.Fatal("the purge gate stays closed after the owed acknowledgement was cleared")
+	}
+}
+
+// TestCleanupOfADroppedTableIsAcknowledged: once a table is gone so are its
+// parts, and ClickHouse answers its DROP PART with UNKNOWN_TABLE (code 60). The
+// cleanup is journaled and acknowledged as if the part were gone: an SNode
+// that purged the table while an older release had not delivered the
+// acknowledgement acknowledges the arbiter's redelivered cleanup and recovers.
+func TestCleanupOfADroppedTableIsAcknowledged(t *testing.T) {
+	part := func(name string) arbiter.PartRef {
+		return arbiter.PartRef{TableID: "db.t", PartitionID: "all", PartRowLtHash: "0xaa", PartName: name}
+	}
+	for _, tc := range []struct {
+		name    string
+		cleanup arbiter.UnsafeCleanup
+	}{
+		{"promotion cleanup", arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 5, Parts: []arbiter.PartRef{part("all_9_9_0")}}},
+		{"rejected-part cleanup", arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", RejectedBlockSeq: 12, Parts: []arbiter.PartRef{part("all_1_1_0"), part("all_2_2_0")}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			role, fake, conn := newRecordingSNodeS(t)
+			conn.failWith(&clickhouseproto.Exception{Code: int32(chproto.ErrUnknownTable), Message: "Table hg_unsafe.db__t does not exist"})
+			if err := handleCleanupS(t, role, tc.cleanup); err != nil {
+				t.Fatalf("cleanup of a dropped table: %v", err)
+			}
+			if got := conn.executed(); len(got) != len(tc.cleanup.Parts) {
+				t.Fatalf("executed %q, want one DROP PART per part", got)
+			}
+			if got := acceptedS(t, fake); !slices.Equal(got, []arbiter.CleanupAck{cleanupAckS(tc.cleanup)}) {
+				t.Fatalf("accepted acknowledgements = %+v, want [%+v]", got, cleanupAckS(tc.cleanup))
+			}
+			if got := role.state.OwedCleanupAcks(); len(got) != 0 {
+				t.Fatalf("owed acknowledgements = %+v, want none", got)
+			}
+			if !purgeGateOpenS(t, role) {
+				t.Fatal("the purge gate is closed after the acknowledged cleanup")
+			}
+		})
+	}
+}
+
+// TestCleanupStillFailsOnOtherClickHouseErrors: only a missing part or a
+// missing table counts as dropped. Any other ClickHouse error fails the
+// cleanup before anything is journaled: no acknowledgement is sent or owed,
+// and the promoted part keeps its exclusion and the purge gate closed.
+func TestCleanupStillFailsOnOtherClickHouseErrors(t *testing.T) {
+	for _, code := range []chproto.Error{chproto.ErrUnknownDatabase, chproto.ErrTimeoutExceeded, chproto.ErrTableIsReadOnly, chproto.ErrKeeperException} {
+		t.Run(code.String(), func(t *testing.T) {
+			role, fake, conn := newRecordingSNodeS(t)
+			promoted := recordedPartS(t, role, "all_9_9_0")
+			applyPromotionS(t, role, 5, promoted)
+			conn.failWith(&clickhouseproto.Exception{Code: int32(code), Message: "injected"})
+			err := handleCleanupS(t, role, arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 5, Parts: []arbiter.PartRef{promoted}})
+			if err == nil {
+				t.Fatalf("a DROP PART answered with %v did not fail the cleanup", code)
+			}
+			if got, refused := acceptedS(t, fake), fake.refused(); len(got) != 0 || len(refused) != 0 {
+				t.Fatalf("acknowledgements sent: accepted %+v, refused %v; want none", got, refused)
+			}
+			if got := role.state.OwedCleanupAcks(); len(got) != 0 {
+				t.Fatalf("owed acknowledgements = %+v, want none", got)
+			}
+			if got, err := role.PromotedUnsafeParts("db.t"); err != nil || !slices.Equal(got, []string{"all_9_9_0"}) {
+				t.Fatalf("promoted unsafe parts = %v, %v: the part keeps its exclusion", got, err)
+			}
+			if purgeGateOpenS(t, role) {
+				t.Fatal("the purge gate opened although the cleanup failed")
+			}
+		})
+	}
+}
+
+// TestHandleCleanup_DroppedTableStillAcks (ClickHouse): the cleanup of a
+// promoted part whose hg_unsafe table is gone, as after a purge, is journaled
+// and acknowledged: ClickHouse answers its DROP PART with UNKNOWN_TABLE, which
+// the cleanup path counts as dropped.
+func TestHandleCleanup_DroppedTableStillAcks(t *testing.T) {
+	ctx := context.Background()
+	role, claims, signer, schema, _ := seedPromotableStatement(t, ctx)
+	part := promoteSeededPart(t, ctx, role, claims, signer, schema)
+	cmd := cleanupCommand(schema.TableID, part)
+	unsafe := role.cfg.UnsafeDatabase + "." + CHTableName(schema.TableID)
+	mustExecIntake(t, role.d.Conn, "DROP TABLE "+unsafe+" SYNC")
+	err := role.d.Conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s DROP PART '%s'", unsafe, escapeSQLString(part.PartName)))
+	var exception *clickhouseproto.Exception
+	if !errors.As(err, &exception) || exception.Code != int32(chproto.ErrUnknownTable) {
+		t.Fatalf("DROP PART on the dropped table: err = %v, want UNKNOWN_TABLE", err)
+	}
+	if err := role.handleCleanup(ctx, wire.CleanupToPB(cmd), mustSignCleanup(t, signer, cmd)); err != nil {
+		t.Fatalf("handleCleanup: %v", err)
+	}
+	want := arbiter.CleanupAck{NodeID: role.cfg.NodeID, PromotionSeq: 1, TableID: schema.TableID, PartitionID: part.PartitionID}
+	if acks := claims.cleanupAcks(); len(acks) != 1 || acks[0] != want {
+		t.Fatalf("cleanup acknowledgements = %+v, want [%+v]", acks, want)
+	}
+	if got, err := role.PromotedUnsafeParts(schema.TableID); err != nil || len(got) != 0 {
+		t.Fatalf("promoted unsafe parts = %v, %v; want none", got, err)
+	}
+	if got := role.state.OwedCleanupAcks(); len(got) != 0 {
+		t.Fatalf("owed acknowledgements = %+v, want none", got)
+	}
+}
+
+// TestIsCleanupGoneErrAcceptsAMissingPartOrTable: the cleanup path treats
+// NO_SUCH_DATA_PART and UNKNOWN_TABLE as dropped; the abort path's
+// isMissingPartErr still accepts only NO_SUCH_DATA_PART.
+func TestIsCleanupGoneErrAcceptsAMissingPartOrTable(t *testing.T) {
+	missingTable := &clickhouseproto.Exception{Code: int32(chproto.ErrUnknownTable), Message: "table is absent"}
+	missingPart := &clickhouseproto.Exception{Code: int32(chproto.ErrNoSuchDataPart), Message: "part is absent"}
+	for _, err := range []error{missingTable, missingPart, fmt.Errorf("wrapped: %w", missingTable)} {
+		if !isCleanupGoneErr(err) {
+			t.Errorf("isCleanupGoneErr(%v) = false, want true", err)
+		}
+	}
+	for _, err := range []error{
+		errors.New("Table hg_unsafe.db__t does not exist"),
+		&clickhouseproto.Exception{Code: int32(chproto.ErrUnknownDatabase), Message: "database is absent"},
+		&clickhouseproto.Exception{Code: int32(chproto.ErrKeeperException), Message: "keeper"},
+	} {
+		if isCleanupGoneErr(err) {
+			t.Errorf("isCleanupGoneErr(%v) = true, want false", err)
+		}
+	}
+	if isMissingPartErr(missingTable) {
+		t.Error("isMissingPartErr accepts UNKNOWN_TABLE; only the cleanup path may")
 	}
 }
 
