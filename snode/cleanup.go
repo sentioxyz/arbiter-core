@@ -22,7 +22,7 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	}
 	if err := r.requireOwned(cmd.TableID); err != nil {
 		r.d.Logger.Warn("ignoring a cleanup for a table this SNode does not own",
-			"promotion_seq", cmd.PromotionSeq, "table", cmd.TableID, "err", err)
+			"promotion_seq", cmd.PromotionSeq, "rejected_block_seq", cmd.RejectedBlockSeq, "table", cmd.TableID, "err", err)
 		return nil
 	}
 	table := CHTableName(cmd.TableID)
@@ -43,9 +43,15 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	if err := r.state.RecordCleanup(partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}, names); err != nil {
 		return fmt.Errorf("journal cleanup: %w", err)
 	}
+	// A rejected-part cleanup (promotion_seq 0) names candidate parts of a
+	// Rejected block that were never promoted (housegate spec 2026-10-10 §7.5,
+	// plan S2-A clarification C4). Nothing above compares promotion_seq with
+	// the partition watermark, so they are dropped like any other cleanup; the
+	// acknowledgement echoes rejected_block_seq inside the signed body.
 	ack := arbiter.CleanupAck{
 		NodeID: r.cfg.NodeID, PromotionSeq: cmd.PromotionSeq,
 		TableID: cmd.TableID, PartitionID: cmd.PartitionID,
+		RejectedBlockSeq: cmd.RejectedBlockSeq,
 	}
 	return r.sendCleanupAck(ctx, ack)
 }
