@@ -1,12 +1,16 @@
 package snode
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
+	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
@@ -119,6 +123,96 @@ func TestRejectedPartCleanupFollowsTheOwnerCheck(t *testing.T) {
 	_, _, cleanups := fake.sent()
 	if len(cleanups) != 1 || cleanups[0].GetTableId() != "db.mine" || cleanups[0].GetRejectedBlockSeq() != 12 {
 		t.Fatalf("cleanup acknowledgements = %v", cleanups)
+	}
+}
+
+// TestRejectedPartCleanupIgnoresThePartitionWatermark: cleanup never consults
+// the partition watermark (plan S2-A clarification C4), unlike a promotion.
+// Promotion 5 is applied through the promotion handler's own journaling tail,
+// so the partition's watermark and stored acknowledgement are both 5; a
+// rejected-part cleanup (promotion_seq 0) for the same partition still drops
+// its parts and echoes rejected_block_seq. A `promotion_seq < watermark` guard,
+// or one keyed on the stored acknowledgement, would skip it and leave the
+// rejected rows in hg_unsafe. The promotion's own unsafe part keeps awaiting
+// its cleanup.
+func TestRejectedPartCleanupIgnoresThePartitionWatermark(t *testing.T) {
+	ctx := context.Background()
+	fake := &claimsFakeS{}
+	conn := &execRecorderS{}
+	role, err := New(signingConfigS(t), Deps{Client: startClaimsFakeS(t, fake), Conn: conn,
+		ClaimSigner: authoritytest.MustSigner(t, authoritytest.IndexerKeyHex1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := partitionKey{Table: "db.t", Partition: "all"}
+	promoted := arbiter.PartRef{TableID: "db.t", PartitionID: "all", PartRowLtHash: testAccumulatorHexS(t, "promoted"), PartName: "all_9_9_0"}
+	promotion := arbiter.PromoteSafePartition{TableID: "db.t", PartitionID: "all", PromotionSeq: 5,
+		BaseSafeSnapshotID: "snap-4", CandidateParts: []arbiter.PartRef{promoted}}
+	landed := []arbiter.SafePartMapping{{PartRowLtHash: promoted.PartRowLtHash, SafePartName: "all_3_3_0", PartPhysHash: "0xphys"}}
+	if err := role.finishAppliedPromotion(ctx, k, promotion, "0xpost", safePartMappings{Candidates: landed, Partition: landed}); err != nil {
+		t.Fatal(err)
+	}
+	if last, ok := role.state.LastAck(k); role.state.Watermark(k) != 5 || !ok || last.PromotionSeq != 5 {
+		t.Fatalf("watermark = %d, stored ack = %+v (%v): promotion 5 must be applied", role.state.Watermark(k), last, ok)
+	}
+	cleanup := arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", RejectedBlockSeq: 12, Parts: []arbiter.PartRef{
+		{TableID: "db.t", PartitionID: "all", PartRowLtHash: "0xaa", PartName: "all_1_1_0"},
+		{TableID: "db.t", PartitionID: "all", PartRowLtHash: "0xbb", PartName: "all_2_2_0"},
+	}}
+	jws, err := authoritytest.MustSigner(t, authoritytest.AuthorityKeyHex).SignCleanup(cleanup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := role.handleCleanup(ctx, wire.CleanupToPB(cleanup), jws); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := conn.executed(), []string{
+		"ALTER TABLE hg_unsafe.db__t DROP PART 'all_1_1_0'",
+		"ALTER TABLE hg_unsafe.db__t DROP PART 'all_2_2_0'",
+	}; !slices.Equal(got, want) {
+		t.Fatalf("executed %q, want %q", got, want)
+	}
+	_, promotionAcks, cleanups := fake.sent()
+	if len(promotionAcks) != 1 || promotionAcks[0].GetPromotionSeq() != 5 || len(cleanups) != 1 {
+		t.Fatalf("acknowledgements: promotion %v, cleanup %v", promotionAcks, cleanups)
+	}
+	if got, want := wire.CleanupAckFromPB(cleanups[0]), (arbiter.CleanupAck{NodeID: authoritytest.SNodeNodeID1, TableID: "db.t", PartitionID: "all", RejectedBlockSeq: 12}); got != want {
+		t.Fatalf("ack = %+v, want %+v", got, want)
+	}
+	if got := role.state.Watermark(k); got != 5 {
+		t.Fatalf("watermark = %d after the cleanup, want 5", got)
+	}
+	if got, err := role.PromotedUnsafeParts("db.t"); err != nil || !slices.Equal(got, []string{"all_9_9_0"}) {
+		t.Fatalf("promoted unsafe parts = %v, %v: the cleanup must not touch the promotion's own part", got, err)
+	}
+}
+
+// TestDispatchCleanupFailureNamesTheRejectedBlock: the redelivery log of a
+// failed cleanup names rejected_block_seq. promotion_seq is 0 for every
+// rejected-part cleanup, so without it the failures of different blocks of one
+// table and partition cannot be told apart.
+func TestDispatchCleanupFailureNamesTheRejectedBlock(t *testing.T) {
+	var buf bytes.Buffer
+	role, err := New(signingConfigS(t), Deps{Client: startClaimsFakeS(t, &claimsFakeS{}), Conn: &execRecorderS{},
+		Logger:      slog.New(slog.NewTextHandler(&buf, nil)),
+		ClaimSigner: authoritytest.MustSigner(t, authoritytest.IndexerKeyHex1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup := wire.CleanupToPB(arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", RejectedBlockSeq: 12,
+		Parts: []arbiter.PartRef{{TableID: "db.t", PartitionID: "all", PartRowLtHash: "0xaa", PartName: "all_1_1_0"}}})
+	err = role.dispatchPromotionCommand(context.Background(), &pb.PromotionCommand{
+		Cmd:          &pb.PromotionCommand_Cleanup{Cleanup: cleanup},
+		AuthorityJws: "not-a-jws",
+	})
+	if err == nil {
+		t.Fatal("an unauthorized cleanup must fail")
+	}
+	logged := buf.String()
+	for _, want := range []string{"level=ERROR", "unsafe cleanup failed", "promotion_seq=0", "rejected_block_seq=12", "table=db.t", "partition=all"} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("log %q missing %q", logged, want)
+		}
 	}
 }
 

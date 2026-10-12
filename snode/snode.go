@@ -622,8 +622,8 @@ func (r *Role) dispatchPromotionCommand(ctx context.Context, cmd *pb.PromotionCo
 	case *pb.PromotionCommand_Cleanup:
 		if err = r.handleCleanup(ctx, m.Cleanup, cmd.GetAuthorityJws()); err != nil {
 			r.d.Logger.Error("unsafe cleanup failed; the subscription redelivers it",
-				"promotion_seq", m.Cleanup.GetPromotionSeq(), "table", m.Cleanup.GetTableId(),
-				"partition", m.Cleanup.GetPartitionId(), "err", err)
+				"promotion_seq", m.Cleanup.GetPromotionSeq(), "rejected_block_seq", m.Cleanup.GetRejectedBlockSeq(),
+				"table", m.Cleanup.GetTableId(), "partition", m.Cleanup.GetPartitionId(), "err", err)
 		}
 	default:
 		r.d.Logger.Warn("unknown promotion command", "type", fmt.Sprintf("%T", cmd.GetCmd()))

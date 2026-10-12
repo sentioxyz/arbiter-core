@@ -48,6 +48,9 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	// plan S2-A clarification C4). Nothing above compares promotion_seq with
 	// the partition watermark, so they are dropped like any other cleanup; the
 	// acknowledgement echoes rejected_block_seq inside the signed body.
+	// RecordCleanup above is a deliberate no-op for them (they never entered
+	// PromotedUnsafeParts), and their LtHash stays in UnpromotedSums, which
+	// only the diagnostic source-claim root reads (view.go).
 	ack := arbiter.CleanupAck{
 		NodeID: r.cfg.NodeID, PromotionSeq: cmd.PromotionSeq,
 		TableID: cmd.TableID, PartitionID: cmd.PartitionID,
