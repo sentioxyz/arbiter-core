@@ -122,8 +122,10 @@ type TableRegistrySnapshot struct {
 	// SeededIndexers lists, ascending, the SI indexers whose Legacy seed is
 	// recorded; nil before the activation (Seeded keeps the founding flag).
 	SeededIndexers []uint64
-	// QuarantinedIndexers lists, ascending, the SI indexers whose track is
-	// quarantined (housegate spec 2026-10-10 §7.4); nil before the tracks
+	// QuarantinedIndexers lists, ascending, the SI indexers whose host must
+	// refuse its own tables (housegate spec 2026-10-10 §7.4, §7.5, §10; plan
+	// S2-A amendment A32): those whose track is quarantined, or that were
+	// released with rejected parts not yet cleaned. nil before the tracks
 	// activation and while none is. Every committed change bumps Version.
 	QuarantinedIndexers []uint64
 }
