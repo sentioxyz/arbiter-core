@@ -48,6 +48,7 @@ go_test(
         "snapshot_query_test.go",
         "table_registry_snapshot_test.go",
         "table_registry_test.go",
+        "tracks_commands_test.go",
         "tracks_converters_test.go",
         "tracks_golden_test.go",
         "tracks_manifest_test.go",

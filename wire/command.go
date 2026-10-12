@@ -13,6 +13,7 @@ package wire
 
 import (
 	"fmt"
+	"slices"
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/protobuf/proto"
@@ -116,6 +117,44 @@ func (c EvictNode) Canonical() arbiter.EvictNodeCommand {
 	return arbiter.EvictNodeCommand{NodeID: c.NodeID, ExpectedRegistrationSeq: c.ExpectedRegistrationSeq, Reason: c.Reason}
 }
 
+// QuarantineIndexer mirrors pb.QuarantineIndexerCmd, which is both the
+// ConsensusAdmin.QuarantineIndexer request and the Raft command (tag 36,
+// housegate spec 2026-10-10 §7.4). arbiter proposes it only after the tracks
+// activation.
+type QuarantineIndexer struct {
+	IndexerID          uint64
+	ExpectedGeneration uint64
+	Reason             string
+	AuthorityJWS       string
+}
+
+// Canonical is the quarantine's signing form (authority.QuarantineIndexerHash).
+func (c QuarantineIndexer) Canonical() arbiter.QuarantineIndexerCommand {
+	return arbiter.QuarantineIndexerCommand{IndexerID: c.IndexerID, ExpectedGeneration: c.ExpectedGeneration, Reason: c.Reason}
+}
+
+// ReleaseIndexer mirrors pb.ReleaseIndexerCmd, both the
+// ConsensusAdmin.ReleaseIndexer request and the Raft command (tag 37, spec
+// §7.4-§7.5). AcknowledgedRejectedBlocks is kept exactly as proposed;
+// Canonical normalizes it.
+type ReleaseIndexer struct {
+	IndexerID                  uint64
+	ExpectedGeneration         uint64
+	AcknowledgedRejectedBlocks []uint64
+	AuthorityJWS               string
+}
+
+// Canonical is the release's signing form (authority.ReleaseIndexerHash): the
+// acknowledged blocks sorted ascending without duplicates in a fresh slice,
+// nil when there are none.
+func (c ReleaseIndexer) Canonical() arbiter.ReleaseIndexerCommand {
+	var blocks []uint64
+	if len(c.AcknowledgedRejectedBlocks) > 0 {
+		blocks = slices.Compact(slices.Sorted(slices.Values(c.AcknowledgedRejectedBlocks)))
+	}
+	return arbiter.ReleaseIndexerCommand{IndexerID: c.IndexerID, ExpectedGeneration: c.ExpectedGeneration, AcknowledgedRejectedBlocks: blocks}
+}
+
 type UpdateConsensusParams struct {
 	Update       arbiter.ConsensusParamsUpdate
 	AuthorityJWS string
@@ -157,6 +196,8 @@ type Command struct {
 	RetireTables                     *RetireTables                     `json:",omitempty"`
 	AdvanceL2Cursor                  *AdvanceL2Cursor                  `json:",omitempty"`
 	RecordTablePurged                *RecordTablePurged                `json:",omitempty"`
+	QuarantineIndexer                *QuarantineIndexer                `json:",omitempty"`
+	ReleaseIndexer                   *ReleaseIndexer                   `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -326,6 +367,14 @@ func Encode(c Command) ([]byte, error) {
 		set++
 		out.Cmd = &pb.RaftCommand_RecordTablePurged{RecordTablePurged: RecordTablePurgedToRequest(*c.RecordTablePurged)}
 	}
+	if c.QuarantineIndexer != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_QuarantineIndexer{QuarantineIndexer: QuarantineIndexerToRequest(*c.QuarantineIndexer)}
+	}
+	if c.ReleaseIndexer != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_ReleaseIndexer{ReleaseIndexer: ReleaseIndexerToRequest(*c.ReleaseIndexer)}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -402,6 +451,12 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_RecordTablePurged:
 		v := RecordTablePurgedFromRequest(cmd.RecordTablePurged)
 		return Command{RecordTablePurged: &v}, nil
+	case *pb.RaftCommand_QuarantineIndexer:
+		v := QuarantineIndexerFromRequest(cmd.QuarantineIndexer)
+		return Command{QuarantineIndexer: &v}, nil
+	case *pb.RaftCommand_ReleaseIndexer:
+		v := ReleaseIndexerFromRequest(cmd.ReleaseIndexer)
+		return Command{ReleaseIndexer: &v}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{

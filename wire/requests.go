@@ -99,3 +99,36 @@ func EvictNodeToRequest(c EvictNode) *pb.EvictNodeRequest {
 	return &pb.EvictNodeRequest{NodeId: c.NodeID, ExpectedRegistrationSeq: c.ExpectedRegistrationSeq,
 		Reason: c.Reason, AuthorityJws: c.AuthorityJWS}
 }
+
+// QuarantineIndexerFromRequest decodes a ConsensusAdmin.QuarantineIndexer
+// request, which is the QuarantineIndexerCmd itself (housegate spec
+// 2026-10-10 §7.4).
+func QuarantineIndexerFromRequest(m *pb.QuarantineIndexerCmd) QuarantineIndexer {
+	return QuarantineIndexer{IndexerID: m.GetIndexerId(), ExpectedGeneration: m.GetExpectedGeneration(),
+		Reason: m.GetReason(), AuthorityJWS: m.GetAuthorityJws()}
+}
+
+// QuarantineIndexerToRequest builds the QuarantineIndexer request (and the
+// Raft command body).
+func QuarantineIndexerToRequest(c QuarantineIndexer) *pb.QuarantineIndexerCmd {
+	return &pb.QuarantineIndexerCmd{IndexerId: c.IndexerID, ExpectedGeneration: c.ExpectedGeneration,
+		Reason: c.Reason, AuthorityJws: c.AuthorityJWS}
+}
+
+// ReleaseIndexerFromRequest decodes a ConsensusAdmin.ReleaseIndexer request
+// (spec §7.4-§7.5). The acknowledged blocks are copied as sent, an empty list
+// as nil: Canonical normalizes them for signing, and the server refuses a
+// list that is not strictly ascending.
+func ReleaseIndexerFromRequest(m *pb.ReleaseIndexerCmd) ReleaseIndexer {
+	return ReleaseIndexer{IndexerID: m.GetIndexerId(), ExpectedGeneration: m.GetExpectedGeneration(),
+		AcknowledgedRejectedBlocks: mapSlice(m.GetAcknowledgedRejectedBlocks(), func(b uint64) uint64 { return b }),
+		AuthorityJWS:               m.GetAuthorityJws()}
+}
+
+// ReleaseIndexerToRequest builds the ReleaseIndexer request (and the Raft
+// command body) with an independent copy of the list.
+func ReleaseIndexerToRequest(c ReleaseIndexer) *pb.ReleaseIndexerCmd {
+	return &pb.ReleaseIndexerCmd{IndexerId: c.IndexerID, ExpectedGeneration: c.ExpectedGeneration,
+		AcknowledgedRejectedBlocks: mapSlice(c.AcknowledgedRejectedBlocks, func(b uint64) uint64 { return b }),
+		AuthorityJws:               c.AuthorityJWS}
+}
