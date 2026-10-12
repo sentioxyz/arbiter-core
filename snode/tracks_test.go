@@ -451,6 +451,60 @@ func TestRejectedPartCleanupRefusesAPartThatIsNotOfItsPartition(t *testing.T) {
 	}
 }
 
+// TestRejectedPartCleanupRefusesANonZeroPromotionSeq: a rejected-part cleanup
+// is UnsafeCleanup{promotion_seq: 0, rejected_block_seq: b} (plan S2-A
+// clarification C4), and a signed command that carries both fails closed
+// before the first DROP: no Exec, no acknowledgement, no state write.
+// Otherwise a part that promotion 5 applied would leave the accounting twice:
+// RecordAppliedPromotion took its hash out of UnpromotedSums and kept its
+// intake record, so the rejected-part accounting would subtract the hash again
+// and the purge gate would stay closed for ever. The promotion's own cleanup
+// still opens it.
+func TestRejectedPartCleanupRefusesANonZeroPromotionSeq(t *testing.T) {
+	role, fake, conn := newRecordingSNodeS(t)
+	k := partitionKey{Table: "db.t", Partition: "all"}
+	promoted := recordedPartS(t, role, "all_9_9_0")
+	applyPromotionS(t, role, 5, promoted)
+	requireZeroSumS(t, role, k)
+	if recorded, ok := intakePartS(role, k, promoted.PartName); !ok || recorded != promoted.PartRowLtHash {
+		t.Fatalf("intake record of %s after promotion 5: present %v, holds its row lthash %v; want both", promoted.PartName, ok, recorded == promoted.PartRowLtHash)
+	}
+	before := accountingOfS(role)
+	err := handleCleanupS(t, role, arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 5, RejectedBlockSeq: 12,
+		Parts: []arbiter.PartRef{promoted}})
+	// Symptoms of one cause, each reported on its own.
+	if err == nil {
+		t.Error("the cleanup was not refused")
+	} else {
+		for _, want := range []string{"block 12", "promotion_seq 5"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("err = %v, want it to name %q", err, want)
+			}
+		}
+	}
+	if got := conn.executed(); len(got) != 0 {
+		t.Errorf("executed %q before refusing", got)
+	}
+	if _, _, cleanups := fake.sent(); len(cleanups) != 0 {
+		t.Errorf("cleanup acknowledgements = %v, want none", cleanups)
+	}
+	if !before.equal(accountingOfS(role)) {
+		t.Error("the refused cleanup changed the unpromoted accounting")
+	}
+	if got, err := role.PromotedUnsafeParts("db.t"); err != nil || !slices.Equal(got, []string{"all_9_9_0"}) {
+		t.Errorf("promoted unsafe parts = %v, %v: the promotion's part must keep awaiting its cleanup", got, err)
+	}
+	// Promotion 5's own cleanup (rejected_block_seq 0) then leaves every row
+	// accounted for exactly once, and the purge gate opens.
+	if err := handleCleanupS(t, role, arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 5,
+		Parts: []arbiter.PartRef{promoted}}); err != nil {
+		t.Fatalf("promotion 5's cleanup: %v", err)
+	}
+	if ok, err := role.tableQuiescent("db.t"); err != nil || !ok {
+		t.Errorf("after promotion 5's cleanup: quiescent = %v, %v; the purge gate must be open", ok, err)
+	}
+}
+
 // TestRejectedPartCleanupDropsAnUnrecordedPartWithoutTouchingTheSum: a part
 // intake never recorded is dropped and acknowledged like any other, but there
 // is nothing to take out of the accounting, and subtracting its hash from a sum

@@ -387,21 +387,28 @@ func (st *stateStore) RemoveUnpromotedPart(k partitionKey, partName, partLtHashH
 }
 
 // CheckRejectedParts is the read-only half of a rejected-part cleanup of
-// partition k. Before the cleanup drops anything it refuses a part that does
-// not belong to k (the DROP targets the command's table, so such a part would
-// be dropped from one place and accounted for under another), a part without a
-// name, and a part that intake recorded under k with a row LtHash other than
-// the one the command names, because the command then does not describe that
-// part; the last fails closed like RemoveUnpromotedPart's hash mismatch. A part
-// that was never recorded, or whose record already holds the removed marker,
-// passes.
-func (st *stateStore) CheckRejectedParts(k partitionKey, parts []arbiter.PartRef) error {
+// partition k. Before the cleanup drops anything it refuses a command whose
+// promotionSeq is not 0: a rejected-part cleanup carries none (plan S2-A
+// clarification C4), and a part a promotion applied has already left
+// UnpromotedSums through RecordAppliedPromotion, which keeps its intake record,
+// so RemoveRejectedParts would subtract its hash a second time. It also refuses
+// a part that does not belong to k (the DROP targets the command's table, so
+// such a part would be dropped from one place and accounted for under another),
+// a part without a name, and a part that intake recorded under k with a row
+// LtHash other than the one the command names, because the command then does
+// not describe that part; the last fails closed like RemoveUnpromotedPart's
+// hash mismatch. A part that was never recorded, or whose record already holds
+// the removed marker, passes.
+func (st *stateStore) CheckRejectedParts(k partitionKey, promotionSeq uint64, parts []arbiter.PartRef) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.s.checkRejectedParts(k, parts)
+	return st.s.checkRejectedParts(k, promotionSeq, parts)
 }
 
-func (s *localState) checkRejectedParts(k partitionKey, parts []arbiter.PartRef) error {
+func (s *localState) checkRejectedParts(k partitionKey, promotionSeq uint64, parts []arbiter.PartRef) error {
+	if promotionSeq != 0 {
+		return fmt.Errorf("cleanup carries promotion_seq %d; it must be 0", promotionSeq)
+	}
 	for _, p := range parts {
 		if p.TableID != k.Table || p.PartitionID != k.Partition {
 			return fmt.Errorf("cleanup part %s names %s/%s, not the cleanup's %s/%s",
@@ -427,11 +434,12 @@ func (s *localState) checkRejectedParts(k partitionKey, parts []arbiter.PartRef)
 // A part that was never recorded, or whose record already holds the marker, is
 // skipped: a redelivered cleanup writes nothing, and an unrecorded part cannot
 // drive a sum negative. It repeats CheckRejectedParts under the lock, so the
-// accounting never uses another key than the DROPs did.
-func (st *stateStore) RemoveRejectedParts(k partitionKey, parts []arbiter.PartRef) error {
+// accounting never runs for a command that carries a promotion_seq and never
+// uses another key than the DROPs did.
+func (st *stateStore) RemoveRejectedParts(k partitionKey, promotionSeq uint64, parts []arbiter.PartRef) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if err := st.s.checkRejectedParts(k, parts); err != nil {
+	if err := st.s.checkRejectedParts(k, promotionSeq, parts); err != nil {
 		return err
 	}
 	next := cloneLocalState(st.s)

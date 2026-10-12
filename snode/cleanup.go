@@ -29,16 +29,18 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	// candidate parts of a Rejected block that were never promoted (housegate
 	// spec 2026-10-10 §7.5, plan S2-A clarification C4). Nothing here compares
 	// promotion_seq with the partition watermark, so they are dropped like any
-	// other cleanup. Fail closed before the first DROP when a part is not of the
-	// command's table and partition, has no name, or was recorded by intake with
-	// another row LtHash than the command names; the DROPs, the accounting,
-	// RecordCleanup and the acknowledgement then all use the command's partition
-	// key. A promotion cleanup takes none of this: its empty part_name still
-	// fails in the middle of the DROPs.
+	// other cleanup. Fail closed before the first DROP when the command carries
+	// a promotion_seq as well (a part a promotion applied has already left
+	// UnpromotedSums, and the accounting below would subtract it a second time),
+	// or when a part is not of the command's table and partition, has no name,
+	// or was recorded by intake with another row LtHash than the command names;
+	// the DROPs, the accounting, RecordCleanup and the acknowledgement then all
+	// use the command's partition key. A promotion cleanup takes none of this:
+	// its empty part_name still fails in the middle of the DROPs.
 	k := partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}
 	rejected := cmd.RejectedBlockSeq != 0
 	if rejected {
-		if err := r.state.CheckRejectedParts(k, cmd.Parts); err != nil {
+		if err := r.state.CheckRejectedParts(k, cmd.PromotionSeq, cmd.Parts); err != nil {
 			return fmt.Errorf("rejected-part cleanup for block %d: %w", cmd.RejectedBlockSeq, err)
 		}
 	}
@@ -59,7 +61,7 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	// purge gate (registry.go) and the diagnostic source-claim root (view.go)
 	// stop counting the dropped rows.
 	if rejected {
-		if err := r.state.RemoveRejectedParts(k, cmd.Parts); err != nil {
+		if err := r.state.RemoveRejectedParts(k, cmd.PromotionSeq, cmd.Parts); err != nil {
 			return fmt.Errorf("journal rejected parts: %w", err)
 		}
 	}
