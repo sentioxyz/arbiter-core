@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -137,6 +138,21 @@ func intakePartS(role *Role, k partitionKey, name string) (string, bool) {
 	defer role.state.mu.Unlock()
 	v, ok := role.state.s.IntakeParts[intakePartKey(k, name)]
 	return v, ok
+}
+
+// accountingS is a copy of the whole unpromoted accounting (UnpromotedSums and
+// IntakeParts), for tests that require a refused command to leave all of it
+// alone.
+type accountingS struct{ sums, parts map[string]string }
+
+func accountingOfS(role *Role) accountingS {
+	role.state.mu.Lock()
+	defer role.state.mu.Unlock()
+	return accountingS{sums: maps.Clone(role.state.s.UnpromotedSums), parts: maps.Clone(role.state.s.IntakeParts)}
+}
+
+func (a accountingS) equal(b accountingS) bool {
+	return maps.Equal(a.sums, b.sums) && maps.Equal(a.parts, b.parts)
 }
 
 // TestRejectedPartCleanupIsEchoedAndSigned: a rejected-part cleanup
@@ -381,6 +397,60 @@ func TestRejectedPartCleanupRefusesAPartRecordedWithAnotherHash(t *testing.T) {
 	}
 }
 
+// TestRejectedPartCleanupRefusesAPartThatIsNotOfItsPartition: every part of a
+// rejected-part cleanup must belong to the table and partition the command
+// names, and must have a name. The DROP targets the command's table, so a part
+// naming another table or partition would be dropped from one place and
+// accounted for under another, and an empty name would only fail in the middle
+// of the DROPs. The command fails closed before the first DROP: no Exec, no
+// acknowledgement, no change to the unpromoted accounting.
+func TestRejectedPartCleanupRefusesAPartThatIsNotOfItsPartition(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		bad  arbiter.PartRef
+		want []string // what the refusal names
+	}{
+		{"another table", arbiter.PartRef{TableID: "db.u", PartitionID: "all", PartName: "all_2_2_0"}, []string{"all_2_2_0", "db.u/all", "db.t/all"}},
+		{"another partition", arbiter.PartRef{TableID: "db.t", PartitionID: "p1", PartName: "p1_2_2_0"}, []string{"p1_2_2_0", "db.t/p1", "db.t/all"}},
+		{"empty part name", arbiter.PartRef{TableID: "db.t", PartitionID: "all"}, []string{"empty part_name", "db.t/all"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			role, fake, conn := newRecordingSNodeS(t)
+			good := recordedPartS(t, role, "all_1_1_0")
+			bad := tc.bad
+			bad.PartRowLtHash = testAccumulatorHexS(t, "row of "+tc.name)
+			if bad.PartName != "" { // intake accounted it under the partition it names
+				if err := role.state.AddUnpromotedPart(partitionKey{Table: bad.TableID, Partition: bad.PartitionID}, bad.PartName, bad.PartRowLtHash); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := accountingOfS(role)
+			// The offending part is second: a check interleaved with the DROPs
+			// would already have dropped the first.
+			err := handleCleanupS(t, role, arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", RejectedBlockSeq: 12,
+				Parts: []arbiter.PartRef{good, bad}})
+			if err == nil {
+				t.Error("the cleanup was not refused")
+			} else {
+				for _, want := range tc.want {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("err = %v, want it to name %q", err, want)
+					}
+				}
+			}
+			if got := conn.executed(); len(got) != 0 {
+				t.Errorf("executed %q before refusing", got)
+			}
+			if _, _, cleanups := fake.sent(); len(cleanups) != 0 {
+				t.Errorf("cleanup acknowledgements = %v, want none", cleanups)
+			}
+			if !before.equal(accountingOfS(role)) {
+				t.Error("the refused cleanup changed the unpromoted accounting")
+			}
+		})
+	}
+}
+
 // TestRejectedPartCleanupDropsAnUnrecordedPartWithoutTouchingTheSum: a part
 // intake never recorded is dropped and acknowledged like any other, but there
 // is nothing to take out of the accounting, and subtracting its hash from a sum
@@ -440,6 +510,26 @@ func TestPromotionCleanupLeavesTheUnpromotedAccountingAlone(t *testing.T) {
 	_, _, cleanups := fake.sent()
 	if len(cleanups) != 1 || wire.CleanupAckFromPB(cleanups[0]) != (arbiter.CleanupAck{NodeID: authoritytest.SNodeNodeID1, PromotionSeq: 5, TableID: "db.t", PartitionID: "all"}) {
 		t.Fatalf("cleanup acknowledgements = %v, want promotion 5's without rejected_block_seq", cleanups)
+	}
+}
+
+// TestPromotionCleanupKeepsItsMidLoopEmptyPartNameError guards the promotion
+// path: the structural pre-check belongs to rejected-part cleanups only, so a
+// promotion cleanup (rejected_block_seq 0) still drops its parts in order and
+// still fails on an empty part_name in the middle of the DROPs, after the part
+// before it has been dropped, without an acknowledgement.
+func TestPromotionCleanupKeepsItsMidLoopEmptyPartNameError(t *testing.T) {
+	role, fake, conn := newRecordingSNodeS(t)
+	err := handleCleanupS(t, role, arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 5,
+		Parts: []arbiter.PartRef{partS(t, "all_1_1_0"), {TableID: "db.t", PartitionID: "all"}}})
+	if err == nil || !strings.Contains(err.Error(), "empty part_name") {
+		t.Fatalf("err = %v, want the empty part_name failure", err)
+	}
+	if got, want := conn.executed(), []string{"ALTER TABLE hg_unsafe.db__t DROP PART 'all_1_1_0'"}; !slices.Equal(got, want) {
+		t.Fatalf("executed %q, want %q: a promotion cleanup fails in the middle of its DROPs", got, want)
+	}
+	if _, _, cleanups := fake.sent(); len(cleanups) != 0 {
+		t.Fatalf("cleanup acknowledgements = %v, want none", cleanups)
 	}
 }
 

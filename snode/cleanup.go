@@ -29,11 +29,16 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	// candidate parts of a Rejected block that were never promoted (housegate
 	// spec 2026-10-10 §7.5, plan S2-A clarification C4). Nothing here compares
 	// promotion_seq with the partition watermark, so they are dropped like any
-	// other cleanup. Fail closed before the first DROP when intake recorded one
-	// of them with another row LtHash than the command names.
+	// other cleanup. Fail closed before the first DROP when a part is not of the
+	// command's table and partition, has no name, or was recorded by intake with
+	// another row LtHash than the command names; the DROPs, the accounting,
+	// RecordCleanup and the acknowledgement then all use the command's partition
+	// key. A promotion cleanup takes none of this: its empty part_name still
+	// fails in the middle of the DROPs.
+	k := partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}
 	rejected := cmd.RejectedBlockSeq != 0
 	if rejected {
-		if err := r.state.CheckRejectedParts(cmd.Parts); err != nil {
+		if err := r.state.CheckRejectedParts(k, cmd.Parts); err != nil {
 			return fmt.Errorf("rejected-part cleanup for block %d: %w", cmd.RejectedBlockSeq, err)
 		}
 	}
@@ -54,7 +59,7 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	// purge gate (registry.go) and the diagnostic source-claim root (view.go)
 	// stop counting the dropped rows.
 	if rejected {
-		if err := r.state.RemoveRejectedParts(cmd.Parts); err != nil {
+		if err := r.state.RemoveRejectedParts(k, cmd.Parts); err != nil {
 			return fmt.Errorf("journal rejected parts: %w", err)
 		}
 	}
@@ -62,7 +67,7 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	for _, p := range cmd.Parts {
 		names = append(names, p.PartName)
 	}
-	if err := r.state.RecordCleanup(partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}, names); err != nil {
+	if err := r.state.RecordCleanup(k, names); err != nil {
 		return fmt.Errorf("journal cleanup: %w", err)
 	}
 	// The acknowledgement echoes rejected_block_seq inside the signed body.

@@ -386,54 +386,62 @@ func (st *stateStore) RemoveUnpromotedPart(k partitionKey, partName, partLtHashH
 	return st.persistLocked()
 }
 
-// CheckRejectedParts is the read-only half of a rejected-part cleanup. It
-// refuses a part that intake recorded with a row LtHash other than the one the
-// command names, because the command then does not describe that part: it
-// fails closed like RemoveUnpromotedPart's hash mismatch, but before the
-// cleanup drops anything. A part that was never recorded, or whose record
-// already holds the removed marker, passes.
-func (st *stateStore) CheckRejectedParts(parts []arbiter.PartRef) error {
+// CheckRejectedParts is the read-only half of a rejected-part cleanup of
+// partition k. Before the cleanup drops anything it refuses a part that does
+// not belong to k (the DROP targets the command's table, so such a part would
+// be dropped from one place and accounted for under another), a part without a
+// name, and a part that intake recorded under k with a row LtHash other than
+// the one the command names, because the command then does not describe that
+// part; the last fails closed like RemoveUnpromotedPart's hash mismatch. A part
+// that was never recorded, or whose record already holds the removed marker,
+// passes.
+func (st *stateStore) CheckRejectedParts(k partitionKey, parts []arbiter.PartRef) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.s.checkRejectedParts(parts)
+	return st.s.checkRejectedParts(k, parts)
 }
 
-func (s *localState) checkRejectedParts(parts []arbiter.PartRef) error {
+func (s *localState) checkRejectedParts(k partitionKey, parts []arbiter.PartRef) error {
 	for _, p := range parts {
-		k := partitionKey{Table: p.TableID, Partition: p.PartitionID}
+		if p.TableID != k.Table || p.PartitionID != k.Partition {
+			return fmt.Errorf("cleanup part %s names %s/%s, not the cleanup's %s/%s",
+				p.PartName, p.TableID, p.PartitionID, k.Table, k.Partition)
+		}
+		if p.PartName == "" {
+			return fmt.Errorf("cleanup part for %s/%s has empty part_name", k.Table, k.Partition)
+		}
 		if recorded, ok := s.IntakeParts[intakePartKey(k, p.PartName)]; ok && recorded != "" && recorded != p.PartRowLtHash {
 			return fmt.Errorf("intake part %s of %s/%s is recorded with a different row lthash than the cleanup names",
-				p.PartName, p.TableID, p.PartitionID)
+				p.PartName, k.Table, k.Partition)
 		}
 	}
 	return nil
 }
 
-// RemoveRejectedParts takes the parts a rejected-part cleanup dropped out of
-// the unpromoted accounting, in one state write after the DROPs: each part
-// intake recorded with exactly the named row LtHash leaves its partition's
+// RemoveRejectedParts takes the parts a rejected-part cleanup of partition k
+// dropped out of the unpromoted accounting, in one state write after the DROPs:
+// each part intake recorded with exactly the named row LtHash leaves k's
 // UnpromotedSums entry and gets the removed marker RemoveUnpromotedPart uses.
 // A rejected statement is never promoted, so nothing else would subtract those
 // rows, and the purge gate (quiescent) and ForgetTable refuse a non-zero sum.
 // A part that was never recorded, or whose record already holds the marker, is
 // skipped: a redelivered cleanup writes nothing, and an unrecorded part cannot
-// drive a sum negative. Like CheckRejectedParts it refuses a recorded part
-// whose hash differs.
-func (st *stateStore) RemoveRejectedParts(parts []arbiter.PartRef) error {
+// drive a sum negative. It repeats CheckRejectedParts under the lock, so the
+// accounting never uses another key than the DROPs did.
+func (st *stateStore) RemoveRejectedParts(k partitionKey, parts []arbiter.PartRef) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if err := st.s.checkRejectedParts(parts); err != nil {
+	if err := st.s.checkRejectedParts(k, parts); err != nil {
 		return err
 	}
 	next := cloneLocalState(st.s)
+	ks := key(k.Table, k.Partition)
 	changed := false
 	for _, p := range parts {
-		k := partitionKey{Table: p.TableID, Partition: p.PartitionID}
 		partKey := intakePartKey(k, p.PartName)
 		if recorded, ok := next.IntakeParts[partKey]; !ok || recorded == "" {
 			continue
 		}
-		ks := key(k.Table, k.Partition)
 		acc, err := parseAccumulatorHex(next.UnpromotedSums[ks])
 		if err != nil {
 			return err
