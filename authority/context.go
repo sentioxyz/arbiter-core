@@ -1,6 +1,8 @@
 package authority
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -63,4 +65,35 @@ func (s *Signer) signWithContextPurpose(hash, purpose string, context ConsensusC
 		Iat: iat, Purpose: purpose, CmdHash: hash,
 		NetworkID: context.NetworkID, GenesisSnapshotID: context.GenesisSnapshotID, AuthorityEpoch: &context.AuthorityEpoch,
 	})
+}
+
+// verifyExactContext is the deterministic core every authority command bound
+// to one consensus context shares (node eviction, indexer quarantine and
+// release, housegate spec 2026-10-10 §6.5, §7.4): verify checks hash,
+// purpose, signature, the allowlist and, only when enforceAge, token age; the
+// token must then carry exactly ctx, all three fields, with no context-less
+// form. label names the command in every refusal; "evict node" keeps the
+// eviction's wording of arbiter-core v0.13.0.
+func (v *Validator) verifyExactContext(label, hash, purpose, token string, ctx ConsensusContext, enforceAge bool) (string, error) {
+	if strings.TrimSpace(ctx.NetworkID) == "" || strings.TrimSpace(ctx.GenesisSnapshotID) == "" {
+		return "", fmt.Errorf("%s: network ID and genesis snapshot ID must be non-empty", label)
+	}
+	addr, err := v.verify(hash, purpose, token, enforceAge)
+	if err != nil {
+		return "", err
+	}
+	// verify authenticated these payload bytes; read the context they carry.
+	data, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
+	if err != nil {
+		return "", fmt.Errorf("%s token payload: %w", label, err)
+	}
+	var payload JWSCommandPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "", fmt.Errorf("%s token payload: %w", label, err)
+	}
+	if payload.NetworkID != ctx.NetworkID || payload.GenesisSnapshotID != ctx.GenesisSnapshotID ||
+		payload.AuthorityEpoch == nil || *payload.AuthorityEpoch != ctx.AuthorityEpoch {
+		return "", fmt.Errorf("%s token: consensus context mismatch", label)
+	}
+	return addr, nil
 }

@@ -4,6 +4,7 @@ go_library(
     name = "authoritytest",
     srcs = [
         "fixtures.go",
+        "tracks.go",
         "vectors.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/authority/authoritytest",
@@ -16,7 +17,10 @@ go_library(
 
 go_test(
     name = "authoritytest_test",
-    srcs = ["vectors_test.go"],
+    srcs = [
+        "tracks_test.go",
+        "vectors_test.go",
+    ],
     deps = [
         ":authoritytest",
         "//authority",

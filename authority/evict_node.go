@@ -1,8 +1,6 @@
 package authority
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -65,25 +63,5 @@ func (v *Validator) verifyEvictNode(cmd arbiter.EvictNodeCommand, token string, 
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(ctx.NetworkID) == "" || strings.TrimSpace(ctx.GenesisSnapshotID) == "" {
-		return "", fmt.Errorf("evict node: network ID and genesis snapshot ID must be non-empty")
-	}
-	addr, err := v.verify(h, EvictNodePurpose, token, enforceAge)
-	if err != nil {
-		return "", err
-	}
-	// verify authenticated these payload bytes; read the context they carry.
-	data, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
-	if err != nil {
-		return "", fmt.Errorf("evict node token payload: %w", err)
-	}
-	var payload JWSCommandPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return "", fmt.Errorf("evict node token payload: %w", err)
-	}
-	if payload.NetworkID != ctx.NetworkID || payload.GenesisSnapshotID != ctx.GenesisSnapshotID ||
-		payload.AuthorityEpoch == nil || *payload.AuthorityEpoch != ctx.AuthorityEpoch {
-		return "", fmt.Errorf("evict node token: consensus context mismatch")
-	}
-	return addr, nil
+	return v.verifyExactContext("evict node", h, EvictNodePurpose, token, ctx, enforceAge)
 }
