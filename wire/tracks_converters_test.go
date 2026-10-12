@@ -2,7 +2,6 @@ package wire
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/sentioxyz/arbiter-core"
@@ -61,7 +60,7 @@ func TestCleanupConvertersCarryRejectedBlockSeq(t *testing.T) {
 // carries the quarantined set ascending (plan S2-A contract §2); absent and
 // empty decode to nil, and the decoder refuses an unsorted or duplicated list
 // and (per amendment A3 (proposed as G2-2)) an id without an si_indexers entry, like
-// seeded_indexers.
+// seeded_indexers. Both refusals are pinned word for word.
 func TestTableRegistrySnapshotCarriesQuarantinedIndexers(t *testing.T) {
 	s := registrySnapshotFixture(t)
 	s.SIIndexers = []arbiter.SIIndexerEntry{siEntryW(0, 100, "snode-1"), siEntryW(1, 100, "snode-2"), siEntryW(2, 300, "snode-3")}
@@ -69,21 +68,38 @@ func TestTableRegistrySnapshotCarriesQuarantinedIndexers(t *testing.T) {
 	if err != nil || got.QuarantinedIndexers != nil {
 		t.Fatalf("no quarantine: %v, %v", got.QuarantinedIndexers, err)
 	}
+	// An empty list is the same view as an absent one, whichever side holds
+	// the empty slice: the decoder returns nil for an explicit empty list, and
+	// the encoder leaves an empty Go list out of the message.
+	empty := TableRegistrySnapshotToPB(s)
+	empty.QuarantinedIndexers = []uint64{}
+	got, err = TableRegistrySnapshotFromPB(empty)
+	if err != nil || got.QuarantinedIndexers != nil {
+		t.Fatalf("empty quarantined_indexers decoded to %#v, %v; want nil", got.QuarantinedIndexers, err)
+	}
+	s.QuarantinedIndexers = []uint64{}
+	if encoded := TableRegistrySnapshotToPB(s).GetQuarantinedIndexers(); encoded != nil {
+		t.Fatalf("an empty Go list encoded %#v; want it absent", encoded)
+	}
 	s.QuarantinedIndexers = []uint64{0, 2}
 	got, err = TableRegistrySnapshotFromPB(TableRegistrySnapshotToPB(s))
 	if err != nil || !reflect.DeepEqual(got, s) {
 		t.Fatalf("round trip (%v)\n got %+v\nwant %+v", err, got, s)
 	}
-	for name, ids := range map[string][]uint64{
-		"unsorted":      {2, 0},
-		"duplicated":    {0, 0},
-		"without entry": {0, 9},
+	const notAscending = "table registry snapshot: quarantined_indexers must be ascending without duplicates"
+	for name, tc := range map[string]struct {
+		ids  []uint64
+		want string
+	}{
+		"unsorted":      {[]uint64{2, 0}, notAscending},
+		"duplicated":    {[]uint64{0, 0}, notAscending},
+		"without entry": {[]uint64{0, 9}, "table registry snapshot: quarantined indexer 9 has no si_indexers entry"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := TableRegistrySnapshotToPB(s)
-			m.QuarantinedIndexers = ids
-			if _, err := TableRegistrySnapshotFromPB(m); err == nil || !strings.Contains(err.Error(), "quarantined") {
-				t.Fatalf("decoder accepted quarantined_indexers %v: %v", ids, err)
+			m.QuarantinedIndexers = tc.ids
+			if _, err := TableRegistrySnapshotFromPB(m); err == nil || err.Error() != tc.want {
+				t.Fatalf("quarantined_indexers %v: err = %v, want %q", tc.ids, err, tc.want)
 			}
 		})
 	}

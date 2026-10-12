@@ -71,6 +71,7 @@ func TestConsensusUpdateBindsEveryField(t *testing.T) {
 		"writer limit":                    func(c *arbiter.ConsensusParamsUpdate) { c.MaxWriters++ },
 		"promotion seq":                   func(c *arbiter.ConsensusParamsUpdate) { c.ExpectedPromotionSeq++ },
 		"artifact disposition capability": func(c *arbiter.ConsensusParamsUpdate) { c.ArtifactDispositionCapability = 1 },
+		"tracks enabled":                  func(c *arbiter.ConsensusParamsUpdate) { c.TracksEnabled = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			mutated := cmd

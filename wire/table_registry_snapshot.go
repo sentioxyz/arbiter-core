@@ -212,8 +212,11 @@ func signedClaimsFromPB(m *pb.TableRegistrySnapshot) ([]arbiter.SIIndexerEntry, 
 
 // quarantinedFromPB decodes quarantined_indexers: ascending without
 // duplicates, and every id enrolled, like seeded_indexers. A quarantine
-// requires an si_indexers entry and the list is append-only, so anything else
-// is a corrupt view, refused like an unknown status.
+// requires an si_indexers entry and si_indexers is append-only (an entry is
+// never removed), so an id without an entry is a corrupt view, refused like an
+// unknown status. quarantined_indexers itself is not append-only: an id leaves
+// it once a release is followed by the cleanup of the track's rejected parts
+// (amendment A32).
 func quarantinedFromPB(m *pb.TableRegistrySnapshot, entries []arbiter.SIIndexerEntry) ([]uint64, error) {
 	ids := mapSlice(m.GetQuarantinedIndexers(), func(id uint64) uint64 { return id })
 	for i, id := range ids {
