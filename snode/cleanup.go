@@ -25,6 +25,18 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 			"promotion_seq", cmd.PromotionSeq, "rejected_block_seq", cmd.RejectedBlockSeq, "table", cmd.TableID, "err", err)
 		return nil
 	}
+	// A rejected-part cleanup (rejected_block_seq b, promotion_seq 0) names
+	// candidate parts of a Rejected block that were never promoted (housegate
+	// spec 2026-10-10 §7.5, plan S2-A clarification C4). Nothing here compares
+	// promotion_seq with the partition watermark, so they are dropped like any
+	// other cleanup. Fail closed before the first DROP when intake recorded one
+	// of them with another row LtHash than the command names.
+	rejected := cmd.RejectedBlockSeq != 0
+	if rejected {
+		if err := r.state.CheckRejectedParts(cmd.Parts); err != nil {
+			return fmt.Errorf("rejected-part cleanup for block %d: %w", cmd.RejectedBlockSeq, err)
+		}
+	}
 	table := CHTableName(cmd.TableID)
 	for _, p := range cmd.Parts {
 		if p.PartName == "" {
@@ -36,6 +48,16 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 			return fmt.Errorf("drop part %s: %w", p.PartName, err)
 		}
 	}
+	// RecordCleanup below is a no-op for rejected parts: they never entered
+	// PromotedUnsafeParts. Their recorded LtHash leaves UnpromotedSums instead,
+	// after the DROPs so that a redelivery repairs a crash in between, and the
+	// purge gate (registry.go) and the diagnostic source-claim root (view.go)
+	// stop counting the dropped rows.
+	if rejected {
+		if err := r.state.RemoveRejectedParts(cmd.Parts); err != nil {
+			return fmt.Errorf("journal rejected parts: %w", err)
+		}
+	}
 	names := make([]string, 0, len(cmd.Parts))
 	for _, p := range cmd.Parts {
 		names = append(names, p.PartName)
@@ -43,14 +65,7 @@ func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws strin
 	if err := r.state.RecordCleanup(partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}, names); err != nil {
 		return fmt.Errorf("journal cleanup: %w", err)
 	}
-	// A rejected-part cleanup (promotion_seq 0) names candidate parts of a
-	// Rejected block that were never promoted (housegate spec 2026-10-10 §7.5,
-	// plan S2-A clarification C4). Nothing above compares promotion_seq with
-	// the partition watermark, so they are dropped like any other cleanup; the
-	// acknowledgement echoes rejected_block_seq inside the signed body.
-	// RecordCleanup above is a deliberate no-op for them (they never entered
-	// PromotedUnsafeParts), and their LtHash stays in UnpromotedSums, which
-	// only the diagnostic source-claim root reads (view.go).
+	// The acknowledgement echoes rejected_block_seq inside the signed body.
 	ack := arbiter.CleanupAck{
 		NodeID: r.cfg.NodeID, PromotionSeq: cmd.PromotionSeq,
 		TableID: cmd.TableID, PartitionID: cmd.PartitionID,

@@ -386,6 +386,73 @@ func (st *stateStore) RemoveUnpromotedPart(k partitionKey, partName, partLtHashH
 	return st.persistLocked()
 }
 
+// CheckRejectedParts is the read-only half of a rejected-part cleanup. It
+// refuses a part that intake recorded with a row LtHash other than the one the
+// command names, because the command then does not describe that part: it
+// fails closed like RemoveUnpromotedPart's hash mismatch, but before the
+// cleanup drops anything. A part that was never recorded, or whose record
+// already holds the removed marker, passes.
+func (st *stateStore) CheckRejectedParts(parts []arbiter.PartRef) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.s.checkRejectedParts(parts)
+}
+
+func (s *localState) checkRejectedParts(parts []arbiter.PartRef) error {
+	for _, p := range parts {
+		k := partitionKey{Table: p.TableID, Partition: p.PartitionID}
+		if recorded, ok := s.IntakeParts[intakePartKey(k, p.PartName)]; ok && recorded != "" && recorded != p.PartRowLtHash {
+			return fmt.Errorf("intake part %s of %s/%s is recorded with a different row lthash than the cleanup names",
+				p.PartName, p.TableID, p.PartitionID)
+		}
+	}
+	return nil
+}
+
+// RemoveRejectedParts takes the parts a rejected-part cleanup dropped out of
+// the unpromoted accounting, in one state write after the DROPs: each part
+// intake recorded with exactly the named row LtHash leaves its partition's
+// UnpromotedSums entry and gets the removed marker RemoveUnpromotedPart uses.
+// A rejected statement is never promoted, so nothing else would subtract those
+// rows, and the purge gate (quiescent) and ForgetTable refuse a non-zero sum.
+// A part that was never recorded, or whose record already holds the marker, is
+// skipped: a redelivered cleanup writes nothing, and an unrecorded part cannot
+// drive a sum negative. Like CheckRejectedParts it refuses a recorded part
+// whose hash differs.
+func (st *stateStore) RemoveRejectedParts(parts []arbiter.PartRef) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if err := st.s.checkRejectedParts(parts); err != nil {
+		return err
+	}
+	next := cloneLocalState(st.s)
+	changed := false
+	for _, p := range parts {
+		k := partitionKey{Table: p.TableID, Partition: p.PartitionID}
+		partKey := intakePartKey(k, p.PartName)
+		if recorded, ok := next.IntakeParts[partKey]; !ok || recorded == "" {
+			continue
+		}
+		ks := key(k.Table, k.Partition)
+		acc, err := parseAccumulatorHex(next.UnpromotedSums[ks])
+		if err != nil {
+			return err
+		}
+		part, err := parseAccumulatorHex(p.PartRowLtHash)
+		if err != nil {
+			return err
+		}
+		acc.SubHash(part)
+		next.UnpromotedSums[ks] = accumulatorHex(acc)
+		next.IntakeParts[partKey] = ""
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return st.persistStateLocked(next)
+}
+
 func (st *stateStore) DrainUnpromoted(k partitionKey, partLtHashHexes []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
