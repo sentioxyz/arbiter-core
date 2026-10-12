@@ -182,6 +182,30 @@ func (subscribedGatewayS) SubscribePromotions(_ *pb.SNodeHello, stream grpc.Serv
 	return stream.Context().Err()
 }
 
+// unreachableArbiterS is an arbiter that takes TCP connections but answers
+// nothing (every call waits for its deadline) until serve is called; from then
+// on it is gateway, as a subscribedGatewayS that accepts every acknowledgement.
+func unreachableArbiterS(t *testing.T) (client *dataplane.Client, gateway *claimsFakeS, serve func()) {
+	t.Helper()
+	gateway = &claimsFakeS{}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := grpc.NewServer()
+	pb.RegisterPromotionGatewayServer(srv, subscribedGatewayS{gateway})
+	t.Cleanup(func() {
+		srv.Stop()
+		_ = ln.Close()
+	})
+	client, err = dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: ln.Addr().String()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Close)
+	return client, gateway, func() { go func() { _ = srv.Serve(ln) }() }
+}
+
 // TestPromotionCleanupOwesItsAckUntilTheArbiterAcceptsIt: a promotion cleanup
 // whose acknowledgement the arbiter has not accepted leaves the
 // acknowledgement owed. The DROP ran and the exclusion is forgotten (the part
@@ -355,26 +379,10 @@ func TestRestartedSNodeResendsAnOwedAckWithoutBlockingStartup(t *testing.T) {
 		t.Fatal("the cleanup reported success although the arbiter refused its acknowledgement")
 	}
 
-	// The arbiter after the restart: the listener queues connections, but
-	// nothing serves them until srv.Serve runs.
-	gateway := &claimsFakeS{}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := grpc.NewServer()
-	pb.RegisterPromotionGatewayServer(srv, subscribedGatewayS{gateway})
-	t.Cleanup(func() {
-		srv.Stop()
-		_ = ln.Close()
-	})
-	client, err := dataplane.New(dataplane.Config{Peers: []dataplane.Peer{{ID: "n1", GRPCAddr: ln.Addr().String()}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(client.Close)
+	// The arbiter after the restart answers nothing until serve runs.
+	client, gateway, serve := unreachableArbiterS(t)
 	cfg := first.cfg
-	cfg.CleanupAckResendInterval = 50 * time.Millisecond
+	cfg.CleanupAckResendInterval = MinCleanupAckResendInterval
 	var logs syncBufferS
 	second, err := New(cfg, Deps{Client: client, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		ClaimSigner: authoritytest.MustSigner(t, authoritytest.IndexerKeyHex1)})
@@ -409,7 +417,7 @@ func TestRestartedSNodeResendsAnOwedAckWithoutBlockingStartup(t *testing.T) {
 		t.Fatal("the purge gate opened while the arbiter is unreachable")
 	}
 
-	go func() { _ = srv.Serve(ln) }()
+	serve()
 	waitForS(t, 20*time.Second, "the owed acknowledgement to clear", func() bool { return len(second.state.OwedCleanupAcks()) == 0 })
 	// A re-send whose answer arrives after its pass ended is sent again; the
 	// arbiter takes a repeated acknowledgement as a no-op.
@@ -423,6 +431,212 @@ func TestRestartedSNodeResendsAnOwedAckWithoutBlockingStartup(t *testing.T) {
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("RunWithReady exit = %v, want context canceled", err)
+	}
+}
+
+// TestResendPassStopsWhenItsTimeRunsOut: one interval bounds a re-send pass.
+// Against an arbiter that answers nothing, the first owed acknowledgement takes
+// the whole pass and is logged as a failed re-send; the pass then stops and
+// logs one line with the number of owed acknowledgements it did not attempt,
+// not a failed re-send for each. All stay owed for the next pass.
+func TestResendPassStopsWhenItsTimeRunsOut(t *testing.T) {
+	client, gateway, _ := unreachableArbiterS(t)
+	cfg := signingConfigS(t)
+	cfg.CleanupAckResendInterval = MinCleanupAckResendInterval
+	var logs syncBufferS
+	role, err := New(cfg, Deps{Client: client, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		ClaimSigner: authoritytest.MustSigner(t, authoritytest.IndexerKeyHex1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owed []arbiter.CleanupAck
+	for _, seq := range []uint64{5, 6, 7} {
+		cleanup := arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: seq}
+		if err := role.state.RecordExecutedCleanup(cleanup, cleanupAckS(cleanup)); err != nil {
+			t.Fatal(err)
+		}
+		owed = append(owed, cleanupAckS(cleanup))
+	}
+	role.resendOwedCleanupAcks(context.Background())
+	var failed []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "re-sending an owed cleanup acknowledgement failed") {
+			failed = append(failed, line)
+		}
+	}
+	// Symptoms of one cause, each reported on its own.
+	if len(failed) != 1 || !strings.Contains(failed[0], "promotion_seq=5") {
+		t.Errorf("failed re-send lines = %q, want one, for promotion_seq 5, the only acknowledgement the pass attempted", failed)
+	}
+	if want := []string{"level=WARN", "not_attempted=2", "owed=3"}; !loggedS(&logs, want...) {
+		t.Errorf("no log line has all of %q:\n%s", want, logs.String())
+	}
+	if got := role.state.OwedCleanupAcks(); !slices.Equal(got, owed) {
+		t.Errorf("owed acknowledgements after the pass = %+v, want all of %+v", got, owed)
+	}
+	if got := acceptedS(t, gateway); len(got) != 0 {
+		t.Errorf("accepted acknowledgements = %+v from an arbiter that answers nothing", got)
+	}
+}
+
+// TestDispatchOfAnAcknowledgedCleanupWhoseOwedEntryWasNotClearedSaysTheResenderRetries:
+// the arbiter accepted the acknowledgement, so it will not redeliver the
+// cleanup, but the write that clears the owed entry failed. The failure log
+// must not promise a redelivery; it says the background resender retries it.
+func TestDispatchOfAnAcknowledgedCleanupWhoseOwedEntryWasNotClearedSaysTheResenderRetries(t *testing.T) {
+	role, fake, _ := newRecordingSNodeS(t)
+	var logs syncBufferS
+	role.d.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	cleanup := arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 5, Parts: []arbiter.PartRef{partS(t, "all_9_9_0")}}
+	want := cleanupAckS(cleanup)
+	setBeforeWriteS(role, func(next localState) error {
+		if !slices.Contains(slices.Collect(maps.Values(next.OwedCleanupAcks)), want) {
+			return errors.New("injected: the write that clears the owed acknowledgement fails")
+		}
+		return nil
+	})
+	jws, err := authoritytest.MustSigner(t, authoritytest.AuthorityKeyHex).SignCleanup(cleanup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := role.dispatchPromotionCommand(context.Background(), &pb.PromotionCommand{
+		Cmd:          &pb.PromotionCommand_Cleanup{Cleanup: wire.CleanupToPB(cleanup)},
+		AuthorityJws: jws,
+	}); err == nil {
+		t.Fatal("the failed clearing write was not reported")
+	}
+	if got := acceptedS(t, fake); !slices.Equal(got, []arbiter.CleanupAck{want}) {
+		t.Fatalf("accepted acknowledgements = %+v, want [%+v]", got, want)
+	}
+	logged := logs.String()
+	if strings.Contains(logged, "the subscription redelivers it") {
+		t.Errorf("log %q promises a redelivery of a cleanup the arbiter has acknowledged", logged)
+	}
+	if want := []string{"level=ERROR", "resender retries it", "promotion_seq=5", "rejected_block_seq=0", "table=db.t", "partition=all"}; !loggedS(&logs, want...) {
+		t.Errorf("no log line has all of %q:\n%s", want, logged)
+	}
+}
+
+// TestCleanupWhoseJournalWriteFailsSendsNoAck: the one state write that
+// journals an executed cleanup fails (the disk is full, say). The cleanup
+// fails with "journal cleanup", nothing is acknowledged or owed, the state, in
+// memory and on disk, keeps what held the purge gate (the promoted part's
+// exclusion, or the rejected parts' unpromoted rows), and the gate stays
+// closed; the redelivered cleanup tries again.
+func TestCleanupWhoseJournalWriteFailsSendsNoAck(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, role *Role) arbiter.UnsafeCleanup
+	}{
+		{"promotion cleanup", func(t *testing.T, role *Role) arbiter.UnsafeCleanup {
+			promoted := recordedPartS(t, role, "all_9_9_0")
+			applyPromotionS(t, role, 5, promoted)
+			return arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 5, Parts: []arbiter.PartRef{promoted}}
+		}},
+		{"rejected-part cleanup", func(t *testing.T, role *Role) arbiter.UnsafeCleanup {
+			first, second := recordedPartS(t, role, "all_1_1_0"), recordedPartS(t, role, "all_2_2_0")
+			return arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", RejectedBlockSeq: 12, Parts: []arbiter.PartRef{first, second}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			role, fake, conn := newRecordingSNodeS(t)
+			cleanup := tc.setup(t, role)
+			before := stateWithoutOwedS(role)
+			promotedBefore, err := role.PromotedUnsafeParts("db.t")
+			if err != nil {
+				t.Fatal(err)
+			}
+			sumBefore := role.state.UnpromotedSum(partitionKey{Table: "db.t", Partition: "all"})
+			errDisk := errors.New("injected: the journal write fails")
+			setBeforeWriteS(role, func(localState) error { return errDisk })
+			err = handleCleanupS(t, role, cleanup)
+			if err == nil || !strings.Contains(err.Error(), "journal cleanup") || !errors.Is(err, errDisk) {
+				t.Fatalf("err = %v, want the failed journal write, as journal cleanup", err)
+			}
+			if got := conn.executed(); len(got) != len(cleanup.Parts) {
+				t.Fatalf("executed %q, want one DROP PART per part before the journal write", got)
+			}
+			// Symptoms of one cause, each reported on its own.
+			if got, refused := acceptedS(t, fake), fake.refused(); len(got) != 0 || len(refused) != 0 {
+				t.Errorf("acknowledgements sent: accepted %+v, refused %v; want none", got, refused)
+			}
+			if got := role.state.OwedCleanupAcks(); len(got) != 0 {
+				t.Errorf("owed acknowledgements = %+v, want none", got)
+			}
+			if !reflect.DeepEqual(stateWithoutOwedS(role), before) {
+				t.Error("the failed journal write changed the state in memory")
+			}
+			if purgeGateOpenS(t, role) {
+				t.Error("the purge gate opened although the cleanup was not journaled")
+			}
+			setBeforeWriteS(role, nil)
+			reopened, err := openStateStore(role.cfg.StateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := reopened.PromotedUnsafeParts("db.t"); err != nil || !slices.Equal(got, promotedBefore) {
+				t.Errorf("persisted promoted parts = %v, %v; want %v", got, err, promotedBefore)
+			}
+			if got := reopened.UnpromotedSum(partitionKey{Table: "db.t", Partition: "all"}); got != sumBefore {
+				t.Error("the failed journal write changed the persisted unpromoted sum")
+			}
+			if got := reopened.OwedCleanupAcks(); len(got) != 0 {
+				t.Errorf("persisted owed acknowledgements = %+v, want none", got)
+			}
+			if ok, err := reopened.quiescent("db.t"); err != nil || ok {
+				t.Errorf("persisted state: quiescent = %v, %v; the cleanup's parts must still hold the gate", ok, err)
+			}
+		})
+	}
+}
+
+// TestOwedCleanupAckHoldsOnlyItsOwnTable: the purge gate matches an owed
+// acknowledgement on its table exactly. One owed for db.t does not hold db.t2,
+// nor one owed for db.t2 db.t; a prefix match would hold a table for another
+// table's cleanup.
+func TestOwedCleanupAckHoldsOnlyItsOwnTable(t *testing.T) {
+	for _, tc := range []struct{ owed, other string }{{"db.t", "db.t2"}, {"db.t2", "db.t"}} {
+		t.Run("owed for "+tc.owed, func(t *testing.T) {
+			st, err := openStateStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, table := range []string{tc.owed, tc.other} {
+				// Ledger entries that ForgetTable forgets.
+				k := partitionKey{Table: table, Partition: "all"}
+				ack := arbiter.PromotionAck{NodeID: "s1", PromotionSeq: 1, TableID: table, PartitionID: "all", Applied: true}
+				if err := st.RecordAck(k, 1, ack, "0xbase", "snap"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cleanup := arbiter.UnsafeCleanup{TableID: tc.owed, PartitionID: "all", PromotionSeq: 2}
+			owed := arbiter.CleanupAck{NodeID: "s1", PromotionSeq: 2, TableID: tc.owed, PartitionID: "all"}
+			if err := st.RecordExecutedCleanup(cleanup, owed); err != nil {
+				t.Fatal(err)
+			}
+			// Symptoms of one cause, each reported on its own.
+			if ok, err := st.quiescent(tc.other); err != nil || !ok {
+				t.Errorf("quiescent(%s) = %v, %v; an acknowledgement owed for %s must not hold it", tc.other, ok, err, tc.owed)
+			}
+			if err := st.ForgetTable(tc.other); err != nil {
+				t.Errorf("ForgetTable(%s): %v; an acknowledgement owed for %s must not hold it", tc.other, err, tc.owed)
+			}
+			if root, _ := st.BaseRoot(partitionKey{Table: tc.other, Partition: "all"}); root != "" {
+				t.Errorf("%s's base root %q survived ForgetTable", tc.other, root)
+			}
+			if ok, err := st.quiescent(tc.owed); err != nil || ok {
+				t.Errorf("quiescent(%s) = %v, %v; its owed acknowledgement must hold it", tc.owed, ok, err)
+			}
+			if err := st.ForgetTable(tc.owed); err == nil || !strings.Contains(err.Error(), "forget table "+tc.owed+":") {
+				t.Errorf("ForgetTable(%s): err = %v, want a refusal naming its owed acknowledgement", tc.owed, err)
+			}
+			if root, _ := st.BaseRoot(partitionKey{Table: tc.owed, Partition: "all"}); root != "0xbase" {
+				t.Errorf("%s's base root = %q, want it kept", tc.owed, root)
+			}
+			if got := st.OwedCleanupAcks(); !slices.Equal(got, []arbiter.CleanupAck{owed}) {
+				t.Errorf("owed acknowledgements = %+v, want [%+v]", got, owed)
+			}
+		})
 	}
 }
 
@@ -611,7 +825,7 @@ func TestIsCleanupGoneErrAcceptsAMissingPartOrTable(t *testing.T) {
 // TestStateStore_OneOwedAckPerCleanup: one cleanup (table, partition,
 // promotion_seq, rejected_block_seq) owes one acknowledgement: journaling it
 // again writes nothing, another cleanup of the same partition owes its own,
-// and confirming one clears exactly that one, once. An acknowledgement that
+// and clearing one clears exactly that one, once. An acknowledgement that
 // is not the cleanup's is refused.
 func TestStateStore_OneOwedAckPerCleanup(t *testing.T) {
 	st, err := openStateStore(t.TempDir())
@@ -638,11 +852,11 @@ func TestStateStore_OneOwedAckPerCleanup(t *testing.T) {
 	if len(owed) != 3 || !slices.Contains(owed, ackOf(promotion)) || !slices.Contains(owed, ackOf(rejected)) || !slices.Contains(owed, ackOf(other)) {
 		t.Fatalf("owed acknowledgements = %+v, want one per cleanup", owed)
 	}
-	if err := st.ConfirmCleanupAck(ackOf(rejected)); err != nil {
+	if err := st.ClearOwedCleanupAck(ackOf(rejected)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ConfirmCleanupAck(ackOf(rejected)); err != nil || writes != 4 {
-		t.Fatalf("confirming twice: %v, %d writes; want no error and one write", err, writes)
+	if err := st.ClearOwedCleanupAck(ackOf(rejected)); err != nil || writes != 4 {
+		t.Fatalf("clearing twice: %v, %d writes; want no error and one write", err, writes)
 	}
 	if got, want := st.OwedCleanupAcks(), []arbiter.CleanupAck{ackOf(promotion), ackOf(other)}; !slices.Equal(got, want) {
 		t.Fatalf("owed acknowledgements = %+v, want %+v", got, want)
@@ -720,19 +934,43 @@ func TestStateStore_OwedCleanupAcksIsAnOptionalJSONField(t *testing.T) {
 	}
 }
 
-// TestConfigCleanupAckResendInterval: zero selects the default; a negative
-// interval is refused.
+// TestConfigCleanupAckResendInterval: zero selects the default and the
+// minimum is accepted. A negative interval is refused, and so is one below the
+// minimum: the interval also bounds each re-send pass, and a pass shorter
+// than the arbiter's commit latency would time out every re-send, so an
+// acknowledgement the arbiter accepted but whose entry was not cleared would
+// stay owed for ever.
 func TestConfigCleanupAckResendInterval(t *testing.T) {
-	cfg := testConfigS(t)
-	if err := cfg.validate(); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.CleanupAckResendInterval != DefaultCleanupAckResendInterval {
-		t.Fatalf("CleanupAckResendInterval = %v, want the default %v", cfg.CleanupAckResendInterval, DefaultCleanupAckResendInterval)
-	}
-	cfg = testConfigS(t)
-	cfg.CleanupAckResendInterval = -time.Second
-	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "cleanup ack resend interval") {
-		t.Fatalf("a negative interval: err = %v", err)
+	for _, tc := range []struct {
+		name     string
+		interval time.Duration
+		want     time.Duration // after validation; 0 when it is refused
+		refusal  []string      // what the refusal names
+	}{
+		{"zero selects the default", 0, DefaultCleanupAckResendInterval, nil},
+		{"the minimum", MinCleanupAckResendInterval, MinCleanupAckResendInterval, nil},
+		{"negative", -time.Second, 0, []string{"cleanup ack resend interval", "negative"}},
+		{"below the minimum", MinCleanupAckResendInterval - time.Millisecond, 0, []string{"cleanup ack resend interval", "999ms", "1s"}},
+		{"far below the minimum", 50 * time.Millisecond, 0, []string{"cleanup ack resend interval", "50ms", "1s"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfigS(t)
+			cfg.CleanupAckResendInterval = tc.interval
+			err := cfg.validate()
+			if tc.refusal == nil {
+				if err != nil || cfg.CleanupAckResendInterval != tc.want {
+					t.Fatalf("validate: %v, interval %v; want no error and %v", err, cfg.CleanupAckResendInterval, tc.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("an interval of %v was accepted", tc.interval)
+			}
+			for _, want := range tc.refusal {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v, want it to name %q", err, want)
+				}
+			}
+		})
 	}
 }

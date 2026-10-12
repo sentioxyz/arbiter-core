@@ -20,6 +20,10 @@ const (
 	// DefaultCleanupAckResendInterval is Config.CleanupAckResendInterval's
 	// default.
 	DefaultCleanupAckResendInterval = 10 * time.Second
+	// MinCleanupAckResendInterval is the smallest Config.CleanupAckResendInterval
+	// validation accepts. The interval also bounds each re-send pass, and a pass
+	// shorter than the arbiter's commit latency would time out every re-send.
+	MinCleanupAckResendInterval = time.Second
 )
 
 type Config struct {
@@ -70,11 +74,16 @@ type Config struct {
 	// dataplane.GenesisSnapshotID, which only the founding indexer's SNode
 	// can; a signing SNode without genesis tables must set it.
 	GenesisSnapshotID string
-	// CleanupAckResendInterval is how often the SNode re-sends, in the
-	// background from startup on, the cleanup acknowledgements it owes the
-	// arbiter (a cleanup ran, but AckCleanup has not yet succeeded), and it
-	// bounds each such pass. The purge of a table waits while one of its
-	// acknowledgements is owed. 0 = DefaultCleanupAckResendInterval (10s).
+	// CleanupAckResendInterval paces the background re-send of the cleanup
+	// acknowledgements the SNode owes the arbiter (a cleanup ran, but
+	// AckCleanup has not yet succeeded): one pass at startup, then one pass
+	// this long after the previous pass ended. It also bounds each pass, so
+	// while the arbiter is unreachable a pass takes the whole interval and an
+	// owed acknowledgement is retried about every two intervals. The purge of
+	// a table waits while one of its acknowledgements is owed. 0 =
+	// DefaultCleanupAckResendInterval (10s); below MinCleanupAckResendInterval
+	// (1s) is refused, because every re-send of a pass shorter than the
+	// arbiter's commit latency would time out.
 	CleanupAckResendInterval time.Duration
 }
 
@@ -126,10 +135,14 @@ func (c *Config) validate() error {
 	if c.ProtocolTablesMaxFailures < 0 {
 		errs = append(errs, errors.New("protocol tables reconcile max failures must not be negative"))
 	}
-	if c.CleanupAckResendInterval < 0 {
+	switch {
+	case c.CleanupAckResendInterval < 0:
 		errs = append(errs, errors.New("cleanup ack resend interval must not be negative"))
-	} else if c.CleanupAckResendInterval == 0 {
+	case c.CleanupAckResendInterval == 0:
 		c.CleanupAckResendInterval = DefaultCleanupAckResendInterval
+	case c.CleanupAckResendInterval < MinCleanupAckResendInterval:
+		errs = append(errs, fmt.Errorf("cleanup ack resend interval %v is below the minimum %v: it also bounds each re-send pass, which must outlast the arbiter's commit latency",
+			c.CleanupAckResendInterval, MinCleanupAckResendInterval))
 	}
 	mode, modeErr := ddl.ModeFromSchemaSource(c.SchemaSource)
 	if modeErr != nil {

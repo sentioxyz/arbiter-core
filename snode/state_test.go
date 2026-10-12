@@ -229,6 +229,21 @@ func TestStateStore_RecordAckPersistFailureDoesNotAdvanceMemoryOrDisk(t *testing
 	}
 }
 
+// RecordCleanup is a test helper: it forgets the promoted unsafe parts
+// partNames of k in one state write (none when no name awaited cleanup),
+// without recording an owed acknowledgement. Production journals an executed
+// cleanup through RecordExecutedCleanup, which does this and records the
+// acknowledgement in the same write.
+func (st *stateStore) RecordCleanup(k partitionKey, partNames []string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	next := cloneLocalState(st.s)
+	if !next.forgetPromotedParts(k, partNames) {
+		return nil
+	}
+	return st.persistStateLocked(next)
+}
+
 func TestStateStore_RecordCleanupPersistFailureRetainsExclusion(t *testing.T) {
 	dir := t.TempDir()
 	st, err := openStateStore(dir)

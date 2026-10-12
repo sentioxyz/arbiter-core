@@ -70,7 +70,7 @@ type localState struct {
 	// OwedCleanupAcks are the cleanup acknowledgements this SNode owes the
 	// arbiter, keyed by cleanupAckKey (one cleanup, one entry): the cleanup's
 	// DROPs ran and were journaled, but AckCleanup has not yet returned
-	// success (RecordExecutedCleanup, ConfirmCleanupAck). While one is owed,
+	// success (RecordExecutedCleanup, ClearOwedCleanupAck). While one is owed,
 	// the purge gate and ForgetTable hold its table. A v0.14.0 state file has
 	// none and loads unchanged; a v0.14.0 binary ignores the field.
 	OwedCleanupAcks map[string]arbiter.CleanupAck `json:"owed_cleanup_acks,omitempty"`
@@ -268,23 +268,11 @@ func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arb
 	return st.persistStateLocked(next)
 }
 
-// RecordCleanup forgets promoted unsafe parts once their cleanup ran, in one
-// state write (none when no name was awaiting cleanup). The important
-// direction is never to drop a name before the part is gone. handleCleanup
-// journals this together with the rest of an executed cleanup through
-// RecordExecutedCleanup.
-func (st *stateStore) RecordCleanup(k partitionKey, partNames []string) error {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	next := cloneLocalState(st.s)
-	if !next.forgetPromotedParts(k, partNames) {
-		return nil
-	}
-	return st.persistStateLocked(next)
-}
-
-// forgetPromotedParts removes partNames from k's promoted unsafe parts and
-// reports whether any was there.
+// forgetPromotedParts removes partNames from k's promoted unsafe parts, the
+// unsafe_latest exclusion of parts a promotion copied into hg_safe, and
+// reports whether any was there. Only a cleanup whose DROPs succeeded may call
+// it (RecordExecutedCleanup): a name must never leave the exclusion before its
+// part is gone.
 func (s *localState) forgetPromotedParts(k partitionKey, partNames []string) bool {
 	ks := key(k.Table, k.Partition)
 	existing := s.PromotedUnsafeParts[ks]
@@ -482,16 +470,17 @@ func cleanupAckKey(ack arbiter.CleanupAck) string {
 // one state write: for a rejected-part cleanup the accounting of
 // removeRejectedParts, after re-running CheckRejectedParts under the lock (so
 // it never runs for a command that carries a promotion_seq, and never uses
-// another key than the DROPs did); then RecordCleanup's effect; and ack, the
-// acknowledgement this SNode now owes the arbiter for cmd. The purge gate
-// (quiescent) and ForgetTable count an owed acknowledgement as work that still
-// references its table, so no state, a crash included, opens the gate between
-// the DROPs and the arbiter accepting ack: before this write the cleanup's
-// promoted-part exclusion or unpromoted rows hold it, after it the owed entry
-// does, until ConfirmCleanupAck. A redelivered cmd writes nothing while its
-// entry is owed, and records it again once it was confirmed; the arbiter takes
-// the repeated acknowledgement as a no-op. ack must be cmd's acknowledgement,
-// so that one cleanup keys one entry; another is refused.
+// another key than the DROPs did); then forgetPromotedParts, for the parts a
+// promotion copied into hg_safe; and ack, the acknowledgement this SNode now
+// owes the arbiter for cmd. The purge gate (quiescent) and ForgetTable count
+// an owed acknowledgement as work that still references its table, so no
+// state, a crash included, opens the gate between the DROPs and the arbiter
+// accepting ack: before this write the cleanup's promoted-part exclusion or
+// unpromoted rows hold it, after it the owed entry does, until
+// ClearOwedCleanupAck. A redelivered cmd writes nothing while its entry is
+// owed, and records it again once it was cleared; the arbiter takes the
+// repeated acknowledgement as a no-op. ack must be cmd's acknowledgement, so
+// that one cleanup keys one entry; another is refused.
 func (st *stateStore) RecordExecutedCleanup(cmd arbiter.UnsafeCleanup, ack arbiter.CleanupAck) error {
 	if ack.TableID != cmd.TableID || ack.PartitionID != cmd.PartitionID ||
 		ack.PromotionSeq != cmd.PromotionSeq || ack.RejectedBlockSeq != cmd.RejectedBlockSeq {
@@ -532,12 +521,12 @@ func (st *stateStore) RecordExecutedCleanup(cmd arbiter.UnsafeCleanup, ack arbit
 	return st.persistStateLocked(next)
 }
 
-// ConfirmCleanupAck clears ack's owed entry, in a state write of its own, once
-// the arbiter accepted ack (AckCleanup returned success). When the write
+// ClearOwedCleanupAck clears ack's owed entry, in a state write of its own,
+// once the arbiter accepted ack (AckCleanup returned success). When the write
 // fails the entry stays, on disk and in memory, and ack is sent again later;
 // the arbiter takes an acknowledgement it already has as a no-op. An entry
-// that is not owed (another sender confirmed it first) writes nothing.
-func (st *stateStore) ConfirmCleanupAck(ack arbiter.CleanupAck) error {
+// that is not owed (another sender cleared it first) writes nothing.
+func (st *stateStore) ClearOwedCleanupAck(ack arbiter.CleanupAck) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	ak := cleanupAckKey(ack)

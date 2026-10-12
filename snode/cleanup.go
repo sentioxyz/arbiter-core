@@ -90,26 +90,34 @@ func (r *Role) sendCleanupAck(ctx context.Context, ack arbiter.CleanupAck) error
 	})
 }
 
+// errOwedAckNotCleared marks a cleanup acknowledgement that the arbiter
+// accepted but whose owed entry could not be cleared. The arbiter does not
+// redeliver that cleanup; the background resender sends the acknowledgement
+// again (a no-op at the arbiter) and clears the entry.
+var errOwedAckNotCleared = errors.New("the arbiter accepted the cleanup acknowledgement, but clearing it from the owed acknowledgements failed")
+
 // confirmCleanupAck sends ack and, once the arbiter has accepted it, clears its
 // owed entry. When either fails the entry stays owed and ack is sent again
 // later: the arbiter takes a repeated acknowledgement as a no-op (one for an
-// already-removed pending cleanup, or for an unrecorded rejected partition).
+// already-removed pending cleanup, or for an unrecorded rejected partition). A
+// failed clear wraps errOwedAckNotCleared.
 func (r *Role) confirmCleanupAck(ctx context.Context, ack arbiter.CleanupAck) error {
 	if err := r.sendCleanupAck(ctx, ack); err != nil {
 		return err
 	}
-	if err := r.state.ConfirmCleanupAck(ack); err != nil {
-		return fmt.Errorf("the arbiter accepted the cleanup acknowledgement, but clearing it from the owed acknowledgements failed: %w", err)
+	if err := r.state.ClearOwedCleanupAck(ack); err != nil {
+		return fmt.Errorf("%w: %w", errOwedAckNotCleared, err)
 	}
 	return nil
 }
 
-// resendOwedCleanupAcks is one pass of the background re-send: every owed
-// cleanup acknowledgement is sent again, signed anew by cleanupAckRequest, and
-// cleared once the arbiter accepts it. One resend interval bounds the whole
-// pass, so an unreachable arbiter delays the next pass by at most that much,
-// whatever the number of owed acknowledgements. A failed re-send is logged at
-// warn level and stays owed, and its table's purge keeps waiting.
+// resendOwedCleanupAcks is one pass of the background re-send: the owed cleanup
+// acknowledgements are sent again in key order, each signed anew by
+// cleanupAckRequest, and cleared once the arbiter accepts them. One resend
+// interval bounds the whole pass, whatever the number of owed
+// acknowledgements. A pass that runs out of time stops and logs once how many
+// it did not attempt; they wait for the next pass. A failed re-send is logged
+// at warn level and stays owed, and its table's purge keeps waiting.
 func (r *Role) resendOwedCleanupAcks(ctx context.Context) {
 	owed := r.state.OwedCleanupAcks()
 	if len(owed) == 0 {
@@ -118,28 +126,43 @@ func (r *Role) resendOwedCleanupAcks(ctx context.Context) {
 	interval := r.cleanupAckResendInterval()
 	pass, cancel := context.WithTimeout(ctx, interval)
 	defer cancel()
-	for _, ack := range owed {
+	for i, ack := range owed {
+		if pass.Err() != nil {
+			if ctx.Err() == nil {
+				r.d.Logger.Warn("the cleanup acknowledgement re-send pass ran out of time; the owed acknowledgements it did not attempt wait for the next pass",
+					"not_attempted", len(owed)-i, "owed", len(owed), "retry_in", interval)
+			}
+			return
+		}
 		err := r.confirmCleanupAck(pass, ack)
 		if ctx.Err() != nil {
 			return // the role is stopping
 		}
-		if err != nil {
+		switch {
+		case errors.Is(err, errOwedAckNotCleared):
+			r.d.Logger.Warn("the arbiter accepted an owed cleanup acknowledgement, but clearing it failed; the next pass sends it again",
+				"table", ack.TableID, "partition", ack.PartitionID,
+				"promotion_seq", ack.PromotionSeq, "rejected_block_seq", ack.RejectedBlockSeq,
+				"retry_in", interval, "err", err)
+		case err != nil:
 			r.d.Logger.Warn("re-sending an owed cleanup acknowledgement failed; its table's purge waits until the arbiter accepts it",
 				"table", ack.TableID, "partition", ack.PartitionID,
 				"promotion_seq", ack.PromotionSeq, "rejected_block_seq", ack.RejectedBlockSeq,
 				"retry_in", interval, "err", err)
-			continue
+		default:
+			r.d.Logger.Info("the arbiter accepted an owed cleanup acknowledgement",
+				"table", ack.TableID, "partition", ack.PartitionID,
+				"promotion_seq", ack.PromotionSeq, "rejected_block_seq", ack.RejectedBlockSeq)
 		}
-		r.d.Logger.Info("the arbiter accepted an owed cleanup acknowledgement",
-			"table", ack.TableID, "partition", ack.PartitionID,
-			"promotion_seq", ack.PromotionSeq, "rejected_block_seq", ack.RejectedBlockSeq)
 	}
 }
 
 // runCleanupAckResender re-sends owed cleanup acknowledgements until ctx ends:
-// one pass at once, then one a resend interval after each pass ends. It never
-// holds up the role: the role starts and serves while the arbiter is
-// unreachable, and only the purges of tables with owed acknowledgements wait.
+// one pass at once, then one a resend interval after each pass ends. A pass
+// takes the whole interval while the arbiter is unreachable, so an owed
+// acknowledgement is then retried about every two intervals. It never holds
+// up the role: the role starts and serves while the arbiter is unreachable,
+// and only the purges of tables with owed acknowledgements wait.
 func (r *Role) runCleanupAckResender(ctx context.Context) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
