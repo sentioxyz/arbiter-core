@@ -24,6 +24,14 @@ const (
 	// validation accepts. The interval also bounds each re-send pass, and a pass
 	// shorter than the arbiter's commit latency would time out every re-send.
 	MinCleanupAckResendInterval = time.Second
+	// DefaultOwnerAuditProbeInterval is Config.OwnerAuditProbeInterval's
+	// default.
+	DefaultOwnerAuditProbeInterval = 5 * time.Second
+	// MinOwnerAuditProbeInterval is the smallest Config.OwnerAuditProbeInterval
+	// validation accepts: uptime() has a one-second resolution.
+	MinOwnerAuditProbeInterval = time.Second
+	// DefaultOwnerAuditFSMTimeout is Config.OwnerAuditFSMTimeout's default.
+	DefaultOwnerAuditFSMTimeout = 5 * time.Second
 )
 
 type Config struct {
@@ -85,6 +93,22 @@ type Config struct {
 	// (1s) is refused, because every re-send of a pass shorter than the
 	// arbiter's commit latency would time out.
 	CleanupAckResendInterval time.Duration
+	// OwnerAudit selects what the owner hg_safe audit does with an unclean
+	// partition (housegate spec 2026-10-14 §14; plan S3-A clarification K1):
+	// OwnerAuditReport (also "") logs, counts and changes nothing;
+	// OwnerAuditRepair drops resurrected equal-hash twins and holds an
+	// unclean table not-ready. Any other value is refused.
+	OwnerAudit OwnerAuditMode
+	// OwnerAuditProbeInterval paces the ClickHouse start-time probe that
+	// detects a restart, bounds each probe, and paces the retry of a full
+	// audit whose tables did not all complete. 0 =
+	// DefaultOwnerAuditProbeInterval (5s); below MinOwnerAuditProbeInterval
+	// (1s) is refused.
+	OwnerAuditProbeInterval time.Duration
+	// OwnerAuditFSMTimeout bounds each GetPartitionStates read of the audit;
+	// past it the audit uses this SNode's own inventory (clarification K3).
+	// 0 = DefaultOwnerAuditFSMTimeout (5s); negative is refused.
+	OwnerAuditFSMTimeout time.Duration
 }
 
 func (c *Config) validate() error {
@@ -143,6 +167,28 @@ func (c *Config) validate() error {
 	case c.CleanupAckResendInterval < MinCleanupAckResendInterval:
 		errs = append(errs, fmt.Errorf("cleanup ack resend interval %v is below the minimum %v: it also bounds each re-send pass, which must outlast the arbiter's commit latency",
 			c.CleanupAckResendInterval, MinCleanupAckResendInterval))
+	}
+	switch c.OwnerAudit {
+	case "":
+		c.OwnerAudit = OwnerAuditReport
+	case OwnerAuditReport, OwnerAuditRepair:
+	default:
+		errs = append(errs, fmt.Errorf("owner audit mode %q is neither %q nor %q", c.OwnerAudit, OwnerAuditReport, OwnerAuditRepair))
+	}
+	switch {
+	case c.OwnerAuditProbeInterval < 0:
+		errs = append(errs, errors.New("owner audit probe interval must not be negative"))
+	case c.OwnerAuditProbeInterval == 0:
+		c.OwnerAuditProbeInterval = DefaultOwnerAuditProbeInterval
+	case c.OwnerAuditProbeInterval < MinOwnerAuditProbeInterval:
+		errs = append(errs, fmt.Errorf("owner audit probe interval %v is below the minimum %v: uptime() has a one-second resolution",
+			c.OwnerAuditProbeInterval, MinOwnerAuditProbeInterval))
+	}
+	switch {
+	case c.OwnerAuditFSMTimeout < 0:
+		errs = append(errs, errors.New("owner audit fsm timeout must not be negative"))
+	case c.OwnerAuditFSMTimeout == 0:
+		c.OwnerAuditFSMTimeout = DefaultOwnerAuditFSMTimeout
 	}
 	mode, modeErr := ddl.ModeFromSchemaSource(c.SchemaSource)
 	if modeErr != nil {
