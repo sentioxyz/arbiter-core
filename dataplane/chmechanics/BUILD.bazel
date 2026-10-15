@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "chmechanics_test",
-    srcs = ["mechanics_test.go"],
+    srcs = [
+        "mechanics_test.go",
+        "parts_test.go",
+    ],
     deps = [
         "//dataplane/chrestart",
         "//dataplane/chtest",
