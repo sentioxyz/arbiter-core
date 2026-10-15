@@ -13,7 +13,7 @@ jobs:
   release:
     name: validate, tag, and release
     runs-on: [self-hosted]
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -117,6 +117,13 @@ jobs:
           network="${CH_NETWORK:-arbiter-core-release-${suffix}}"
           docker rm -f "${ch_a}" "${ch_b}" >/dev/null 2>&1 || true
           docker network rm "${network}" >/dev/null 2>&1 || true
+
+      - name: validate ClickHouse mechanics
+        run: bash scripts/ci/clickhouse-mechanics.sh clickhouse/clickhouse-server:26.3.37.3 26.3.37.3
+
+      - name: stop the mechanics pair
+        if: always()
+        run: bash scripts/ci/clickhouse-mechanics.sh --cleanup
 
       - name: compute next version
         id: version

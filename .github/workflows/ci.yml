@@ -129,3 +129,21 @@ jobs:
           network="${CH_NETWORK:-arbiter-core-ci-${suffix}}"
           docker rm -f "${ch_a}" "${ch_b}" >/dev/null 2>&1 || true
           docker network rm "${network}" >/dev/null 2>&1 || true
+
+  clickhouse-mechanics:
+    # Keep the same fork-safety boundary as the test job. The suite restarts
+    # one of its servers, so it runs on its own pair, never on the
+    # integration-clickhouse servers.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazelbuild/setup-bazelisk@v3
+      - name: ClickHouse mechanics on upstream 26.3.37.3
+        run: bash scripts/ci/clickhouse-mechanics.sh clickhouse/clickhouse-server:26.3.37.3 26.3.37.3
+      - name: stop the mechanics pair
+        if: always()
+        run: bash scripts/ci/clickhouse-mechanics.sh --cleanup
