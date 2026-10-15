@@ -186,19 +186,30 @@ func TestWatcherDetectsARestartEvenWhenTheNewUptimeIsLarger(t *testing.T) {
 // TestWatcherIgnoresProbeErrorsAndJitter: a failed probe (the server is down)
 // is not a restart and keeps the previous start time; a start time that moves
 // by less than the skew (uptime()'s one-second resolution, a clock adjustment)
-// is not one either. The watcher keeps probing every interval meanwhile.
+// is not one either. The watcher keeps probing every interval meanwhile. The
+// clock adjustment steps the caller's clock, not the server's uptime(), which
+// never falls without a restart.
 func TestWatcherIgnoresProbeErrorsAndJitter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server := &fakeServer{started: time.Now().Add(-time.Hour)}
+		var mu sync.Mutex
+		offset := time.Duration(0)
+		now := func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			return time.Now().Add(offset)
+		}
 		var log restarts
-		stop := run(&Watcher{Interval: time.Second, OnRestart: log.record}, server)
+		stop := run(&Watcher{Interval: time.Second, Now: now, OnRestart: log.record}, server)
 		defer stop()
 		time.Sleep(2 * time.Second)
 		server.setDown(true)
 		time.Sleep(5 * time.Second)
 		server.setDown(false)
 		time.Sleep(2 * time.Second)
-		server.setStarted(server.startedAt().Add(DefaultRestartSkew - time.Second))
+		mu.Lock()
+		offset = DefaultRestartSkew - time.Second
+		mu.Unlock()
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
 		if got := log.all(); len(got) != 0 {
@@ -254,6 +265,91 @@ func TestWatcherStopsWithItsContext(t *testing.T) {
 		<-done
 		if n := len(server.probes()); n != 4 {
 			t.Fatalf("probes of the zero Watcher in 3s = %d, want 4 (at 0s, 1s, 2s and 3s)", n)
+		}
+	})
+}
+
+// TestWatcherReportsARestartWithinTheSkewWhenTheUptimeFell: a server that
+// restarts a few seconds after it started moves its start time by less than
+// the skew, but the next probe finds a smaller uptime() than the previous one.
+// uptime() is the server's own monotonic clock, so a fall is a restart and
+// never noise (PR #50 review).
+func TestWatcherReportsARestartWithinTheSkewWhenTheUptimeFell(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server := &fakeServer{started: time.Now().Add(-3 * time.Second)}
+		var log restarts
+		stop := run(&Watcher{Interval: time.Second, OnRestart: log.record}, server)
+		defer stop()
+		synctest.Wait() // the first probe: uptime 3s
+		time.Sleep(500 * time.Millisecond)
+		server.setStarted(time.Now()) // restarted 3.5s after it started
+		time.Sleep(time.Second)       // the next probe: uptime 0s, start time 4s later
+		synctest.Wait()
+		if got := log.all(); len(got) != 1 || !got[0][1].After(got[0][0]) {
+			t.Fatalf("restarts = %v, want the one restart", got)
+		}
+	})
+}
+
+// TestWatcherKeepsASmallStartTimeAdvance: a forward movement of the start
+// time within the skew is kept as evidence instead of becoming the new
+// baseline, so a later movement that brings the total past the skew is
+// reported (PR #50 review). Neither probe here finds a smaller uptime.
+func TestWatcherKeepsASmallStartTimeAdvance(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server := &fakeServer{started: time.Now().Add(-time.Hour)}
+		base := server.startedAt()
+		var log restarts
+		stop := run(&Watcher{Interval: 10 * time.Second, OnRestart: log.record}, server)
+		defer stop()
+		synctest.Wait()
+		time.Sleep(time.Second)
+		server.setStarted(base.Add(3 * time.Second))
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		if got := log.all(); len(got) != 0 {
+			t.Fatalf("restarts after a 3s advance = %v, want none yet", got)
+		}
+		server.setStarted(base.Add(6 * time.Second))
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		if got := log.all(); len(got) != 1 || !got[0][0].Equal(base) || !got[0][1].Equal(base.Add(6*time.Second)) {
+			t.Fatalf("restarts = %v, want one from %v to %v", got, base, base.Add(6*time.Second))
+		}
+	})
+}
+
+// TestWatcherFollowsAStartTimeThatMovesEarlier: a start time can move earlier
+// only through the caller's clock (stepped back) or jitter, never through a
+// restart, so the baseline follows it down; a restart after the step is
+// reported from the stepped baseline.
+func TestWatcherFollowsAStartTimeThatMovesEarlier(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server := &fakeServer{started: time.Now().Add(-30 * time.Second)}
+		original := server.startedAt()
+		var mu sync.Mutex
+		offset := time.Duration(0)
+		now := func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			return time.Now().Add(offset)
+		}
+		var log restarts
+		stop := run(&Watcher{Interval: time.Minute, Now: now, OnRestart: log.record}, server)
+		defer stop()
+		synctest.Wait() // uptime 30s
+		mu.Lock()
+		offset = -time.Hour // the caller's clock steps back an hour
+		mu.Unlock()
+		time.Sleep(time.Minute) // uptime 90s, start time an hour earlier
+		synctest.Wait()
+		time.Sleep(time.Second)
+		server.setStarted(time.Now()) // up 91s, then restarted
+		time.Sleep(time.Minute)       // the next probe finds uptime 59s
+		synctest.Wait()
+		got := log.all()
+		if len(got) != 1 || !got[0][0].Equal(original.Add(-time.Hour)) {
+			t.Fatalf("restarts = %v, want one from the stepped baseline %v", got, original.Add(-time.Hour))
 		}
 	})
 }

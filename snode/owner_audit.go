@@ -435,9 +435,17 @@ func (r *Role) auditPartitionLocked(ctx context.Context, trigger string, sch pay
 		plan = planOwnerAudit(ref, haveRef, active)
 	}
 	if len(plan.Drop) > 0 && r.ownerAuditMode() == OwnerAuditRepair {
-		if plan, err = r.dropResurrectedTwins(ctx, trigger, sch, table, k, ref, plan); err != nil {
+		repaired, err := r.dropResurrectedTwins(ctx, trigger, sch, table, k, ref, plan)
+		if err != nil {
+			// The twins may still be active: keep the partition unclean, so
+			// its table stays held and the worker re-audits it. A promotion
+			// trigger has no pending pass to hold the table otherwise.
+			plan.Drop = nil
+			plan.Detail = fmt.Sprintf("the repair of resurrected twins failed: %v", err)
+			r.recordOwnerAudit(trigger, k, ref, plan)
 			return nil, err
 		}
+		plan = repaired
 	}
 	return r.recordOwnerAudit(trigger, k, ref, plan), nil
 }

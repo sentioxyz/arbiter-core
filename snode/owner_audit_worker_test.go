@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
+
+	"github.com/sentioxyz/arbiter-core"
 )
 
 // ownerAuditConnS is a ClickHouse for the owner audit's background runs without
@@ -235,5 +238,94 @@ func TestOwnerAuditReportModeNeverHoldsATable(t *testing.T) {
 	role.audit.set(OwnerAuditFinding{TableID: "db.t", PartitionID: "all", Reason: OwnerAuditUnacknowledgedPart})
 	if !role.OwnerAuditClean("db.t") || role.OwnerAuditStats().Mode != OwnerAuditReport {
 		t.Fatal("report mode held a table with a finding")
+	}
+}
+
+// twinConnS is a ClickHouse whose hg_safe partition "all" holds an
+// acknowledged part and its resurrected equal-hash twin, and whose DROP PART
+// fails; every other statement succeeds.
+type twinConnS struct {
+	clickhouse.Conn
+	mu    sync.Mutex
+	drops int
+}
+
+func (c *twinConnS) Query(_ context.Context, query string, _ ...any) (driver.Rows, error) {
+	if !strings.Contains(query, "FROM system.parts") {
+		return nil, fmt.Errorf("unexpected query %q", query)
+	}
+	return &partRowsS{parts: []partInfo{
+		{Name: "all_1_1_0", PartitionID: "all", PhysHash: "hA", Rows: 2},
+		{Name: "all_2_2_0", PartitionID: "all", PhysHash: "hA", Rows: 2},
+	}}, nil
+}
+
+func (c *twinConnS) Exec(_ context.Context, query string, _ ...any) error {
+	if strings.Contains(query, "DROP PART") {
+		c.mu.Lock()
+		c.drops++
+		c.mu.Unlock()
+		return errors.New("code: 159, message: Timeout exceeded")
+	}
+	return nil
+}
+
+// partRowsS is a system.parts result.
+type partRowsS struct {
+	emptyRowsS
+	parts []partInfo
+	next  int
+}
+
+func (r *partRowsS) Next() bool { r.next++; return r.next <= len(r.parts) }
+
+func (r *partRowsS) Scan(dest ...any) error {
+	p := r.parts[r.next-1]
+	*dest[0].(*string), *dest[1].(*string), *dest[2].(*string), *dest[3].(*string), *dest[4].(*string) = p.Name, p.PartitionID, p.PartitionValue, p.PhysHash, p.Path
+	*dest[5].(*uint64), *dest[6].(*uint64) = p.Rows, p.Bytes
+	return nil
+}
+
+// TestOwnerAuditRepairHoldsATableWhoseTwinDropFailed: when a promotion's audit
+// finds resurrected twins but DROP PART fails, repair mode refuses the
+// promotion and records the unclean finding, so the table is held (the host
+// answers Pending) and the worker re-audits it; the failure never leaves the
+// duplicate rows served as clean (PR #50 review).
+func TestOwnerAuditRepairHoldsATableWhoseTwinDropFailed(t *testing.T) {
+	conn := &twinConnS{}
+	cfg := testConfigS(t)
+	cfg.OwnerAudit = OwnerAuditRepair
+	role, err := New(cfg, Deps{Client: startClaimsFakeS(t, &claimsFakeS{}), Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := partitionKey{Table: "db.t", Partition: "all"}
+	ack := arbiter.PromotionAck{NodeID: cfg.NodeID, PromotionSeq: 2, TableID: k.Table, PartitionID: k.Partition, PostPartitionCommitment: "0xpost", Applied: true,
+		SafePartitionParts: []arbiter.SafePartMapping{{PartRowLtHash: "0xrow", SafePartName: "all_2_2_0", PartPhysHash: "hA"}}}
+	if err := role.state.RecordAppliedPromotion(k, 2, ack, "0xpost", "safe-2", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	role.audit.begin(nil) // the startup pass completed without this table
+	if !role.OwnerAuditClean(k.Table) {
+		t.Fatal("the table is held before the promotion's audit")
+	}
+	sch, err := role.schemaFor(k.Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := arbiter.PromoteSafePartition{TableID: k.Table, PartitionID: k.Partition, PromotionSeq: 3}
+
+	err = role.auditBeforeShadow(context.Background(), cmd, sch, CHTableName(k.Table))
+
+	if err == nil || !strings.Contains(err.Error(), "drop resurrected hg_safe twin all_1_1_0") || conn.drops != 1 {
+		t.Fatalf("audit = %v after %d drops, want the failed DROP PART", err, conn.drops)
+	}
+	if role.OwnerAuditClean(k.Table) {
+		t.Fatal("repair mode serves a table whose twin could not be dropped")
+	}
+	s := role.OwnerAuditStats()
+	if len(s.Unclean) != 1 || s.Unclean[0].Reason != OwnerAuditUnacknowledgedPart || !slices.Equal(s.Unclean[0].Parts, []string{"all_1_1_0"}) ||
+		s.Unclean[0].Trigger != OwnerAuditTriggerPromotion || s.DroppedTwins != 0 {
+		t.Fatalf("stats = %+v, want the twin's unacknowledged_part finding and no drop", s)
 	}
 }
