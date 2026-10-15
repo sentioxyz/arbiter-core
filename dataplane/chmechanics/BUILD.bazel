@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "chmechanics_test",
     srcs = [
+        "backup_test.go",
         "mechanics_test.go",
         "parts_test.go",
     ],
