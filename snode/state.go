@@ -47,6 +47,16 @@ type promotionIntent struct {
 	SafePartsBefore     []promotionSafePart `json:"safe_parts_before"`
 }
 
+// ackedSafeInventory is the complete hg_safe inventory of one partition that
+// this SNode last acknowledged as applied: PromotionAck.SafePartitionParts of
+// promotion PromotionSeq. The owner audit compares hg_safe with it (housegate
+// spec 2026-10-14 §14). It lives apart from LastAcks, which a not-applied
+// acknowledgement (a base CAS refusal) overwrites.
+type ackedSafeInventory struct {
+	PromotionSeq uint64                    `json:"promotion_seq"`
+	Parts        []arbiter.SafePartMapping `json:"parts"`
+}
+
 type localState struct {
 	Watermarks      map[string]uint64               `json:"watermarks"`
 	LastAcks        map[string]arbiter.PromotionAck `json:"last_acks"`
@@ -74,6 +84,14 @@ type localState struct {
 	// the purge gate and ForgetTable hold its table. A v0.14.0 state file has
 	// none and loads unchanged; a v0.14.0 binary ignores the field.
 	OwedCleanupAcks map[string]arbiter.CleanupAck `json:"owed_cleanup_acks,omitempty"`
+	// AckedSafeInventories is, per partition key, the inventory of the last
+	// applied promotion this SNode acknowledged: the owner audit's local
+	// reference. RecordAppliedPromotion and a RecordRefreshedAck that
+	// completes a legacy acknowledgement write it, RecordAck keeps it, and
+	// ForgetTable forgets it. A v0.14.1 state file has none and loads
+	// unchanged (ackedSafeInventory derives it from an applied LastAcks
+	// entry); a v0.14.1 binary ignores the field.
+	AckedSafeInventories map[string]ackedSafeInventory `json:"acked_safe_inventories,omitempty"`
 }
 
 type stateStore struct {
@@ -139,6 +157,9 @@ func (s *localState) ensureMaps() {
 	if s.OwedCleanupAcks == nil {
 		s.OwedCleanupAcks = map[string]arbiter.CleanupAck{}
 	}
+	if s.AckedSafeInventories == nil {
+		s.AckedSafeInventories = map[string]ackedSafeInventory{}
+	}
 }
 
 func (st *stateStore) Watermark(k partitionKey) uint64 {
@@ -198,11 +219,74 @@ func (st *stateStore) PendingPromotion(k partitionKey) (promotionIntent, bool) {
 	return clonePromotionIntent(intent), ok
 }
 
+// AckedSafeInventory returns k's acknowledged inventory (ackedSafeInventory).
+func (st *stateStore) AckedSafeInventory(k partitionKey) (ackedSafeInventory, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.s.ackedSafeInventory(key(k.Table, k.Partition))
+}
+
+// ackedInventoryPartitions returns, sorted, the partitions of table that have
+// an acknowledged inventory, recorded or derived.
+func (st *stateStore) ackedInventoryPartitions(table string) []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	seen := map[string]bool{}
+	for _, keys := range [][]string{slices.Collect(maps.Keys(st.s.AckedSafeInventories)), slices.Collect(maps.Keys(st.s.LastAcks))} {
+		for _, ks := range keys {
+			if pk, ok := splitKey(ks); ok && pk.Table == table {
+				if _, has := st.s.ackedSafeInventory(ks); has {
+					seen[pk.Partition] = true
+				}
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// ackedSafeInventory returns ks's recorded inventory, else the one an applied
+// LastAcks entry with a complete SafePartitionParts carries (a state written
+// before acked_safe_inventories).
+func (s *localState) ackedSafeInventory(ks string) (ackedSafeInventory, bool) {
+	if inv, ok := s.AckedSafeInventories[ks]; ok {
+		return cloneAckedSafeInventory(inv), true
+	}
+	if ack, ok := s.LastAcks[ks]; ok && ack.Applied && len(ack.SafePartitionParts) > 0 {
+		return ackedSafeInventory{PromotionSeq: ack.PromotionSeq, Parts: slices.Clone(ack.SafePartitionParts)}, true
+	}
+	return ackedSafeInventory{}, false
+}
+
+// recordAckedSafeInventory makes an applied acknowledgement's complete
+// inventory ks's acknowledged inventory. An applied acknowledgement without
+// one (a pre-v0.7.0 promotion) leaves no stale inventory behind.
+func (s *localState) recordAckedSafeInventory(ks string, ack arbiter.PromotionAck) {
+	if !ack.Applied {
+		return
+	}
+	if len(ack.SafePartitionParts) == 0 {
+		delete(s.AckedSafeInventories, ks)
+		return
+	}
+	s.AckedSafeInventories[ks] = ackedSafeInventory{PromotionSeq: ack.PromotionSeq, Parts: slices.Clone(ack.SafePartitionParts)}
+}
+
+func cloneAckedSafeInventory(inv ackedSafeInventory) ackedSafeInventory {
+	inv.Parts = slices.Clone(inv.Parts)
+	return inv
+}
+
 func (st *stateStore) RecordAck(k partitionKey, seq uint64, ack arbiter.PromotionAck, newBaseRoot, newBaseSnapshotID string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	ks := key(k.Table, k.Partition)
 	next := cloneLocalState(st.s)
+	// A not-applied acknowledgement replaces LastAcks[ks]: write down the
+	// applied inventory a state from before acked_safe_inventories carries
+	// only there, so the owner audit keeps its reference.
+	if inv, ok := st.s.ackedSafeInventory(ks); ok {
+		next.AckedSafeInventories[ks] = inv
+	}
 	next.Watermarks[ks] = seq
 	next.LastAcks[ks] = ack
 	next.BaseRoots[ks] = newBaseRoot
@@ -225,6 +309,12 @@ func (st *stateStore) RecordRefreshedAck(k partitionKey, ack arbiter.PromotionAc
 	}
 	next := cloneLocalState(st.s)
 	next.LastAcks[ks] = ack
+	// The refresh completes a legacy acknowledgement's inventory. One the
+	// applied promotion recorded for this seq stays: it describes hg_safe as
+	// REPLACE left it.
+	if inv, ok := st.s.ackedSafeInventory(ks); !ok || inv.PromotionSeq < ack.PromotionSeq {
+		next.recordAckedSafeInventory(ks, ack)
+	}
 	return st.persistStateLocked(next)
 }
 
@@ -247,6 +337,7 @@ func (st *stateStore) RecordAppliedPromotion(k partitionKey, seq uint64, ack arb
 	next.UnpromotedSums[ks] = accumulatorHex(acc)
 	next.Watermarks[ks] = seq
 	next.LastAcks[ks] = ack
+	next.recordAckedSafeInventory(ks, ack)
 	next.BaseRoots[ks] = newBaseRoot
 	next.BaseSnapshotIDs[ks] = newBaseSnapshotID
 	if len(unsafePartNames) > 0 {
@@ -648,22 +739,26 @@ func (st *stateStore) NextRegistrationSeq(nowMillis uint64) (uint64, error) {
 
 func cloneLocalState(s localState) localState {
 	next := localState{
-		Watermarks:          maps.Clone(s.Watermarks),
-		LastAcks:            maps.Clone(s.LastAcks),
-		BaseRoots:           maps.Clone(s.BaseRoots),
-		BaseSnapshotIDs:     maps.Clone(s.BaseSnapshotIDs),
-		UnpromotedSums:      maps.Clone(s.UnpromotedSums),
-		IntakeParts:         maps.Clone(s.IntakeParts),
-		PromotedUnsafeParts: make(map[string][]string, len(s.PromotedUnsafeParts)),
-		PromotionIntents:    make(map[string]promotionIntent, len(s.PromotionIntents)),
-		RegistrationSeq:     s.RegistrationSeq,
-		OwedCleanupAcks:     maps.Clone(s.OwedCleanupAcks),
+		Watermarks:           maps.Clone(s.Watermarks),
+		LastAcks:             maps.Clone(s.LastAcks),
+		BaseRoots:            maps.Clone(s.BaseRoots),
+		BaseSnapshotIDs:      maps.Clone(s.BaseSnapshotIDs),
+		UnpromotedSums:       maps.Clone(s.UnpromotedSums),
+		IntakeParts:          maps.Clone(s.IntakeParts),
+		PromotedUnsafeParts:  make(map[string][]string, len(s.PromotedUnsafeParts)),
+		PromotionIntents:     make(map[string]promotionIntent, len(s.PromotionIntents)),
+		RegistrationSeq:      s.RegistrationSeq,
+		OwedCleanupAcks:      maps.Clone(s.OwedCleanupAcks),
+		AckedSafeInventories: make(map[string]ackedSafeInventory, len(s.AckedSafeInventories)),
 	}
 	for k, parts := range s.PromotedUnsafeParts {
 		next.PromotedUnsafeParts[k] = slices.Clone(parts)
 	}
 	for k, intent := range s.PromotionIntents {
 		next.PromotionIntents[k] = clonePromotionIntent(intent)
+	}
+	for k, inv := range s.AckedSafeInventories {
+		next.AckedSafeInventories[k] = cloneAckedSafeInventory(inv)
 	}
 	next.ensureMaps()
 	return next

@@ -48,6 +48,7 @@ go_library(
 go_test(
     name = "snode_test",
     srcs = [
+        "acked_inventory_test.go",
         "ch_test.go",
         "claims_test.go",
         "cleanup_test.go",
