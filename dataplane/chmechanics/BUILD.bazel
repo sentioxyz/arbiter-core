@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "chmechanics_test",
+    srcs = ["mechanics_test.go"],
+    deps = [
+        "//dataplane/chrestart",
+        "//dataplane/chtest",
+        "//dataplane/ddl",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
