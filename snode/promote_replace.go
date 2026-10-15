@@ -39,6 +39,9 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 	if err := refuseDuplicateCandidates(cmd); err != nil {
 		return "", safePartMappings{}, err
 	}
+	if err := r.auditBeforeShadow(ctx, cmd, sch, table); err != nil {
+		return "", safePartMappings{}, err
+	}
 	if err := r.prepareShadow(ctx, cmd, sch, table, safe, promote, partition); err != nil {
 		return "", safePartMappings{}, err
 	}

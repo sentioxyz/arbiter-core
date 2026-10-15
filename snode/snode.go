@@ -100,6 +100,11 @@ type Role struct {
 	tables *tableset.Reconciler
 	// genesisID is the genesis snapshot id signed messages bind; empty without a claim signer.
 	genesisID string
+	// audit is the owner hg_safe audit's state (owner_audit.go); nil only for
+	// a Role built without New, which never audits.
+	audit *ownerAuditState
+	// auditPassMu serializes the owner audit's full passes.
+	auditPassMu sync.Mutex
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -134,6 +139,7 @@ func New(cfg Config, d Deps) (*Role, error) {
 		journal:   journal,
 		authority: authorityValidator(cfg.AuthorityAddresses),
 		genesisID: genesisID,
+		audit:     newOwnerAuditState(d.Conn != nil),
 	}
 	r.ensureFn = r.ensureProtocolTablesMode
 	if cfg.protocolTables != ddl.ModeOff && d.Conn != nil {
@@ -231,6 +237,11 @@ func (r *Role) Run(ctx context.Context) error {
 // background the cleanup acknowledgements it owes the arbiter
 // (Config.CleanupAckResendInterval). Startup does not wait for them: the purge
 // gate holds only the tables they belong to, including in the startup pass.
+//
+// After Prepare the Role audits its hg_safe against its acknowledged
+// inventory (Config.OwnerAudit) and, for as long as it runs, re-audits every
+// table after a ClickHouse restart; in repair mode a table is not ready until
+// its audit completed clean. The audit never fails the role.
 func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -246,6 +257,8 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	if err := r.Prepare(runCtx); err != nil {
 		return err
 	}
+	stopOwnerAudit := r.startOwnerAudit(runCtx)
+	defer stopOwnerAudit()
 	runSubscription := func(ctx context.Context) error {
 		return r.d.Client.RunPromotionSubscription(ctx, r.cfg.NodeID, func(cmd *pb.PromotionCommand) error {
 			return r.dispatchPromotionCommand(ctx, cmd)

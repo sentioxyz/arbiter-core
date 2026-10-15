@@ -131,6 +131,10 @@ func (r *Role) finishAppliedPromotion(ctx context.Context, k partitionKey, cmd a
 	if err := r.state.RecordAppliedPromotion(k, cmd.PromotionSeq, ack, post, cmd.BaseSafeSnapshotID, hashes, unsafeParts); err != nil {
 		return fmt.Errorf("journal applied promotion: %w", err)
 	}
+	// The published partition is exactly its journaled inventory: safeMappings
+	// scanned it whole, refused a duplicate row LtHash and proved its closure.
+	// Whatever an earlier audit found, an unresolved intent included, is gone.
+	r.audit.clear(k)
 	return r.sendAck(ctx, ack)
 }
 

@@ -94,9 +94,13 @@ func (r *Role) requireAdmissible(tableID, schemaHash string) error {
 }
 
 // TableReady reports whether this SNode's hg_* tables for tableID's current
-// incarnation exist and verify (tableset.Reconciler.Ready). An embedding host
-// reports a table Active only when the registry says Active and this is true.
-func (r *Role) TableReady(tableID string) bool { return r.tables.Ready(tableID) }
+// incarnation exist and verify (tableset.Reconciler.Ready) and, in owner
+// audit repair mode, whether the table's hg_safe passed its audit
+// (OwnerAuditClean). An embedding host reports a table Active only when the
+// registry says Active and this is true; otherwise it answers Pending.
+func (r *Role) TableReady(tableID string) bool {
+	return r.tables.Ready(tableID) && r.OwnerAuditClean(tableID)
+}
 
 // TableSetStats returns the reconciler's metrics for the host to export.
 func (r *Role) TableSetStats() tableset.Stats {
@@ -189,7 +193,11 @@ func (st *stateStore) quiescent(table string) (bool, error) {
 // hg_unsafe numbers its parts from scratch, and an old record under a reused
 // part name would refuse or swallow its intake.
 func (r *Role) forgetDroppedTable(_ context.Context, tableID string) error {
-	return r.state.ForgetTable(tableID)
+	if err := r.state.ForgetTable(tableID); err != nil {
+		return err
+	}
+	r.audit.forgetTable(tableID)
+	return nil
 }
 
 // ForgetTable durably removes every BaseRoots, BaseSnapshotIDs,
