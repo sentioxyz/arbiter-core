@@ -18,6 +18,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/dataplane/chtest"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
@@ -32,15 +33,7 @@ func requireCH(t *testing.T) clickhouse.Conn {
 	if addr == "" {
 		addr = "127.0.0.1:9000"
 	}
-	conn, err := clickhouse.Open(&clickhouse.Options{Addr: []string{addr}})
-	if err != nil {
-		t.Fatalf("clickhouse: %v", err)
-	}
-	if err := conn.Ping(context.Background()); err != nil {
-		t.Fatalf("clickhouse ping: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+	return chtest.Open(t, addr)
 }
 
 func TestCHScanner_MatchesSourceHashing(t *testing.T) {

@@ -36,6 +36,7 @@ go_test(
     ],
     embed = [":ddl"],
     deps = [
+        "//dataplane/chtest",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
         "@housegate//pkg/lthash",
         "@housegate//pkg/replay/payloadexec",

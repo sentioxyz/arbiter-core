@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
+
+	"github.com/sentioxyz/arbiter-core/dataplane/chtest"
 )
 
 // requireCH mirrors snode/ch_test.go: opt-in via ARBITER_CH_INTEGRATION=1.
@@ -20,7 +22,7 @@ func requireCH(t *testing.T) clickhouse.Conn {
 	if addr == "" {
 		addr = "127.0.0.1:9000"
 	}
-	return openCH(t, addr)
+	return chtest.Open(t, addr)
 }
 
 func requireReplicaCH(t *testing.T) clickhouse.Conn {
@@ -32,20 +34,7 @@ func requireReplicaCH(t *testing.T) clickhouse.Conn {
 	if addr == "" {
 		t.Fatal("ARBITER_CH_REPLICA=1 requires CH_REPLICA_ADDR")
 	}
-	return openCH(t, addr)
-}
-
-func openCH(t *testing.T, addr string) clickhouse.Conn {
-	t.Helper()
-	conn, err := clickhouse.Open(&clickhouse.Options{Addr: []string{addr}})
-	if err != nil {
-		t.Fatalf("clickhouse: %v", err)
-	}
-	if err := conn.Ping(context.Background()); err != nil {
-		t.Fatalf("clickhouse ping: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+	return chtest.Open(t, addr)
 }
 
 // requireKeeper skips (or fails under ARBITER_CH_KEEPER=1, which CI sets) when

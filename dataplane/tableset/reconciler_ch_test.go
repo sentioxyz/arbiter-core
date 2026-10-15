@@ -23,6 +23,7 @@ import (
 	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
+	"github.com/sentioxyz/arbiter-core/dataplane/chtest"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
@@ -38,7 +39,7 @@ func requireCH(t *testing.T) clickhouse.Conn {
 	if addr == "" {
 		addr = "127.0.0.1:9000"
 	}
-	conn := openCH(t, addr)
+	conn := chtest.Open(t, addr)
 	var n uint64
 	if err := conn.QueryRow(context.Background(), "SELECT count() FROM system.zookeeper WHERE path = '/'").Scan(&n); err != nil {
 		if os.Getenv("ARBITER_CH_KEEPER") == "1" {
@@ -58,20 +59,7 @@ func requireReplicaCH(t *testing.T) clickhouse.Conn {
 	if addr == "" {
 		t.Fatal("ARBITER_CH_REPLICA=1 requires CH_REPLICA_ADDR")
 	}
-	return openCH(t, addr)
-}
-
-func openCH(t *testing.T, addr string) clickhouse.Conn {
-	t.Helper()
-	conn, err := clickhouse.Open(&clickhouse.Options{Addr: []string{addr}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.Ping(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+	return chtest.Open(t, addr)
 }
 
 func suffix(t *testing.T) string {

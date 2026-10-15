@@ -16,6 +16,7 @@ named `arbiter` so domain types retain concise names such as
 | `wire` | The canonical Go ↔ `arbiter-proto` conversion and Raft command encoding. |
 | `dataplane` | Leader-aware Arbiter clients, subscriptions, manifests, payload stores, the table-registry follower, and purge reports. |
 | `dataplane/tableset` | The level-triggered table-set reconciler: creates, verifies, and purges the `hg_*` tables the table registry asks for. |
+| `dataplane/chtest` | The credentialed ClickHouse opener of every ClickHouse-gated test (`CH_USER`, `CH_PASSWORD`). |
 | `snode` | Durable storage-node intake, crash convergence, promotion, and cleanup runtime. |
 | `verifier` | Replay and byte-side verification runtime shared by storage-node hosts. |
 | `conformance` | Field and enum compatibility gates against `arbiter-proto` and Housegate replay types. |
@@ -113,6 +114,8 @@ ARBITER_CH_INTEGRATION=1 \
     --test_env=CH_REPLICA_ADDR \
     --test_timeout=900
 ```
+
+Every ClickHouse-gated test connects through `dataplane/chtest`. Against a ClickHouse whose user has a password, set `CH_USER` and `CH_PASSWORD` and add `--test_env=CH_USER --test_env=CH_PASSWORD`; with neither set the tests connect as the passwordless `default` user, as in the recipe above. CI's `integration-clickhouse` job gives `default` a password on both nodes (`scripts/ci/clickhouse-default-password.xml`), so a test opener that bypasses `chtest` fails there; Cut Release keeps the passwordless pair.
 
 ## Releases
 

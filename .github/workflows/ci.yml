@@ -36,6 +36,15 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted]
+    env:
+      # Both nodes give `default` this password
+      # (scripts/ci/clickhouse-default-password.xml), so a ClickHouse-gated
+      # test that does not connect through dataplane/chtest with CH_USER and
+      # CH_PASSWORD fails here (housegate spec 2026-10-14 §14: credentials in
+      # every protocol client first). Cut Release keeps the passwordless
+      # default, so the unset path stays exercised too.
+      CH_USER: default
+      CH_PASSWORD: arbiter-core-ci
     steps:
       - uses: actions/checkout@v4
       - uses: bazelbuild/setup-bazelisk@v3
@@ -57,6 +66,7 @@ jobs:
             -p 127.0.0.1::9000 \
             -e CLICKHOUSE_SKIP_USER_SETUP=1 \
             -v "$PWD/scripts/ci/clickhouse-shared-keeper-server.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
+            -v "$PWD/scripts/ci/clickhouse-default-password.xml:/etc/clickhouse-server/users.d/default-password.xml:ro" \
             clickhouse/clickhouse-server:25.8
           docker run -d --rm \
             --name "${ch_b}" \
@@ -65,6 +75,7 @@ jobs:
             -p 127.0.0.1::9000 \
             -e CLICKHOUSE_SKIP_USER_SETUP=1 \
             -v "$PWD/scripts/ci/clickhouse-shared-keeper-client.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
+            -v "$PWD/scripts/ci/clickhouse-default-password.xml:/etc/clickhouse-server/users.d/default-password.xml:ro" \
             clickhouse/clickhouse-server:25.8
           port_a="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' "${ch_a}")"
           port_b="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' "${ch_b}")"
@@ -78,9 +89,9 @@ jobs:
       - name: wait for ClickHouse and shared Keeper
         run: |
           for _ in $(seq 1 30); do
-            if docker exec "${CH_A_CONTAINER}" clickhouse-client --query "SELECT 1" >/dev/null 2>&1 && \
-               docker exec "${CH_B_CONTAINER}" clickhouse-client --query "SELECT 1" >/dev/null 2>&1 && \
-               docker exec "${CH_B_CONTAINER}" clickhouse-client --query "SELECT count() FROM system.zookeeper WHERE path = '/'" >/dev/null 2>&1; then
+            if docker exec "${CH_A_CONTAINER}" clickhouse-client --password "${CH_PASSWORD}" --query "SELECT 1" >/dev/null 2>&1 && \
+               docker exec "${CH_B_CONTAINER}" clickhouse-client --password "${CH_PASSWORD}" --query "SELECT 1" >/dev/null 2>&1 && \
+               docker exec "${CH_B_CONTAINER}" clickhouse-client --password "${CH_PASSWORD}" --query "SELECT count() FROM system.zookeeper WHERE path = '/'" >/dev/null 2>&1; then
               exit 0
             fi
             sleep 1
@@ -95,6 +106,7 @@ jobs:
           ARBITER_CH_REPLICA: "1"
         run: |
           bazel test \
+            //dataplane/chtest:chtest_test \
             //dataplane/ddl:ddl_test \
             //dataplane/tableset:tableset_test \
             //snode:snode_test \
@@ -104,6 +116,8 @@ jobs:
             --test_env=ARBITER_CH_REPLICA \
             --test_env=CH_ADDR \
             --test_env=CH_REPLICA_ADDR \
+            --test_env=CH_USER \
+            --test_env=CH_PASSWORD \
             --test_timeout=900 \
             --test_output=errors
       - name: stop ClickHouse and remove its network

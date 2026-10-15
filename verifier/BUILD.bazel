@@ -55,6 +55,7 @@ go_test(
         "//authority",
         "//authority/authoritytest",
         "//dataplane",
+        "//dataplane/chtest",
         "//dataplane/ddl",
         "//dataplane/tableset",
         "//wire",

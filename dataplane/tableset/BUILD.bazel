@@ -26,6 +26,7 @@ go_test(
     embed = [":tableset"],
     deps = [
         "//:arbiter-core",
+        "//dataplane/chtest",
         "//dataplane/ddl",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
