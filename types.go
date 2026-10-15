@@ -285,6 +285,16 @@ type AnchorRef struct {
 	DARef         string `json:"da_ref,omitempty"`
 }
 
+// SafeWatermark is the published safe-state tip (§8.5): the latest published
+// manifest's snapshot id, safe block seq and manifest root. JSON tags mirror
+// pb.SafeWatermark; the field names, order, types and tags are those of
+// arbiter's fsm.SafeWatermark, so either converts to the other directly.
+type SafeWatermark struct {
+	SnapshotID   string `json:"snapshot_id,omitempty"`
+	SafeBlockSeq uint64 `json:"safe_block_seq,omitempty"`
+	ManifestRoot string `json:"manifest_root,omitempty"`
+}
+
 // NodeRegistration enters a data-plane node into FSM membership.
 type NodeRegistration struct {
 	NodeID        string     `json:"node_id"`

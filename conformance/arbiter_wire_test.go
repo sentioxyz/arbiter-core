@@ -66,6 +66,9 @@ func TestArbiterMirrorsMatchProto(t *testing.T) {
 	assertMirror(t, arbiter.PartScan{}, &pb.PartScan{})
 	assertMirror(t, arbiter.ByteSideScanMsg{}, &pb.ByteSideScanMsg{})
 	assertMirror(t, arbiter.AnchorRef{}, &pb.AnchorRef{})
+	// SafeWatermark is GetSafeWatermark's answer and PartitionStates' watermark
+	// (plan S3-A contract §3); arbiter's fsm.SafeWatermark has the same fields.
+	assertMirror(t, arbiter.SafeWatermark{}, &pb.SafeWatermark{})
 	// registration_seq is canonical (signed); the signatures and features are not.
 	assertMirror(t, arbiter.NodeRegistration{}, &pb.NodeRegistration{}, "features", "signer_jws", "ed25519_signature")
 	assertMirror(t, arbiter.SafePartMapping{}, &pb.SafePartMapping{})

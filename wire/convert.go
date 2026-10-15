@@ -78,7 +78,8 @@ func candidatePartFromPB(m *pb.CandidatePart) arbiter.CandidatePart {
 		PartRowLtHash: m.GetPartRowLthash(), PartPhysHash: m.GetPartPhysHash(), RowCount: m.GetRowCount(), Bytes: m.GetBytes()}
 }
 
-func candidatePartToPB(v arbiter.CandidatePart) *pb.CandidatePart {
+// CandidatePartToPB converts one candidate part of a result claim to its wire form.
+func CandidatePartToPB(v arbiter.CandidatePart) *pb.CandidatePart {
 	return &pb.CandidatePart{TableId: v.TableID, PartitionId: v.PartitionID, PartName: v.PartName,
 		PartRowLthash: v.PartRowLtHash, PartPhysHash: v.PartPhysHash, RowCount: v.RowCount, Bytes: v.Bytes}
 }
@@ -87,7 +88,8 @@ func partitionSumFromPB(m *pb.PartitionLtHashSum) arbiter.PartitionLtHashSum {
 	return arbiter.PartitionLtHashSum{TableID: m.GetTableId(), PartitionID: m.GetPartitionId(), NewPartsLtHashSum: m.GetNewPartsLthashSum()}
 }
 
-func partitionSumToPB(v arbiter.PartitionLtHashSum) *pb.PartitionLtHashSum {
+// PartitionLtHashSumToPB converts one partition new-parts LtHash sum to its wire form.
+func PartitionLtHashSumToPB(v arbiter.PartitionLtHashSum) *pb.PartitionLtHashSum {
 	return &pb.PartitionLtHashSum{TableId: v.TableID, PartitionId: v.PartitionID, NewPartsLthashSum: v.NewPartsLtHashSum}
 }
 
@@ -105,9 +107,9 @@ func RCToPB(v arbiter.RCRecord) *pb.RCRecord {
 	return &pb.RCRecord{
 		StatementId:          statementIDToPB(v.StatementID),
 		SourceNode:           v.SourceNode,
-		CandidateParts:       mapSlice(v.CandidateParts, candidatePartToPB),
+		CandidateParts:       mapSlice(v.CandidateParts, CandidatePartToPB),
 		SourceClaimRoot:      v.SourceClaimRoot,
-		PartitionNewPartSums: mapSlice(v.PartitionNewPartSums, partitionSumToPB),
+		PartitionNewPartSums: mapSlice(v.PartitionNewPartSums, PartitionLtHashSumToPB),
 	}
 }
 
@@ -243,6 +245,17 @@ func partManifestEntryToPB(v replay.PartManifestEntry) *pb.PartManifestEntry {
 	return &pb.PartManifestEntry{TableId: v.TableID, PartitionId: v.PartitionID, PartName: v.PartName,
 		PartPhysHash: v.PartPhysHash, PartRowLthash: v.PartRowLtHash, RowCount: v.RowCount, Bytes: v.Bytes,
 		StorageRefs: v.StorageRefs}
+}
+
+// PartManifestEntryFromPB converts one part entry of a manifest's active parts
+// or of the FSM's SafeParts inventory (GetPartitionStates).
+func PartManifestEntryFromPB(m *pb.PartManifestEntry) replay.PartManifestEntry {
+	return partManifestEntryFromPB(m)
+}
+
+// PartManifestEntryToPB is PartManifestEntryFromPB's inverse.
+func PartManifestEntryToPB(v replay.PartManifestEntry) *pb.PartManifestEntry {
+	return partManifestEntryToPB(v)
 }
 
 func receiptFromPB(m *pb.ExecutionReceipt) replay.ExecutionReceipt {
