@@ -6,6 +6,7 @@ go_test(
         "backup_test.go",
         "mechanics_test.go",
         "parts_test.go",
+        "transport_test.go",
     ],
     deps = [
         "//dataplane/chrestart",
