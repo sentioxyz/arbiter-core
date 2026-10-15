@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "chrestart",
+    srcs = ["chrestart.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/chrestart",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go"],
+)
+
+go_test(
+    name = "chrestart_test",
+    srcs = ["chrestart_test.go"],
+    embed = [":chrestart"],
+    deps = [
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
+    ],
+)
