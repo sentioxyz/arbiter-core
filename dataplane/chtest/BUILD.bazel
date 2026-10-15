@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "chtest",
+    srcs = ["chtest.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/chtest",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go"],
+)
+
+go_test(
+    name = "chtest_test",
+    srcs = ["chtest_test.go"],
+    embed = [":chtest"],
+    deps = ["@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go"],
+)
