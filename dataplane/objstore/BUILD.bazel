@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "objstore",
+    srcs = [
+        "bucket.go",
+        "credentials.go",
+        "sql.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/objstore",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//dataplane/chparts",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "objstore_test",
+    srcs = [
+        "bucket_test.go",
+        "credentials_test.go",
+        "sql_test.go",
+    ],
+    embed = [":objstore"],
+    deps = [
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
