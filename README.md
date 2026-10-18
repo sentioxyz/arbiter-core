@@ -19,8 +19,10 @@ named `arbiter` so domain types retain concise names such as
 | `dataplane/chtest` | The credentialed ClickHouse opener of every ClickHouse-gated test (`CH_USER`, `CH_PASSWORD`). |
 | `dataplane/chrestart` | ClickHouse restart detection from the server start time (`uptime()`), for the `hg_safe` audits. |
 | `dataplane/chmechanics` | Test-only ClickHouse mechanics suite: pins the engine behaviour the protocol relies on (§ ClickHouse mechanics). |
+| `dataplane/chparts` | Active parts, logical partition ids, partition quoting, `DROP PARTITION` and partition content scans of one table, through ClickHouse statements only; shared by the SNode and the stage-3 restore-and-gate library. |
 | `snode` | Durable storage-node intake, crash convergence, promotion, and cleanup runtime. |
 | `verifier` | Replay and byte-side verification runtime shared by storage-node hosts. |
+| `member/gate` | The pure stage-3 install gate (housegate spec 2026-10-14 §8.5): the partition plan against a manifest, the scratch classifier, the arithmetic closure and the partition-set check. |
 | `conformance` | Field and enum compatibility gates against `arbiter-proto` and Housegate replay types. |
 
 The private `github.com/sentioxyz/arbiter` repository owns the Raft FSM,
