@@ -106,6 +106,7 @@ jobs:
           ARBITER_CH_REPLICA: "1"
         run: |
           bazel test \
+            //dataplane/chparts:chparts_test \
             //dataplane/chtest:chtest_test \
             //dataplane/ddl:ddl_test \
             //dataplane/tableset:tableset_test \
