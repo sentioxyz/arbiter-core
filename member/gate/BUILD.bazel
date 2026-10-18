@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "gate",
+    srcs = [
+        "classify.go",
+        "gate.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member/gate",
+    visibility = ["//visibility:public"],
+    deps = ["@housegate//pkg/replay/payloadexec"],
+)
+
+go_test(
+    name = "gate_test",
+    srcs = [
+        "classify_test.go",
+        "gate_test.go",
+    ],
+    embed = [":gate"],
+    deps = [
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
