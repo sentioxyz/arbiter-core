@@ -42,7 +42,7 @@ repositories must declare both modules and pin their source revisions:
 bazel_dep(name = "arbiter_core")
 bazel_dep(
     name = "housegate",
-    version = "0.20.0",
+    version = "0.21.0",
 )
 
 git_override(
@@ -52,8 +52,8 @@ git_override(
 )
 git_override(
     module_name = "housegate",
-    # Resolved Housegate v0.20.0; source is pinned by the commit below.
-    commit = "bc92f91309c7752c848cc0d0e41b37e5d4ae8bae",
+    # Resolved Housegate v0.21.0; source is pinned by the commit below.
+    commit = "c77fd4d2d9f8a78032c1350ef322183ffc1fb641",
     remote = "https://github.com/housegate/housegate",
 )
 ```
