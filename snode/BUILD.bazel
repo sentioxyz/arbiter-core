@@ -29,6 +29,7 @@ go_library(
         "//:arbiter-core",
         "//authority",
         "//dataplane",
+        "//dataplane/chparts",
         "//dataplane/chrestart",
         "//dataplane/ddl",
         "//dataplane/tableset",

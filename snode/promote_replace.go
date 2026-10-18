@@ -7,11 +7,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/housegate/housegate/pkg/lthash"
-	"github.com/housegate/housegate/pkg/replay/chexec"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/dataplane/chparts"
 )
 
 // ErrPromoteTableMissing means the protocol-owned hg_promote table does not
@@ -190,13 +189,7 @@ func promotionIntentMatchesCommand(intent promotionIntent, cmd arbiter.PromoteSa
 }
 
 func partsInLogicalPartition(parts []partInfo, sch payloadexec.TableSchema, partitionID string) []partInfo {
-	out := make([]partInfo, 0, len(parts))
-	for _, p := range parts {
-		if logicalPartitionID(sch, p) == partitionID {
-			out = append(out, p)
-		}
-	}
-	return out
+	return chparts.PartsInLogicalPartition(parts, sch, partitionID)
 }
 
 func samePromotionSafeParts(before []promotionSafePart, current []partInfo) bool {
@@ -221,36 +214,20 @@ func (r *Role) partitionContentRoot(ctx context.Context, db, table string, sch p
 }
 
 // partitionContentScan is partitionContentRoot that also returns each scanned
-// part with its canonical row LtHash.
+// part with its canonical row LtHash (chparts.PartitionContentScan).
 func (r *Role) partitionContentScan(ctx context.Context, db, table string, sch payloadexec.TableSchema, partitionID string) (string, []shadowPart, error) {
-	parts, err := activeParts(ctx, r.d.Conn, db, table)
+	root, scans, err := chparts.PartitionContentScan(ctx, r.d.Conn, db, table, sch, partitionID)
 	if err != nil {
 		return "", nil, err
 	}
-	var names []string
-	for _, p := range parts {
-		if logicalPartitionID(sch, p) == partitionID {
-			names = append(names, p.Name)
-		}
+	if scans == nil {
+		return root, nil, nil
 	}
-	if len(names) == 0 {
-		return accumulatorHex(lthash.New()), nil, nil
-	}
-	scans, err := chexec.ScanParts(ctx, r.d.Conn, db+"."+table, sch, names)
-	if err != nil {
-		return "", nil, err
-	}
-	acc := lthash.New()
 	out := make([]shadowPart, 0, len(scans))
 	for _, s := range scans {
-		h, err := parseAccumulatorHex(s.RowLtHash)
-		if err != nil {
-			return "", nil, err
-		}
-		acc.AddHash(h)
-		out = append(out, shadowPart{Name: s.PartName, RowLtHash: accumulatorHex(h)})
+		out = append(out, shadowPart{Name: s.Name, RowLtHash: s.RowLtHash})
 	}
-	return accumulatorHex(acc), out, nil
+	return root, out, nil
 }
 
 // refuseDuplicateCandidates refuses, before any ClickHouse statement, a

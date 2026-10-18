@@ -11,6 +11,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/dataplane/chparts"
 )
 
 // SubmitLocalStatement is the P1c one-shot compatibility wrapper. New callers
@@ -134,8 +135,5 @@ func (r *Role) assembleRC(env arbiter.StatementEnvelope, sch payloadexec.TableSc
 }
 
 func logicalPartitionID(sch payloadexec.TableSchema, info partInfo) string {
-	if sch.PartitionBy == "" {
-		return "all"
-	}
-	return "p_" + info.PartitionValue
+	return chparts.LogicalPartitionID(sch, info)
 }
