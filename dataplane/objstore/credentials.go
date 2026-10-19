@@ -1,6 +1,7 @@
 package objstore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,8 +56,9 @@ func (c Credentials) validate() error {
 // redact returns err with every form of the secret a statement carries (the
 // raw value and its SQL-escaped form) replaced by [redacted]. A server
 // exception stays a *clickhouse.Exception with its code and name, so callers
-// can still match the code with errors.As; any other error becomes plain
-// text. ClickHouse masks the secret argument itself, but an error that
+// can still match the code with errors.As; cancellation retains only its
+// known context sentinel, and other errors become plain text. ClickHouse
+// masks the secret argument itself, but an error that
 // echoes a statement fragment would otherwise carry it.
 func (c Credentials) redact(err error) error {
 	if err == nil || c.SecretAccessKey == "" {
@@ -72,6 +74,11 @@ func (c Credentials) redact(err error) error {
 		}
 		return s
 	}
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, cause) {
+			return redactedContextError{text: scrub(err.Error()), cause: cause}
+		}
+	}
 	var ex *clickhouse.Exception
 	if errors.As(err, &ex) {
 		out := redactException(*ex, scrub)
@@ -79,6 +86,16 @@ func (c Credentials) redact(err error) error {
 	}
 	return errors.New(scrub(err.Error()))
 }
+
+// redactedContextError preserves cancellation identity without retaining the
+// original error, whose text or unwrap chain may contain the secret.
+type redactedContextError struct {
+	text  string
+	cause error
+}
+
+func (e redactedContextError) Error() string { return e.text }
+func (e redactedContextError) Unwrap() error { return e.cause }
 
 func redactException(ex clickhouse.Exception, scrub func(string) string) clickhouse.Exception {
 	out := clickhouse.Exception{Code: ex.Code, Name: ex.Name, Message: scrub(ex.Message), StackTrace: scrub(ex.StackTrace)}

@@ -92,6 +92,13 @@ func (b *Backuper) Run(ctx context.Context) (BackupIndex, error) {
 	if err != nil {
 		return BackupIndex{}, err
 	}
+	// A mixed-network owner prefix is refused even when the newest index is
+	// ours: no chain may silently depend on a foreign network's backup.
+	for _, idx := range indexes {
+		if idx.NetworkID != b.NetworkID {
+			return BackupIndex{}, fmt.Errorf("objstore: backup %s of indexer %d belongs to network %q, not %q", idx.Name, b.Owner, idx.NetworkID, b.NetworkID)
+		}
+	}
 	var latest *BackupIndex
 	if len(indexes) > 0 {
 		latest = &indexes[len(indexes)-1]

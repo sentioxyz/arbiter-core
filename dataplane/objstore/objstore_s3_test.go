@@ -402,6 +402,15 @@ func TestS3_BackuperNeverReusesABackupName(t *testing.T) {
 	if !errors.As(errIndex, &ex) || ex.Code != 36 || !strings.Contains(ex.Message, "already exists") {
 		t.Errorf("rewriting an index: %v, want ClickHouse's refusal (36) of an existing object", errIndex)
 	}
+	t.Run("foreign network cannot extend the existing chain", func(t *testing.T) {
+		foreign := env.backuper(src, s3T0.Add(3*time.Hour), 0)
+		foreign.NetworkID = "another-network"
+		_, err := foreign.Run(ctx)
+		want := fmt.Sprintf("objstore: backup %s of indexer %d belongs to network %q, not %q", first.Name, env.owner, s3NetworkID, foreign.NetworkID)
+		if err == nil || err.Error() != want {
+			t.Fatalf("foreign network must not extend the existing chain: got %v, want %s", err, want)
+		}
+	})
 	if n := createdBackups(t, env); n != 2 {
 		t.Fatalf("system.backups holds %d created backups of the owner, want 2 (no BACKUP ran for a refused name)", n)
 	}

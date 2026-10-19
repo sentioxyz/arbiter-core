@@ -184,7 +184,7 @@ func (d *Drill) Run(ctx context.Context) (DrillVerdict, error) {
 				Backup: ref, Manifest: s, TableID: tm.TableID, PhysicalTable: bt.PhysicalTable,
 				Schema: schema, PartitionID: pc.PartitionID, Scratch: scratch,
 			})
-			if err != nil && res.Reason != DrillRestoreFailed {
+			if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || res.Reason != DrillRestoreFailed) {
 				return DrillVerdict{}, err
 			}
 			part := DrillPartition{
