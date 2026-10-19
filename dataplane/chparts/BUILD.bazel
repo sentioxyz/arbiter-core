@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "chparts",
+    srcs = ["chparts.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/dataplane/chparts",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "chparts_test",
+    srcs = [
+        "chparts_ch_test.go",
+        "chparts_test.go",
+    ],
+    embed = [":chparts"],
+    deps = [
+        "//dataplane/chtest",
+        "//dataplane/ddl",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)

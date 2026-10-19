@@ -5,41 +5,16 @@ import (
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 
+	"github.com/sentioxyz/arbiter-core/dataplane/chparts"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
 
-type partInfo struct {
-	Name           string
-	PartitionID    string
-	PartitionValue string
-	PhysHash       string
-	Path           string
-	Rows           uint64
-	Bytes          uint64
-}
+// partInfo is one active part as system.parts lists it (dataplane/chparts,
+// shared with the stage-3 restore-and-gate library).
+type partInfo = chparts.Part
 
 func activeParts(ctx context.Context, conn clickhouse.Conn, db, table string) ([]partInfo, error) {
-	rows, err := conn.Query(ctx, `
-		SELECT name, partition_id, partition, hash_of_all_files, path, rows, bytes_on_disk
-		FROM system.parts
-		WHERE database = ? AND table = ? AND active
-		ORDER BY name`, db, table)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []partInfo
-	for rows.Next() {
-		var p partInfo
-		if err := rows.Scan(&p.Name, &p.PartitionID, &p.PartitionValue, &p.PhysHash, &p.Path, &p.Rows, &p.Bytes); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return chparts.ActiveParts(ctx, conn, db, table)
 }
 
 func diffParts(before, after []partInfo) []partInfo {

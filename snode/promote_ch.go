@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/dataplane/chparts"
 )
 
 func (r *Role) exec(ctx context.Context, query string) error {
@@ -18,36 +18,20 @@ func (r *Role) exec(ctx context.Context, query string) error {
 	return nil
 }
 
+// dropPartitionIfPresent drops partitionID of db.table when it has an active
+// part. partitionSQL is the caller's quotePartition(sch, partitionID), which
+// chparts derives again; the signature is kept for the existing call sites.
 func (r *Role) dropPartitionIfPresent(ctx context.Context, db, table string, sch payloadexec.TableSchema, partitionID, partitionSQL string) error {
-	parts, err := activeParts(ctx, r.d.Conn, db, table)
-	if err != nil {
-		return err
-	}
-	for _, p := range parts {
-		if logicalPartitionID(sch, p) == partitionID {
-			return r.exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s DROP PARTITION %s", db, table, partitionSQL))
-		}
-	}
-	return nil
+	_, err := chparts.DropPartitionIfPresent(ctx, r.d.Conn, db, table, sch, partitionID)
+	return err
 }
 
 func quotePartition(sch payloadexec.TableSchema, partitionID string) (string, error) {
-	if sch.PartitionBy == "" {
-		if partitionID != "all" {
-			return "", fmt.Errorf("unpartitioned table wants partition all, got %s", partitionID)
-		}
-		return "tuple()", nil
-	}
-	value, ok := strings.CutPrefix(partitionID, "p_")
-	if !ok || value == "" {
-		return "", fmt.Errorf("partition id %s does not use p_<value> form", partitionID)
-	}
-	return "'" + escapeSQLString(value) + "'", nil
+	return chparts.QuotePartition(sch, partitionID)
 }
 
 func escapeSQLString(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	return strings.ReplaceAll(s, `'`, `\'`)
+	return chparts.EscapeSQLString(s)
 }
 
 func candidateHashes(cmd arbiter.PromoteSafePartition) []string {
