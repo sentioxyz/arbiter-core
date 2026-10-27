@@ -24,8 +24,10 @@ const redacted = "[redacted]"
 // the setting cannot be lowered for it. A context deadline survives:
 // clickhouse-go sends it as max_execution_time, which stops the server's
 // retries too, and the fetch is refused at the deadline (plan S3-C2 K35). The
-// RESTORE keeps the caller's context: once the index read succeeded the
-// store is reachable, and a partition restore may be long.
+// RESTORE and the copy INSERT run under the caller's context: once the index
+// read succeeded the store is reachable, and a partition restore may be long,
+// so they are bounded only by the installer's per-fetch deadline
+// (install.Config.FetchTimeout), which covers the whole Fetch.
 const RestoreIndexTimeout = 2 * time.Minute
 
 // RestoreConfig is the member's read-only view of the per-owner backups of

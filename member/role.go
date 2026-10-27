@@ -377,6 +377,7 @@ func (r *Role) build(store *manifestfeed.Store, bootNonce string) (*parts, error
 	inst, err := r.env.newInstaller(install.Config{
 		Pinned: r.cfg.Pinned, NetworkID: r.cfg.NetworkID, StateDir: r.cfg.StateDir, BootNonce: bootNonce,
 		DiskBudgetBytes: r.cfg.DiskBudgetBytes, StopInstallsRatio: r.cfg.StopInstallsRatio, SelfAuditInterval: r.cfg.SelfAuditInterval,
+		FetchTimeout: r.cfg.FetchTimeout,
 	}, install.Deps{
 		Conn: r.d.Conn, Copies: copies,
 		Sources:     func(owner uint64) []sources.Source { return byOwner[owner] },

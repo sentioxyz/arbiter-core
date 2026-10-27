@@ -97,6 +97,9 @@ type Config struct {
 	StopInstallsRatio float64
 	// SelfAuditInterval: 0 selects install.DefaultSelfAuditInterval.
 	SelfAuditInterval time.Duration
+	// FetchTimeout bounds one source's fetch of one part: 0 selects
+	// install.DefaultFetchTimeout.
+	FetchTimeout time.Duration
 	// FeedMaxWalk and FeedCacheEntries: 0 selects the manifestfeed defaults.
 	FeedMaxWalk, FeedCacheEntries int
 }
@@ -129,6 +132,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.SelfAuditInterval == 0 {
 		c.SelfAuditInterval = install.DefaultSelfAuditInterval
+	}
+	if c.FetchTimeout == 0 {
+		c.FetchTimeout = install.DefaultFetchTimeout
 	}
 	if c.Protocol.UnsafeDB == "" {
 		c.Protocol.UnsafeDB = defaultUnsafeDB
@@ -181,6 +187,9 @@ func (c Config) validate() error {
 	}
 	if c.SelfAuditInterval < install.MinSelfAuditInterval {
 		return fmt.Errorf("member: self-audit interval %s is below %s", c.SelfAuditInterval, install.MinSelfAuditInterval)
+	}
+	if c.FetchTimeout < 0 {
+		return fmt.Errorf("member: fetch timeout %s is not positive", c.FetchTimeout)
 	}
 	if len(c.Peers) == 0 {
 		return errors.New("member: at least one peer is required")

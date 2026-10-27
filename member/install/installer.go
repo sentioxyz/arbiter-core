@@ -64,6 +64,11 @@ const (
 	// a part no source delivered (K35): 1m, doubling, at most 30m.
 	DefaultDeferBackoffMin = time.Minute
 	DefaultDeferBackoffMax = 30 * time.Minute
+	// DefaultFetchTimeout bounds one source's Fetch of one part, the restore's
+	// RESTORE and copy INSERT included. A fetch still running at the deadline
+	// is refused and the next source is tried, so a hung source cannot hold
+	// the install pass, and with it the role's audits, for longer.
+	DefaultFetchTimeout = 20 * time.Minute
 )
 
 // Audit triggers, the metric label trigger.
@@ -98,6 +103,9 @@ type Config struct {
 	DiskBudgetBytes   uint64
 	StopInstallsRatio float64
 	SelfAuditInterval time.Duration
+	// FetchTimeout is the deadline of one source's Fetch of one part; 0
+	// selects DefaultFetchTimeout.
+	FetchTimeout time.Duration
 }
 
 // CopySet is the copy reconciler's read side (*copyset.Reconciler).
@@ -266,6 +274,12 @@ func New(cfg Config, d Deps) (*Installer, error) {
 	}
 	if cfg.SelfAuditInterval < MinSelfAuditInterval {
 		return nil, fmt.Errorf("install: self_audit_interval must be at least 10m, got %s", cfg.SelfAuditInterval)
+	}
+	if cfg.FetchTimeout == 0 {
+		cfg.FetchTimeout = DefaultFetchTimeout
+	}
+	if cfg.FetchTimeout < 0 {
+		return nil, fmt.Errorf("install: fetch_timeout must be positive, got %s", cfg.FetchTimeout)
 	}
 	if d.Conn == nil || d.Copies == nil || d.Sources == nil {
 		return nil, errors.New("install: Deps needs Conn, Copies and Sources")
@@ -686,7 +700,7 @@ func (i *Installer) fetchPart(ctx context.Context, owner uint64, c copyset.Copy,
 			if err != nil {
 				return sources.Scratch{}, nil, false, err
 			}
-			res := src.Fetch(ctx, sn, c.Schema, scratch)
+			res := i.fetchWithDeadline(ctx, src, sn, c.Schema, scratch)
 			if err := ctx.Err(); err != nil {
 				i.dropScratch(scratch)
 				return sources.Scratch{}, nil, false, err
@@ -731,6 +745,27 @@ func (i *Installer) fetchPart(ctx context.Context, owner uint64, c copyset.Copy,
 	d := i.deferAgain(dkey, results)
 	i.d.Logger.Warn("install: no source delivered a part; deferred", "table", c.TableKey, "partition", need.PartitionID, "part", need.PartName, "results", results, "until", d.until)
 	return sources.Scratch{}, nil, false, refuse(ErrNoSourceSucceeded, "install: no source delivered part %s of %s (%v); deferred until %s", need.PartName, c.TableKey, results, d.until.UTC().Format(time.RFC3339))
+}
+
+// fetchWithDeadline runs one Fetch under FetchTimeout. A fetch the deadline
+// ends is refused whatever the source reported, since its scratch may hold a
+// partial write; clickhouse-go cancels the statement at the deadline and also
+// sends it as max_execution_time, so the server stops too. The caller drops
+// the scratch and tries the next source.
+func (i *Installer) fetchWithDeadline(ctx context.Context, src sources.Source, need sources.Need, schema payloadexec.TableSchema, scratch sources.Scratch) sources.Result {
+	fctx, cancel := context.WithTimeout(ctx, i.cfg.FetchTimeout)
+	defer cancel()
+	res := src.Fetch(fctx, need, schema, scratch)
+	if ctx.Err() == nil && errors.Is(fctx.Err(), context.DeadlineExceeded) {
+		cause := res.Err
+		if cause == nil {
+			cause = context.DeadlineExceeded
+		}
+		res.Outcome, res.Parts = sources.OutcomeRefused, nil
+		res.Err = fmt.Errorf("fetch exceeded its %s deadline: %w", i.cfg.FetchTimeout, cause)
+		i.d.Logger.Warn("install: a fetch exceeded its deadline; trying the next source", "table", need.TableKey, "part", need.PartName, "source", src.Name(), "fetch_timeout", i.cfg.FetchTimeout)
+	}
+	return res
 }
 
 // sourcesFor is the order fetchPart tries owner's sources in for copy c: the P2

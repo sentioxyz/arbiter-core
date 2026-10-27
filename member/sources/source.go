@@ -116,7 +116,9 @@ type Result struct {
 	Err     error
 }
 
-// Source fetches one needed part into a scratch.
+// Source fetches one needed part into a scratch. Fetch returns once ctx
+// ends: the installer bounds every fetch with a deadline
+// (install.Config.FetchTimeout) and moves to its next source when it expires.
 type Source interface {
 	Name() string
 	Fetch(ctx context.Context, need Need, schema payloadexec.TableSchema, scratch Scratch) Result
