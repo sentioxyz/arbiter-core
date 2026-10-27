@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_test(
+    name = "manifestfeed_test",
+    srcs = [
+        "fixtures_test.go",
+        "store_test.go",
+        "verify_test.go",
+    ],
+    embed = [":manifestfeed"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_library(
+    name = "manifestfeed",
+    srcs = [
+        "store.go",
+        "verify.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member/manifestfeed",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//:arbiter-core",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
