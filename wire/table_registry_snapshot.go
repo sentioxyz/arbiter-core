@@ -185,6 +185,28 @@ func (s TableRegistrySnapshot) Owner(inc TableIncarnation) uint64 {
 	return s.Params.SIIndexerID
 }
 
+// ManifestOwner is the SI indexer a published manifest attributes tableKey to:
+// the port of arbiter's fsm.manifestTableOwnerLocked (fsm/reads_manifest.go).
+// Scanning the incarnations from the newest, the first of tableKey that is not
+// Refused and ever entered a table set (a genesis one, or one whose add
+// transition was sealed: AddBlockSeq non-zero) gives Owner(inc); ok is false
+// when there is none. A Pending incarnation never added is skipped, so a key
+// keeps the owner of the incarnation a manifest can hold. Callers pass a
+// snapshot of an enabled registry (RegistryView.View true); arbiter's
+// TestManifestTableOwnerMatchesWireManifestOwner proves both rules agree.
+func (s TableRegistrySnapshot) ManifestOwner(tableKey string) (uint64, bool) {
+	for i := len(s.Incarnations) - 1; i >= 0; i-- {
+		inc := s.Incarnations[i]
+		if inc.Key() != tableKey || inc.Status == TableStatusRefused {
+			continue
+		}
+		if inc.Origin == TableOriginGenesis || inc.AddBlockSeq != 0 {
+			return s.Owner(inc), true
+		}
+	}
+	return 0, false
+}
+
 // signedClaimsFromPB decodes si_indexers and seeded_indexers. The arbiter
 // keeps entries sorted and every seeded id enrolled; anything else is a
 // corrupt view, refused like an unknown status.
