@@ -296,6 +296,19 @@ if [ -z "${ARBITER_CH_MECHANICS_FILTER:-}" ]; then
   done
   echo "snode: ${snode_test} passed on ${image}"
 
+  # The member installer's Diverged repair across a ClickHouse-only restart
+  # (Plan S3-C2 Task 32). It restarts node B as well, so it runs here, on its
+  # own, after the SNode test, gated on its PASS line in the same way.
+  install_test="TestInstallDivergedRepairSurvivesAReloadInsideTheOutdatedWindow"
+  bazel test //member/install:install_test "${env_flags[@]}" "--test_filter=^${install_test}\$" \
+    --test_arg=-test.v --nocache_test_results --test_timeout=1800 --test_output=errors
+  install_log="$(bazel info bazel-testlogs)/member/install/install_test/test.log"
+  if ! grep -Eq -- "^--- PASS: ${install_test} \(" "${install_log}"; then
+    echo "member install restart test ${install_test} did not run and pass" >&2
+    exit 1
+  fi
+  echo "install: ${install_test} passed on ${image}"
+
   # The object-store library against the same MinIO (plan S3-C1 contract
   # §17): every TestS3_ function must report PASS.
   bazel test //dataplane/objstore:objstore_test "${env_flags[@]}" \
