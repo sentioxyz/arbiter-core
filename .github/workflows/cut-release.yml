@@ -125,11 +125,19 @@ jobs:
         if: always()
         run: bash scripts/ci/clickhouse-mechanics.sh --cleanup
 
+      - name: validate member confinement
+        run: bash scripts/ci/clickhouse-member-confinement.sh clickhouse/clickhouse-server:26.3.37.3 26.3.37.3
+
+      - name: stop the confinement servers
+        if: always()
+        run: bash scripts/ci/clickhouse-member-confinement.sh --cleanup
+
       - name: compute next version
         id: version
         run: |
           set -euo pipefail
           version="$(bash scripts/next-version.sh)"
+          echo "member release tag: ${version}"
           if git rev-parse -q --verify "refs/tags/${version}" >/dev/null; then
             echo "::error::tag ${version} already exists"
             exit 1

@@ -156,3 +156,21 @@ jobs:
       - name: stop the mechanics pair
         if: always()
         run: bash scripts/ci/clickhouse-mechanics.sh --cleanup
+
+  member-confinement:
+    # Keep the same fork-safety boundary as the test job. The suite runs on
+    # its own fenced server, peer and MinIO, never on the
+    # integration-clickhouse servers.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazelbuild/setup-bazelisk@v3
+      - name: member confinement on upstream 26.3.37.3
+        run: bash scripts/ci/clickhouse-member-confinement.sh clickhouse/clickhouse-server:26.3.37.3 26.3.37.3
+      - name: stop the confinement servers
+        if: always()
+        run: bash scripts/ci/clickhouse-member-confinement.sh --cleanup
