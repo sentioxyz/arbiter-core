@@ -1,0 +1,58 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "install",
+    srcs = [
+        "audit.go",
+        "foreign.go",
+        "installer.go",
+        "journal.go",
+        "scratch.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member/install",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//dataplane/chparts",
+        "//dataplane/ddl",
+        "//member/copyset",
+        "//member/gate",
+        "//member/manifestfeed",
+        "//member/sources",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "install_test",
+    srcs = [
+        "audit_ch_test.go",
+        "fixture_ch_test.go",
+        "foreign_test.go",
+        "installer_ch_test.go",
+        "installer_test.go",
+        "restart_ch_test.go",
+        "scratch_test.go",
+    ],
+    # TestInstallNeverIssuesReplacePartition reads the package's own sources.
+    data = glob(["*.go"]),
+    embed = [":install"],
+    deps = [
+        "//dataplane/chparts",
+        "//dataplane/chrestart",
+        "//dataplane/chtest",
+        "//dataplane/ddl",
+        "//member/copyset",
+        "//member/manifestfeed",
+        "//member/sources",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
