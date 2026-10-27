@@ -110,6 +110,7 @@ jobs:
             //dataplane/chtest:chtest_test \
             //dataplane/ddl:ddl_test \
             //dataplane/tableset:tableset_test \
+            //member/copyset:copyset_test \
             //snode:snode_test \
             //verifier:verifier_test \
             --test_env=ARBITER_CH_INTEGRATION \
