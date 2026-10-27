@@ -306,6 +306,43 @@ func TestInstallDoubledRetryIsDroppedAndRetriedOnce(t *testing.T) {
 	}
 }
 
+// TestInstallHungSourceIsRefusedAtTheFetchDeadline: a source that never
+// answers (a remote that accepts the connection and then stalls, a RESTORE
+// that hangs on the object store) is cut off at FetchTimeout, counted
+// refused, and the next source delivers the part in the same pass, so a hung
+// source cannot hold the install pass and the audits that wait for it.
+func TestInstallHungSourceIsRefusedAtTheFetchDeadline(t *testing.T) {
+	f := newFixture(t, requireCH(t))
+	c := f.table(0, "dex.swaps", 3, false)
+	hung := f.source("owner_pull", func(ctx context.Context, _ sources.Need, _ sources.Scratch) sources.Result {
+		<-ctx.Done()
+		return sources.Result{Outcome: sources.OutcomeFetched}
+	})
+	pull := f.source("peer_unsafe_pull", f.pull(1))
+	f.setSources(0, hung, pull)
+	const timeout = 300 * time.Millisecond
+	inst := f.newInstaller(func(cfg *Config, _ *Deps) { cfg.FetchTimeout = timeout })
+	f.start(inst)
+	f.mustApply(inst, f.update("s0", 9, c))
+	f.promote(c, row{"", 1})
+	s1 := f.update("s1", 10, c)
+	start := time.Now()
+	f.mustApply(inst, s1)
+	if took := time.Since(start); took > timeout+30*time.Second {
+		t.Fatalf("Apply took %s with a hung source and a %s fetch deadline", took, timeout)
+	}
+	f.requireCopyEqualsManifest(c, s1)
+	if hung.calls() != 1 || pull.calls() != 1 {
+		t.Fatalf("calls = %d and %d, want 1 and 1", hung.calls(), pull.calls())
+	}
+	if s := inst.Stats(); s.Outcomes[OutcomeRefused] != 1 || s.Installs["peer_unsafe_pull"] != 1 {
+		t.Fatalf("stats = %+v, want one refused fetch and one peer unsafe pull install", s)
+	}
+	if left := f.stageTables(); len(left) != 0 {
+		t.Fatalf("stage tables after the pass = %v, want none", left)
+	}
+}
+
 // TestInstallRefusedPullFallsBackToRestoreAndDefers: a pull refused by the
 // memory limit is not retried and the restore delivers the part, dropping
 // the backup's extra part inside the scratch; a part no source delivers is

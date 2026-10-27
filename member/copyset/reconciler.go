@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -75,6 +76,13 @@ type Copy struct {
 	Table  string
 	Status wire.TableIncarnationStatus
 	Schema payloadexec.TableSchema
+	// Generation numbers the ClickHouse table that holds the copy: it changes
+	// whenever a pass creates the table, also when a table this reconciler
+	// already reported vanished and is created again empty, and stays while
+	// the table stays. The installer's audit coverage and the role's copy key
+	// include it, so a recreated copy is unaudited, and not ready to serve,
+	// until it was compared with its journal again.
+	Generation uint64
 	// Ready is true once the copy exists and verified in the last pass.
 	Ready bool
 }
@@ -130,7 +138,8 @@ type Reconciler struct {
 
 	mu       sync.Mutex
 	copies   map[string]Copy // table key -> desired copy at the last pass
-	ready    []string        // sorted names of the ready copies
+	gens     uint64          // the last Generation handed out
+	ready    []string        // sorted names@generations of the ready copies
 	changed  chan struct{}
 	owed     map[string]Copy // copy name -> a drop whose Dropped hook failed
 	dropped  uint64
@@ -293,8 +302,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			errs = append(errs, r.fail(key, fmt.Errorf("copyset: copy %s of %s (incarnation %d): %w", c.Table, key, c.IncarnationSeq, err)))
 			continue
 		}
+		c.Generation = r.generation(c, present[c.Table])
 		if !present[c.Table] {
-			r.d.Logger.Info("created copy", "table", key, "incarnation", c.IncarnationSeq, "owner", c.Owner, "copy", c.Table)
+			r.d.Logger.Info("created copy", "table", key, "incarnation", c.IncarnationSeq, "owner", c.Owner, "copy", c.Table, "generation", c.Generation)
 		}
 		c.Ready = true
 		desired[key] = c
@@ -303,9 +313,35 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// generation is copy c's Generation after a pass that found its table (present)
+// or created it. A table that was there keeps the generation the last pass gave
+// it; one this pass created gets a new one. A table dropped in the moment
+// between this pass's listing and its CREATE TABLE IF NOT EXISTS is created
+// again under its old generation; the journaled parts it lacks are then found
+// by the next manifest's pass or the self-audit.
+func (r *Reconciler) generation(c Copy, present bool) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if prev, ok := r.copies[c.TableKey]; ok && present && prev.Table == c.Table && prev.Generation != 0 {
+		return prev.Generation
+	}
+	r.gens++
+	return r.gens
+}
+
 // desired is every Pending or Active incarnation of an owner in scope, by
 // table key, with its resolved schema; a schema that does not resolve is
 // reported per key.
+//
+// The arbiter keeps at most one Pending or Active incarnation per table key:
+// genesis incarnations enter Active once, one per genesis table id, when the
+// registry is enabled; a chain incarnation enters Pending only through
+// AddTable, which records it Refused unless every earlier incarnation of its
+// key is Purged or Refused (spec D9, arbiter fsm addTableRefusalLocked); only
+// Pending becomes Active; Legacy incarnations are never Pending or Active.
+// A snapshot that names two live incarnations of one key breaks that rule, so
+// the key keeps no ready copy and fails every pass until the registry agrees
+// again, rather than serving whichever incarnation came last.
 func (r *Reconciler) desired(snap wire.TableRegistrySnapshot) (map[string]Copy, map[string]error) {
 	out := map[string]Copy{}
 	errs := map[string]error{}
@@ -318,6 +354,10 @@ func (r *Reconciler) desired(snap wire.TableRegistrySnapshot) (map[string]Copy, 
 			continue
 		}
 		key := inc.Key()
+		if prev, ok := out[key]; ok {
+			errs[key] = fmt.Errorf("the registry names incarnations %d (%s) and %d (%s) of %s as live; the arbiter keeps at most one Pending or Active incarnation per key", prev.IncarnationSeq, prev.Status, inc.Seq, inc.Status, key)
+			continue
+		}
 		c := Copy{Owner: owner, TableKey: key, IncarnationSeq: inc.Seq, Table: ddl.CopyTableName(key, inc.Seq), Status: inc.Status}
 		schema, err := dataplane.IncarnationSchema(r.cfg.NetworkID, r.cfg.Genesis, inc)
 		if err != nil {
@@ -434,12 +474,13 @@ func (r *Reconciler) fail(key string, err error) error {
 	return err
 }
 
-// publish records the pass's copies and signals a change of the ready set.
+// publish records the pass's copies and signals a change of the ready set,
+// a copy created again under a new generation included.
 func (r *Reconciler) publish(copies map[string]Copy) {
 	var ready []string
 	for _, c := range copies {
 		if c.Ready {
-			ready = append(ready, c.Table)
+			ready = append(ready, c.Table+"@"+strconv.FormatUint(c.Generation, 10))
 		}
 	}
 	sort.Strings(ready)
@@ -474,8 +515,8 @@ func (r *Reconciler) Copy(tableKey string) (Copy, bool) {
 	return c, ok
 }
 
-// Changed returns a channel closed when the set of ready copies changes after
-// this call, so the role re-runs the installer for a copy that became ready
+// Changed returns a channel closed when the set of ready copies, or the
+// generation of one of them, changes after this call, so the role re-runs the installer for a copy that became ready
 // between publications.
 func (r *Reconciler) Changed() <-chan struct{} {
 	r.mu.Lock()

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 )
@@ -92,5 +93,54 @@ func TestRestoreConfigNeverPrintsItsKeys(t *testing.T) {
 	}
 	if source.Name() != "restore" {
 		t.Fatalf("Name = %q, want restore", source.Name())
+	}
+}
+
+// hungRestoreConn is a fakeConn whose RESTORE never answers until its
+// context ends, as a RESTORE stalled on the object store does.
+type hungRestoreConn struct{ fakeConn }
+
+func (c *hungRestoreConn) Exec(ctx context.Context, query string, args ...any) error {
+	if strings.HasPrefix(query, "RESTORE ") {
+		c.record("exec", query)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return c.fakeConn.Exec(ctx, query, args...)
+}
+
+// TestRestoreHungRestoreEndsAtTheCallerDeadline: the RESTORE runs under the
+// caller's context, so the installer's per-fetch deadline
+// (install.Config.FetchTimeout) ends a RESTORE that hangs: Fetch returns
+// refused and still drops its restore target.
+func TestRestoreHungRestoreEndsAtTheCallerDeadline(t *testing.T) {
+	index := `{"format":"si-backup-index-v1","owner_indexer_id":7,"name":"20261015T000000Z-full","kind":"full","chain_length":1,` +
+		`"tables":[{"physical_table":"dex__swaps","incarnation_seq":0,"parts":[{"name":"p_1_1_0","partition_id":"p_2026","phys_hash":"4adff322bb8fd41ea3d90f10b04424fb","rows":3}]}]}`
+	conn := &hungRestoreConn{fakeConn{rows: func(string, []any) ([][]any, error) {
+		return [][]any{{"20261015T000000Z-full.index.json", index}}, nil
+	}}}
+	cfg := RestoreConfig{Endpoint: "http://si-minio:9000", Bucket: "si-replica", AccessKeyID: "AKIDHUNGRESTORE0001", Secret: "hung-restore-secret-0001"}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan Result, 1)
+	go func() {
+		done <- NewRestore(conn, cfg, 7).Fetch(ctx, Need{TableKey: "dex.swaps", Table: "dex__swaps", PartitionID: "p_2026", PartPhysHash: "4adff322bb8fd41ea3d90f10b04424fb", RowCount: 3},
+			pullSchema(), Scratch{Database: "hg_rstage", Table: "member-a_0011aabb_9"})
+	}()
+	var res Result
+	select {
+	case res = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Fetch did not return after its context's deadline with the RESTORE hung")
+	}
+	if res.Outcome != OutcomeRefused || !errors.Is(res.Err, context.DeadlineExceeded) {
+		t.Fatalf("Fetch = %+v, want refused with the deadline", res)
+	}
+	if len(conn.matching("exec RESTORE ")) != 1 {
+		t.Fatalf("statements = %q, want one RESTORE", conn.all())
+	}
+	drops := conn.matching("exec DROP TABLE IF EXISTS `hg_rstage`.`member-a_0011aabb_9_r`")
+	if len(drops) != 2 {
+		t.Fatalf("restore target drops = %q, want one before and one after the RESTORE", drops)
 	}
 }

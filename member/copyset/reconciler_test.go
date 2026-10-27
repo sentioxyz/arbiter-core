@@ -249,9 +249,9 @@ func TestCopysetCreatesACopyForEveryPhysicalIncarnationOfAPeerOwner(t *testing.T
 	}
 	got := r.Copies()
 	want := []Copy{
-		{Owner: 0, TableKey: "db0.c", IncarnationSeq: 2, Table: "db0__c__i2", Status: wire.TableStatusActive, Schema: chainSchema("db0.c"), Ready: true},
-		{Owner: 0, TableKey: "db0.g", IncarnationSeq: 1, Table: "db0__g__i1", Status: wire.TableStatusActive, Schema: genesis[0], Ready: true},
-		{Owner: 2, TableKey: "db2.p", IncarnationSeq: 3, Table: "db2__p__i3", Status: wire.TableStatusPending, Schema: chainSchema("db2.p"), Ready: true},
+		{Owner: 0, TableKey: "db0.c", IncarnationSeq: 2, Table: "db0__c__i2", Status: wire.TableStatusActive, Schema: chainSchema("db0.c"), Generation: 1, Ready: true},
+		{Owner: 0, TableKey: "db0.g", IncarnationSeq: 1, Table: "db0__g__i1", Status: wire.TableStatusActive, Schema: genesis[0], Generation: 2, Ready: true},
+		{Owner: 2, TableKey: "db2.p", IncarnationSeq: 3, Table: "db2__p__i3", Status: wire.TableStatusPending, Schema: chainSchema("db2.p"), Generation: 3, Ready: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Copies() = %+v\nwant %+v", got, want)
@@ -302,6 +302,104 @@ func TestCopysetCreatesACopyForEveryPhysicalIncarnationOfAPeerOwner(t *testing.T
 	}
 	if got := r.Copies(); len(got) != 0 {
 		t.Fatalf("Copies() = %+v, want none ready", got)
+	}
+}
+
+// TestCopysetGivesARecreatedCopyANewGeneration: a copy whose table stays
+// keeps its generation from pass to pass; a copy whose table vanished is
+// created again empty under a new generation and Changed fires, so the
+// installer's audit coverage and the role's copy key no longer match it
+// (Codex review of PR #54, reconciler.go:299).
+func TestCopysetGivesARecreatedCopyANewGeneration(t *testing.T) {
+	reg := newFakeRegistry(snapshot(
+		chainInc(2, "db0.c", 0, wire.TableStatusActive),
+		chainInc(3, "db2.p", 2, wire.TableStatusActive),
+	), true)
+	store := newFakeStore()
+	r := newTestReconciler(t, reg, store, nil)
+	ctx := context.Background()
+	if err := r.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gens := func() map[string]uint64 {
+		out := map[string]uint64{}
+		for _, c := range r.Copies() {
+			out[c.TableKey] = c.Generation
+		}
+		return out
+	}
+	first := gens()
+	if first["db0.c"] == 0 || first["db2.p"] == 0 || first["db0.c"] == first["db2.p"] {
+		t.Fatalf("generations after the first pass = %v, want two distinct non-zero ones", first)
+	}
+	changed := r.Changed()
+	if err := r.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := gens(); !reflect.DeepEqual(got, first) {
+		t.Fatalf("generations after a pass that found every table = %v, want %v", got, first)
+	}
+	select {
+	case <-changed:
+		t.Fatal("Changed fired on a pass that changed no copy")
+	default:
+	}
+
+	// The table of db2.p vanishes behind the reconciler's back.
+	if err := store.drop(ctx, "db2__p__i3"); err != nil {
+		t.Fatal(err)
+	}
+	store.reset()
+	if err := r.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ensured, _ := store.calls(); !slices.Contains(ensured, "db2__p__i3") {
+		t.Fatalf("ensured %v, want db2__p__i3 created again", ensured)
+	}
+	got := gens()
+	if got["db0.c"] != first["db0.c"] || got["db2.p"] == first["db2.p"] || got["db2.p"] == 0 {
+		t.Fatalf("generations after db2.p was created again = %v, want db0.c kept at %d and db2.p new (was %d)", got, first["db0.c"], first["db2.p"])
+	}
+	select {
+	case <-changed:
+	default:
+		t.Fatal("Changed did not fire when db2.p was created again")
+	}
+}
+
+// TestCopysetKeepsNoCopyOfAKeyWithTwoLiveIncarnations: the arbiter keeps at
+// most one Pending or Active incarnation per table key (spec D9); a snapshot
+// that names two fails that key closed: neither incarnation's copy is ready
+// and nothing is dropped, while the other keys are unaffected.
+func TestCopysetKeepsNoCopyOfAKeyWithTwoLiveIncarnations(t *testing.T) {
+	reg := newFakeRegistry(snapshot(
+		chainInc(2, "db0.c", 0, wire.TableStatusActive),
+		chainInc(3, "db2.p", 2, wire.TableStatusActive),
+	), true)
+	store := newFakeStore()
+	r := newTestReconciler(t, reg, store, nil)
+	ctx := context.Background()
+	if err := r.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reg.set(snapshot(
+		chainInc(2, "db0.c", 0, wire.TableStatusActive),
+		chainInc(3, "db2.p", 2, wire.TableStatusActive),
+		chainInc(4, "db0.c", 0, wire.TableStatusPending),
+	), true)
+	store.reset()
+	err := r.Reconcile(ctx)
+	if err == nil || !strings.Contains(err.Error(), "incarnations 2 (active) and 4 (pending) of db0.c as live") {
+		t.Fatalf("Reconcile with two live incarnations of db0.c = %v, want that refusal", err)
+	}
+	if got := readyCopyTables(r); !slices.Equal(got, []string{"db2__p__i3"}) {
+		t.Fatalf("ready copies = %v, want db2.p's alone", got)
+	}
+	if _, dropped := store.calls(); len(dropped) != 0 {
+		t.Fatalf("dropped %v, want nothing dropped", dropped)
+	}
+	if s := r.Stats(); s.Failures["db0.c"] != 1 {
+		t.Fatalf("Stats = %+v, want one db0.c failure", s)
 	}
 }
 
