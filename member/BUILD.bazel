@@ -1,0 +1,59 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "member",
+    srcs = [
+        "config.go",
+        "lock.go",
+        "role.go",
+        "stats.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//dataplane",
+        "//dataplane/chrestart",
+        "//dataplane/ddl",
+        "//member/copyset",
+        "//member/install",
+        "//member/manifestfeed",
+        "//member/shadow",
+        "//member/sources",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "member_test",
+    srcs = [
+        "fake_arbiter_test.go",
+        "role_test.go",
+    ],
+    # TestRoleCallsOnlyReadRPCs parses the package's own sources.
+    data = glob(["*.go"]),
+    embed = [":member"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane",
+        "//dataplane/chrestart",
+        "//dataplane/dastore",
+        "//dataplane/ddl",
+        "//member/copyset",
+        "//member/install",
+        "//member/manifestfeed",
+        "//member/shadow",
+        "//member/sources",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/payloadexec",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
+    ],
+)
