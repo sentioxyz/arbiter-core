@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_test(
     name = "manifestfeed_test",
     srcs = [
+        "feed_test.go",
         "fixtures_test.go",
         "store_test.go",
         "verify_test.go",
@@ -11,15 +12,21 @@ go_test(
     deps = [
         "//:arbiter-core",
         "//dataplane",
+        "//wire",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/lthash",
         "@housegate//pkg/replay",
         "@housegate//pkg/replay/payloadexec",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
     ],
 )
 
 go_library(
     name = "manifestfeed",
     srcs = [
+        "feed.go",
         "store.go",
         "verify.go",
     ],
