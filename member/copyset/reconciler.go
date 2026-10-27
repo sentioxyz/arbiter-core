@@ -332,6 +332,16 @@ func (r *Reconciler) generation(c Copy, present bool) uint64 {
 // desired is every Pending or Active incarnation of an owner in scope, by
 // table key, with its resolved schema; a schema that does not resolve is
 // reported per key.
+//
+// The arbiter keeps at most one Pending or Active incarnation per table key:
+// genesis incarnations enter Active once, one per genesis table id, when the
+// registry is enabled; a chain incarnation enters Pending only through
+// AddTable, which records it Refused unless every earlier incarnation of its
+// key is Purged or Refused (spec D9, arbiter fsm addTableRefusalLocked); only
+// Pending becomes Active; Legacy incarnations are never Pending or Active.
+// A snapshot that names two live incarnations of one key breaks that rule, so
+// the key keeps no ready copy and fails every pass until the registry agrees
+// again, rather than serving whichever incarnation came last.
 func (r *Reconciler) desired(snap wire.TableRegistrySnapshot) (map[string]Copy, map[string]error) {
 	out := map[string]Copy{}
 	errs := map[string]error{}
@@ -344,6 +354,10 @@ func (r *Reconciler) desired(snap wire.TableRegistrySnapshot) (map[string]Copy, 
 			continue
 		}
 		key := inc.Key()
+		if prev, ok := out[key]; ok {
+			errs[key] = fmt.Errorf("the registry names incarnations %d (%s) and %d (%s) of %s as live; the arbiter keeps at most one Pending or Active incarnation per key", prev.IncarnationSeq, prev.Status, inc.Seq, inc.Status, key)
+			continue
+		}
 		c := Copy{Owner: owner, TableKey: key, IncarnationSeq: inc.Seq, Table: ddl.CopyTableName(key, inc.Seq), Status: inc.Status}
 		schema, err := dataplane.IncarnationSchema(r.cfg.NetworkID, r.cfg.Genesis, inc)
 		if err != nil {

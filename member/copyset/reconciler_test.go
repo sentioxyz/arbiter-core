@@ -367,6 +367,42 @@ func TestCopysetGivesARecreatedCopyANewGeneration(t *testing.T) {
 	}
 }
 
+// TestCopysetKeepsNoCopyOfAKeyWithTwoLiveIncarnations: the arbiter keeps at
+// most one Pending or Active incarnation per table key (spec D9); a snapshot
+// that names two fails that key closed: neither incarnation's copy is ready
+// and nothing is dropped, while the other keys are unaffected.
+func TestCopysetKeepsNoCopyOfAKeyWithTwoLiveIncarnations(t *testing.T) {
+	reg := newFakeRegistry(snapshot(
+		chainInc(2, "db0.c", 0, wire.TableStatusActive),
+		chainInc(3, "db2.p", 2, wire.TableStatusActive),
+	), true)
+	store := newFakeStore()
+	r := newTestReconciler(t, reg, store, nil)
+	ctx := context.Background()
+	if err := r.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reg.set(snapshot(
+		chainInc(2, "db0.c", 0, wire.TableStatusActive),
+		chainInc(3, "db2.p", 2, wire.TableStatusActive),
+		chainInc(4, "db0.c", 0, wire.TableStatusPending),
+	), true)
+	store.reset()
+	err := r.Reconcile(ctx)
+	if err == nil || !strings.Contains(err.Error(), "incarnations 2 (active) and 4 (pending) of db0.c as live") {
+		t.Fatalf("Reconcile with two live incarnations of db0.c = %v, want that refusal", err)
+	}
+	if got := readyCopyTables(r); !slices.Equal(got, []string{"db2__p__i3"}) {
+		t.Fatalf("ready copies = %v, want db2.p's alone", got)
+	}
+	if _, dropped := store.calls(); len(dropped) != 0 {
+		t.Fatalf("dropped %v, want nothing dropped", dropped)
+	}
+	if s := r.Stats(); s.Failures["db0.c"] != 1 {
+		t.Fatalf("Stats = %+v, want one db0.c failure", s)
+	}
+}
+
 // TestCopysetIgnoresTheHostsOwnTables: a member never copies its host's
 // incarnations (they are the host SNode's hg_safe), and never touches the
 // host's protocol tables.
