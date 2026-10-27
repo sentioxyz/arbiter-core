@@ -6,6 +6,7 @@ go_library(
         "client.go",
         "genesis.go",
         "manifests.go",
+        "member_reads.go",
         "registry_follower.go",
         "registry_schema.go",
         "snapshot_restore.go",
@@ -16,6 +17,7 @@ go_library(
     importpath = "github.com/sentioxyz/arbiter-core/dataplane",
     visibility = ["//visibility:public"],
     deps = [
+        "//:arbiter-core",
         "//wire",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/replay",
@@ -35,6 +37,7 @@ go_test(
         "client_test.go",
         "manifests_test.go",
         "manifests_tracks_test.go",
+        "member_reads_test.go",
         "registry_follower_size_test.go",
         "registry_follower_test.go",
         "registry_schema_test.go",
