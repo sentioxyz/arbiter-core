@@ -7,7 +7,6 @@ import (
 
 	"github.com/housegate/housegate/pkg/replay"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
-	"github.com/housegate/housegate/pkg/replay/snapshotquery"
 
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 )
@@ -24,7 +23,7 @@ func TestNewReplayCore_AssemblesVerifier(t *testing.T) {
 	if core.Snapshots != snapshots || core.Payloads != payloads || core.Executor == nil || core.Signer == nil {
 		t.Fatalf("incomplete replay core: %+v", core)
 	}
-	if _, ok := core.Executor.(*snapshotquery.CompositeExecutor); !ok {
+	if memo, ok := core.Executor.(*replayExecutorMemo); !ok || memo.executor == nil {
 		t.Fatalf("replay core executor %T is not the query dispatcher", core.Executor)
 	}
 }

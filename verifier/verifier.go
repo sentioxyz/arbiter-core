@@ -14,6 +14,7 @@ import (
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/housegate/housegate/pkg/replay"
@@ -80,6 +81,7 @@ type Role struct {
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
+	cfg = cloneReplayConfig(cfg)
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("verifier config: %w", err)
 	}
@@ -152,6 +154,8 @@ func (r *Role) Register(ctx context.Context) error {
 func (r *Role) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	runCtx, replayRun := newReplayMemoRun(runCtx, r.cfg)
+	defer replayRun.close()
 	// Ensure before any subscription starts so Run is safe even when a host did
 	// not call Register first. The periodic worker remains verify-only below.
 	registryChanged, err := r.startupEnsure(runCtx)
@@ -333,7 +337,7 @@ func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {
 		r.d.Logger.Warn("table-set transition adds a table this verifier has not created; refusing to attest", "block", m.GetBlockSeq(), "err", err)
 		return err
 	}
-	att, err := r.d.Replay.Verify(ctx, job)
+	att, err := r.d.Replay.Verify(withReplayMemoJob(ctx, m), job)
 	if err != nil {
 		r.d.Logger.Warn("replay verify failed; refusing to attest", "block", m.GetBlockSeq(), "err", err)
 		return err
@@ -342,6 +346,12 @@ func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {
 		_, err := pb.NewVerifierGatewayClient(conn).SubmitAttestation(ctx, wire.AttestationToPB(att))
 		return err
 	})
+	if err != nil {
+		switch status.Code(err) {
+		case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied:
+			forgetReplayMemoRun(ctx)
+		}
+	}
 	r.logSubmitFailure(ctx, "replay attestation", m.GetBlockSeq(), err, "receipt_hash", att.ReceiptHash)
 	return err
 }
