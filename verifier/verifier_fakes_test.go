@@ -68,7 +68,9 @@ type verifierFakeServer struct {
 	subscriptionErr     error
 	// scanErr, when set, rejects every byte-side scan the way the gateway
 	// answers an FSM rejection; rejected scans are still recorded.
-	scanErr error
+	scanErr           error
+	attestationErr    error
+	attestationErrors []error
 }
 
 func newVerifierFakeServer() *verifierFakeServer {
@@ -127,6 +129,12 @@ func (s *verifierFakeServer) SubmitAttestation(_ context.Context, att *pb.Replay
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.attestations = append(s.attestations, att)
+	if n := len(s.attestations) - 1; n < len(s.attestationErrors) && s.attestationErrors[n] != nil {
+		return nil, s.attestationErrors[n]
+	}
+	if s.attestationErr != nil {
+		return nil, s.attestationErr
+	}
 	return &pb.Ack{}, nil
 }
 

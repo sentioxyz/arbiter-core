@@ -26,10 +26,16 @@ func RegistrySchema(networkID string, genesis []payloadexec.TableSchema, snap wi
 	default:
 		return payloadexec.TableSchema{}, fmt.Errorf("table %s is %s in the table registry", tableID, live.Status)
 	}
-	return incarnationSchema(networkID, genesis, *live)
+	return IncarnationSchema(networkID, genesis, *live)
 }
 
-func incarnationSchema(networkID string, genesis []payloadexec.TableSchema, inc wire.TableIncarnation) (payloadexec.TableSchema, error) {
+// IncarnationSchema resolves one incarnation's schema whatever its status: a
+// genesis-origin incarnation uses the configured genesis schema of its key, a
+// chain-origin one its decoded schema_json, which must hash to the
+// incarnation's schema_hash under networkID. RegistrySchema applies it to the
+// key's live incarnation; the member's copy reconciler (member/copyset)
+// applies it to every Pending and Active incarnation it copies.
+func IncarnationSchema(networkID string, genesis []payloadexec.TableSchema, inc wire.TableIncarnation) (payloadexec.TableSchema, error) {
 	if inc.Origin == wire.TableOriginGenesis {
 		for _, t := range genesis {
 			if t.TableID == inc.Key() {

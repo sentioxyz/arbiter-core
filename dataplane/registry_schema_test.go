@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -81,5 +82,37 @@ func TestRegistrySchema(t *testing.T) {
 				t.Fatalf("chain schema = %+v, want the registry schema_json", got)
 			}
 		})
+	}
+}
+
+// TestIncarnationSchemaResolvesAnyStatus: IncarnationSchema is RegistrySchema's
+// per-incarnation rule without its live-status check, so the member's copy
+// reconciler resolves a Pending incarnation's schema too: the configured
+// genesis schema for a genesis-origin incarnation, the hash-checked
+// schema_json for a chain one.
+func TestIncarnationSchemaResolvesAnyStatus(t *testing.T) {
+	const network = "testnet"
+	genesis := payloadexec.TableSchema{TableID: "db.g", Columns: []lthash.Column{{Name: "v", Type: "UInt64"}}}
+	chain := payloadexec.TableSchema{TableID: "db.c", PartitionBy: "p", Columns: []lthash.Column{{Name: "p", Type: "String"}, {Name: "w", Type: "String"}}}
+	chainJSON, err := json.Marshal(chain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := wire.TableIncarnation{Seq: 2, DatabaseID: "db", TableID: "c", Origin: wire.TableOriginChain, Status: wire.TableStatusPending,
+		SchemaVersion: 1, SchemaHash: payloadexec.TableSchemaHash(network, chain), SchemaJSON: string(chainJSON)}
+	if got, err := IncarnationSchema(network, []payloadexec.TableSchema{genesis}, pending); err != nil || !reflect.DeepEqual(got, chain) {
+		t.Fatalf("IncarnationSchema(pending chain) = %+v, %v; want %+v", got, err, chain)
+	}
+	genesisInc := wire.TableIncarnation{Seq: 1, DatabaseID: "db", TableID: "g", Origin: wire.TableOriginGenesis, Status: wire.TableStatusRetiring}
+	if got, err := IncarnationSchema(network, []payloadexec.TableSchema{genesis}, genesisInc); err != nil || !reflect.DeepEqual(got, genesis) {
+		t.Fatalf("IncarnationSchema(genesis) = %+v, %v; want %+v", got, err, genesis)
+	}
+	genesisInc.TableID = "x"
+	if _, err := IncarnationSchema(network, []payloadexec.TableSchema{genesis}, genesisInc); err == nil || err.Error() != "genesis table db.x is not configured" {
+		t.Fatalf("IncarnationSchema(unconfigured genesis) = %v", err)
+	}
+	pending.SchemaHash = "0xother"
+	if _, err := IncarnationSchema(network, nil, pending); err == nil || !strings.Contains(err.Error(), "hashes to") {
+		t.Fatalf("IncarnationSchema(schema_json that does not hash) = %v", err)
 	}
 }

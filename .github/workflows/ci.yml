@@ -82,6 +82,8 @@ jobs:
           {
             echo "CH_ADDR=127.0.0.1:${port_a}"
             echo "CH_REPLICA_ADDR=127.0.0.1:${port_b}"
+            echo "CH_PEER_ADDR=127.0.0.1:${port_b}"
+            echo "CH_PEER_ADDR_FROM_SERVER=${ch_b}:9000"
             echo "CH_A_CONTAINER=${ch_a}"
             echo "CH_B_CONTAINER=${ch_b}"
             echo "CH_NETWORK=${network}"
@@ -110,6 +112,10 @@ jobs:
             //dataplane/chtest:chtest_test \
             //dataplane/ddl:ddl_test \
             //dataplane/tableset:tableset_test \
+            //member/copyset:copyset_test \
+            //member/install:install_test \
+            //member/shadow:shadow_test \
+            //member/sources:sources_test \
             //snode:snode_test \
             //verifier:verifier_test \
             --test_env=ARBITER_CH_INTEGRATION \
@@ -117,6 +123,8 @@ jobs:
             --test_env=ARBITER_CH_REPLICA \
             --test_env=CH_ADDR \
             --test_env=CH_REPLICA_ADDR \
+            --test_env=CH_PEER_ADDR \
+            --test_env=CH_PEER_ADDR_FROM_SERVER \
             --test_env=CH_USER \
             --test_env=CH_PASSWORD \
             --test_timeout=900 \
@@ -148,3 +156,21 @@ jobs:
       - name: stop the mechanics pair
         if: always()
         run: bash scripts/ci/clickhouse-mechanics.sh --cleanup
+
+  member-confinement:
+    # Keep the same fork-safety boundary as the test job. The suite runs on
+    # its own fenced server, peer and MinIO, never on the
+    # integration-clickhouse servers.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazelbuild/setup-bazelisk@v3
+      - name: member confinement on upstream 26.3.37.3
+        run: bash scripts/ci/clickhouse-member-confinement.sh clickhouse/clickhouse-server:26.3.37.3 26.3.37.3
+      - name: stop the confinement servers
+        if: always()
+        run: bash scripts/ci/clickhouse-member-confinement.sh --cleanup

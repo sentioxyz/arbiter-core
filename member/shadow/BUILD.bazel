@@ -1,0 +1,60 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "shadow",
+    srcs = [
+        "compare.go",
+        "cursor.go",
+        "shadow.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member/shadow",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane",
+        "//dataplane/ddl",
+        "//member/install",
+        "//member/sources",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+        "@housegate//pkg/replay/snapshotquery",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)
+
+go_test(
+    name = "shadow_test",
+    srcs = [
+        "fixture_test.go",
+        "new_test.go",
+        "shadow_ch_test.go",
+        "shadow_test.go",
+    ],
+    # TestShadowNeverSubmitsAnything parses the package's own sources.
+    data = glob(["*.go"]),
+    embed = [":shadow"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane",
+        "//dataplane/chtest",
+        "//dataplane/ddl",
+        "//member/install",
+        "//member/sources",
+        "//wire",
+        "@com_github_clickhouse_ch_go//proto",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/nativepayload",
+        "@housegate//pkg/replay/payloadexec",
+        "@housegate//pkg/replay/snapshotquery",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)

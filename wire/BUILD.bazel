@@ -4,6 +4,7 @@ go_library(
     name = "wire",
     srcs = [
         "artifact_disposition.go",
+        "block_verification.go",
         "command.go",
         "consensus.go",
         "convert.go",
@@ -33,6 +34,7 @@ go_test(
     name = "wire_test",
     srcs = [
         "artifact_disposition_test.go",
+        "block_verification_test.go",
         "client_lanes_test.go",
         "consensus_snapshot_test.go",
         "consensus_test.go",
@@ -40,6 +42,7 @@ go_test(
         "dispatch_from_test.go",
         "dispatch_table_set_test.go",
         "legacy_command_golden_test.go",
+        "manifest_owner_test.go",
         "registration_request_only_test.go",
         "safe_state_reads_test.go",
         "scan_hash_test.go",

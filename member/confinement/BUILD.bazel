@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "confinement",
+    srcs = ["doc.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/member/confinement",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "confinement_test",
+    srcs = ["confinement_test.go"],
+    embed = [":confinement"],
+    deps = [
+        "//dataplane/chrestart",
+        "//dataplane/chtest",
+        "//dataplane/ddl",
+        "//member/sources",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)

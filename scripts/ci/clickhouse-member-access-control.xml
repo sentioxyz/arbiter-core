@@ -1,0 +1,8 @@
+<clickhouse>
+    <access_control_improvements>
+        <table_engines_require_grant>true</table_engines_require_grant>
+    </access_control_improvements>
+    <replicated_merge_tree>
+        <max_bytes_to_merge_at_max_space_in_pool>0</max_bytes_to_merge_at_max_space_in_pool>
+    </replicated_merge_tree>
+</clickhouse>

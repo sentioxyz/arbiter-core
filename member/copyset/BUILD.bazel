@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "copyset",
+    srcs = [
+        "reconciler.go",
+        "startup.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member/copyset",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//dataplane",
+        "//dataplane/ddl",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "copyset_test",
+    srcs = [
+        "reconciler_ch_test.go",
+        "reconciler_test.go",
+        "startup_test.go",
+    ],
+    embed = [":copyset"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane",
+        "//dataplane/chtest",
+        "//dataplane/ddl",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)

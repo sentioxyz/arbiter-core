@@ -1,0 +1,51 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sources",
+    srcs = [
+        "posture.go",
+        "remote_pull.go",
+        "restore.go",
+        "source.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member/sources",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane/chparts",
+        "//dataplane/ddl",
+        "//dataplane/objstore",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "sources_test",
+    srcs = [
+        "ch_test.go",
+        "fake_conn_test.go",
+        "posture_ch_test.go",
+        "posture_test.go",
+        "remote_pull_ch_test.go",
+        "remote_pull_test.go",
+        "restore_ch_test.go",
+        "restore_test.go",
+        "source_test.go",
+    ],
+    embed = [":sources"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane/chtest",
+        "//dataplane/ddl",
+        "//dataplane/objstore",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)

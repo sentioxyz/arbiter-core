@@ -19,6 +19,7 @@ import (
 
 // NewReplayCore assembles the real replay verifier for this verifier role.
 func NewReplayCore(cfg Config, conn clickhouse.Conn, manifests replay.SnapshotStore, payloads replay.PayloadStore) (*replay.Verifier, error) {
+	cfg = cloneReplayConfig(cfg)
 	signer, err := payloadexec.NewEd25519Signer(cfg.ReplicaID, cfg.Ed25519Seed)
 	if err != nil {
 		return nil, fmt.Errorf("verifier signer: %w", err)
@@ -35,9 +36,9 @@ func NewReplayCore(cfg Config, conn clickhouse.Conn, manifests replay.SnapshotSt
 	return &replay.Verifier{
 		Snapshots:    manifests,
 		Payloads:     payloads,
-		Executor:     dispatcher,
+		Executor:     newReplayExecutorMemo(cfg, dispatcher),
 		Signer:       signer,
-		SchemaHashes: payloadexec.SchemaHashes{NetworkID: cfg.NetworkID, Tables: cfg.Tables},
+		SchemaHashes: payloadexec.SchemaHashes{NetworkID: cfg.NetworkID, Tables: cloneReplayConfig(cfg).Tables},
 	}, nil
 }
 

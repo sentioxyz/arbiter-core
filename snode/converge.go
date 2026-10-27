@@ -81,6 +81,10 @@ func (r *Role) convergeIntake(ctx context.Context, rec intakeRecord, schema payl
 	seenRowIDs := make(map[string]uint64, rec.ExpectedRowCount)
 	var attributedRows uint64
 	for _, part := range current {
+		// An empty DROP PART covering marker cannot contain this statement.
+		if part.Rows == 0 {
+			continue
+		}
 		partitionID := logicalPartitionID(schema, part)
 		if !containsString(rec.TouchedPartitions, partitionID) ||
 			containsString(rec.PreWriteInventory[partitionID], part.Name) {
