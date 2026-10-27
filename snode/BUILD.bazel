@@ -86,6 +86,7 @@ go_test(
         "staged_prepare_test.go",
         "state_test.go",
         "tracks_test.go",
+        "zero_row_parts_test.go",
     ],
     embed = [":snode"],
     embedsrcs = ["staged.go"],

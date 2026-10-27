@@ -24,7 +24,9 @@ func diffParts(before, after []partInfo) []partInfo {
 	}
 	var out []partInfo
 	for _, p := range after {
-		if !seen[p.Name] {
+		// DROP PART may briefly expose an active zero-row covering marker.
+		// It is cleanup metadata, never a statement candidate.
+		if p.Rows > 0 && !seen[p.Name] {
 			out = append(out, p)
 		}
 	}
