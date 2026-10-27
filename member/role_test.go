@@ -993,6 +993,30 @@ func TestRoleReappliesTheLastUpdateWhenCopiesChange(t *testing.T) {
 	}
 }
 
+// TestRoleReappliesWhenACopyIsCreatedAgain (Codex review of PR #54,
+// copyset reconciler.go:299): a copy whose table vanished and was created
+// again keeps its incarnation and name and moves only its generation; the copy
+// watch re-applies the last update for it, without a new manifest and without
+// the installer reporting NeedsPass, so the installer compares the new table
+// with its journal.
+func TestRoleReappliesWhenACopyIsCreatedAgain(t *testing.T) {
+	h := newHarness(t)
+	c := copyOf(0, "devuser1.t0", 7)
+	c.Generation = 1
+	h.copies.set(c)
+	m := child(t, h.genesis, 2, 0, 1, 2)
+	h.arbiter.publish(m)
+	r := h.role()
+	h.start(r)
+	waitFor(t, "the first install pass", func() bool { return len(h.installer.appliedList()) == 1 })
+	c.Generation = 2
+	h.copies.set(c)
+	waitFor(t, "a second pass for the recreated copy", func() bool { return len(h.installer.appliedList()) == 2 })
+	if got := h.installer.appliedList(); got[1] != m.SnapshotID {
+		t.Fatalf("passes %v, want the last update re-applied", got)
+	}
+}
+
 func TestRoleResumesFromTheJournaledManifest(t *testing.T) {
 	h := newHarness(t)
 	m := child(t, h.genesis, 2, 0, 1, 2)

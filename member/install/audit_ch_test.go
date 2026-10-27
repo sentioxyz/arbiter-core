@@ -199,6 +199,62 @@ func TestAnAuditThatFindsDamageAsksForAPass(t *testing.T) {
 	}
 }
 
+// TestARecreatedCopyIsUnauditedUntilApplyRepairsIt (Codex review of PR #54,
+// copyset reconciler.go:299): when a copy's table vanishes and the copyset
+// creates it again empty, its incarnation and name are unchanged and only its
+// generation moves. The new generation is outside the audit's coverage, so
+// AuditClean is false and NeedsPass true at once, without waiting for a new
+// manifest or the self-audit, and Apply of the same manifest compares the empty
+// table with its journal and rebuilds it.
+func TestARecreatedCopyIsUnauditedUntilApplyRepairsIt(t *testing.T) {
+	f := newFixture(t, requireCH(t))
+	c := f.table(0, "dex.swaps", 3, false)
+	f.copies.mu.Lock()
+	f.copies.list[0].Generation = 1
+	f.copies.mu.Unlock()
+	c.Generation = 1
+	pull := f.source("owner_pull", f.pull(1))
+	f.setSources(0, pull)
+	inst := f.newInstaller(nil)
+	f.start(inst)
+	f.promote(c, row{"", 1})
+	f.promote(c, row{"", 2})
+	s1 := f.update("s1", 10, c)
+	f.mustApply(inst, s1)
+	if inst.NeedsPass() || !inst.Stats().AuditClean {
+		t.Fatal("the copy is not clean at the manifest")
+	}
+
+	// The table vanishes and the copyset creates it again, empty, under a new
+	// generation.
+	f.exec("DROP TABLE " + qualified(f.pinned.ReplicaDB, c.Table) + " SYNC")
+	if err := ddl.EnsureCopy(context.Background(), f.raw, f.pinned, c.Schema, c.IncarnationSeq); err != nil {
+		t.Fatal(err)
+	}
+	f.copies.mu.Lock()
+	f.copies.list[0].Generation = 2
+	f.copies.mu.Unlock()
+	c.Generation = 2
+	if !inst.NeedsPass() || inst.Stats().AuditClean {
+		t.Fatalf("after the copy was created again: NeedsPass %v, AuditClean %v; want true and false", inst.NeedsPass(), inst.Stats().AuditClean)
+	}
+	if st := inst.Tables(0); len(st) != 1 || !st[0].Diverged {
+		t.Fatalf("Tables(0) = %+v, want the recreated copy Diverged until audited", st)
+	}
+	calls := pull.calls()
+	f.mustApply(inst, s1)
+	f.requireCopyEqualsManifest(c, s1)
+	if pull.calls() == calls {
+		t.Fatal("Apply of the same manifest fetched nothing into the recreated copy")
+	}
+	if inst.NeedsPass() || !inst.Stats().AuditClean {
+		t.Fatalf("after the repair: NeedsPass %v, AuditClean %v; want false and true", inst.NeedsPass(), inst.Stats().AuditClean)
+	}
+	if j, _ := inst.Entry(0); j.SnapshotID != "s1" {
+		t.Fatalf("Entry(0) = %s, want s1: the repair needed no new manifest", j.SnapshotID)
+	}
+}
+
 // uptimeConn answers chrestart's uptime probe from a start time the test
 // moves; every other call reaches ClickHouse.
 type uptimeConn struct {

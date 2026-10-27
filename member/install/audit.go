@@ -109,9 +109,13 @@ func (i *Installer) auditUncovered(ctx context.Context, ready []copyset.Copy) er
 }
 
 // auditKey identifies one ready copy for the audit's coverage and the
-// bootstrap probe: its owner, table key, incarnation and copy name.
+// bootstrap probe: its owner, table key, incarnation, copy name and
+// generation. A copy the copyset created again after its table vanished has a
+// new generation, so it is unaudited (Stats.AuditClean false, NeedsPass) until
+// Apply compared it with its journal, which marks the partitions whose
+// journaled parts it lost Diverged and rebuilds them.
 func auditKey(c copyset.Copy) string {
-	return fmt.Sprintf("%d/%s#%d/%s", c.Owner, c.TableKey, c.IncarnationSeq, c.Table)
+	return fmt.Sprintf("%d/%s#%d/%s@%d", c.Owner, c.TableKey, c.IncarnationSeq, c.Table, c.Generation)
 }
 
 func (i *Installer) markAudited(c copyset.Copy) {
