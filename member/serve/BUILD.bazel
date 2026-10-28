@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "serve",
     srcs = [
+        "client.go",
         "conditions.go",
         "handler.go",
         "lease.go",
@@ -24,6 +25,7 @@ go_library(
 go_test(
     name = "serve_test",
     srcs = [
+        "client_test.go",
         "conditions_test.go",
         "fakes_test.go",
         "handler_test.go",
