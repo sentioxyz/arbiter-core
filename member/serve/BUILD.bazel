@@ -1,0 +1,40 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "serve",
+    srcs = [
+        "conditions.go",
+        "handler.go",
+        "lease.go",
+        "metrics.go",
+        "probe.go",
+        "serve.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member/serve",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//dataplane",
+        "//wire",
+        "@com_github_prometheus_client_golang//prometheus",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/sitable",
+    ],
+)
+
+go_test(
+    name = "serve_test",
+    srcs = [
+        "conditions_test.go",
+        "fakes_test.go",
+        "handler_test.go",
+        "lease_test.go",
+        "metrics_test.go",
+        "serve_test.go",
+    ],
+    embed = [":serve"],
+    deps = [
+        "//wire",
+        "@com_github_prometheus_client_golang//prometheus",
+        "@housegate//pkg/replay",
+    ],
+)
