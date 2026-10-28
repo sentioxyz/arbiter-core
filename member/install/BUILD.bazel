@@ -31,6 +31,7 @@ go_test(
         "audit_ch_test.go",
         "fixture_ch_test.go",
         "foreign_test.go",
+        "hooks_ch_test.go",
         "installer_ch_test.go",
         "installer_test.go",
         "restart_ch_test.go",
