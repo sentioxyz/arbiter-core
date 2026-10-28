@@ -133,7 +133,8 @@ func (i *Installer) auditCopy(ctx context.Context, trigger string, c copyset.Cop
 	if err != nil {
 		return err
 	}
-	gates := &installGates{before: i.d.BeforeInstall, owner: c.Owner, seen: map[string]bool{}}
+	gates := &installGates{before: i.d.BeforeInstall, after: i.d.AfterInstall, owner: c.Owner, seen: map[string]bool{}}
+	defer gates.done()
 	rec, err := i.reconcileCopy(ctx, gates, c.Owner, c, tj, local)
 	if err != nil {
 		return err

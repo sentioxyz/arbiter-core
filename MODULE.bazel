@@ -50,6 +50,7 @@ use_repo(
     "com_github_clickhouse_ch_go",
     "com_github_clickhouse_clickhouse_go_v2",
     "com_github_ethereum_go_ethereum",
+    "com_github_prometheus_client_golang",
     "com_github_sentioxyz_arbiter_proto",
     "org_golang_google_grpc",
     "org_golang_google_protobuf",

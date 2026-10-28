@@ -142,6 +142,9 @@ type Role struct {
 	appliedCopies string
 	published     map[uint64]replay.TrackFrontier
 	behindSince   map[uint64]time.Time
+
+	// serving is nil without Config.Serve (Plan S3-C4 contract §30.6).
+	serving *serving
 }
 
 // New validates cfg and d. It opens nothing and writes nothing.
@@ -163,9 +166,14 @@ func New(cfg Config, d Deps) (*Role, error) {
 	}
 	peers := slices.Clone(cfg.Peers)
 	slices.SortFunc(peers, func(a, b Peer) int { return cmp.Compare(a.IndexerID, b.IndexerID) })
+	sv, err := newServing(cfg, d)
+	if err != nil {
+		return nil, err
+	}
 	return &Role{
 		cfg: cfg, d: d, log: logger.With("role", "si-member", "node_id", cfg.NodeID), now: now, env: realSeams(), peers: peers,
 		published: map[uint64]replay.TrackFrontier{}, behindSince: map[uint64]time.Time{},
+		serving: sv,
 	}, nil
 }
 
@@ -374,6 +382,7 @@ func (r *Role) build(store *manifestfeed.Store, bootNonce string) (*parts, error
 	if err != nil {
 		return nil, fmt.Errorf("member: copyset: %w", err)
 	}
+	beforeInstall, afterInstall := r.installHooks()
 	inst, err := r.env.newInstaller(install.Config{
 		Pinned: r.cfg.Pinned, NetworkID: r.cfg.NetworkID, StateDir: r.cfg.StateDir, BootNonce: bootNonce,
 		DiskBudgetBytes: r.cfg.DiskBudgetBytes, StopInstallsRatio: r.cfg.StopInstallsRatio, SelfAuditInterval: r.cfg.SelfAuditInterval,
@@ -382,10 +391,12 @@ func (r *Role) build(store *manifestfeed.Store, bootNonce string) (*parts, error
 		Conn: r.d.Conn, Copies: copies,
 		Sources:     func(owner uint64) []sources.Source { return byOwner[owner] },
 		AfterAttach: r.d.AfterAttach, Logger: r.log, Now: r.now,
+		BeforeInstall: beforeInstall, AfterInstall: afterInstall,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("member: installer: %w", err)
 	}
+	r.attachServing(inst)
 	p := &parts{copies: copies, installer: inst}
 	if r.cfg.Shadow {
 		v, err := r.env.newShadow(shadow.Config{
@@ -424,7 +435,7 @@ func (r *Role) runParts(parent context.Context, p *parts, store *manifestfeed.St
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	failed := make(chan error, 6)
+	failed := make(chan error, 7)
 	var wg sync.WaitGroup
 	start := func(name string, run func(context.Context) error) {
 		wg.Add(1)
@@ -453,6 +464,7 @@ func (r *Role) runParts(parent context.Context, p *parts, store *manifestfeed.St
 		return nil
 	})
 	start("self-audit", func(ctx context.Context) error { return r.selfAudit(ctx, p) })
+	start("serving", r.runServing)
 	if p.shadow != nil {
 		start("shadow", p.shadow.Run)
 	}

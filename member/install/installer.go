@@ -125,6 +125,11 @@ type Deps struct {
 	// statement that changes a copy of that database; an error stops the
 	// owner's pass. Nil in P2 (Plan S3-C4's serving-lease seam).
 	BeforeInstall func(ctx context.Context, owner uint64, database string) error
+	// AfterInstall pairs BeforeInstall (Plan S3-C4 contract §30.6): it is
+	// called once for every database whose BeforeInstall returned nil, when
+	// that pass ends, so after the owner's journal write or once the pass
+	// failed. Nil, with a nil BeforeInstall, is P2's installer.
+	AfterInstall func(owner uint64, database string)
 	// AfterAttach is called after every ATTACH PARTITION ... FROM, before the
 	// journal records it; an error stops the pass. A fault-injection seam
 	// for tests, nil in production.
@@ -446,7 +451,8 @@ func (i *Installer) applyOwner(ctx context.Context, u manifestfeed.Update, owner
 			return refuse(ErrForeign, "install: %s of owner %d is quarantined locally (foreign scratch %s.%s); clear it offline with sentio-node si-member clear-foreign --table %s", key, owner, i.cfg.Pinned.StageDB, scratch, key)
 		}
 	}
-	gates := &installGates{before: i.d.BeforeInstall, owner: owner, seen: map[string]bool{}}
+	gates := &installGates{before: i.d.BeforeInstall, after: i.d.AfterInstall, owner: owner, seen: map[string]bool{}}
+	defer gates.done()
 	var passes []*tablePass
 	keepForeign := sources.Scratch{}
 	defer func() {
@@ -1447,11 +1453,14 @@ func describe(source, outcome string, err error) string {
 }
 
 // installGates calls Deps.BeforeInstall at most once per database in one
-// owner's pass, before the first statement that changes a copy of it.
+// owner's pass, before the first statement that changes a copy of it, and
+// Deps.AfterInstall once for each database it held when the pass ends.
 type installGates struct {
 	before func(ctx context.Context, owner uint64, database string) error
+	after  func(owner uint64, database string)
 	owner  uint64
 	seen   map[string]bool
+	held   []string
 }
 
 func (g *installGates) check(ctx context.Context, database string) error {
@@ -1464,7 +1473,23 @@ func (g *installGates) check(ctx context.Context, database string) error {
 		}
 	}
 	g.seen[database] = true
+	g.held = append(g.held, database)
 	return nil
+}
+
+// done calls Deps.AfterInstall for every database the pass held, in the
+// order they were held. A pass defers it right after it creates its gates,
+// so it runs after the owner's journal write, or once the pass failed; a
+// database whose BeforeInstall failed was never held.
+func (g *installGates) done() {
+	held := g.held
+	g.held = nil
+	if g.after == nil {
+		return
+	}
+	for _, database := range held {
+		g.after(g.owner, database)
+	}
 }
 
 // databaseOf is the database of a logical table key <database>.<table>.

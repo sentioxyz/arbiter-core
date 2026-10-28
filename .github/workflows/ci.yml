@@ -114,6 +114,7 @@ jobs:
             //dataplane/tableset:tableset_test \
             //member/copyset:copyset_test \
             //member/install:install_test \
+            //member/serve:serve_test \
             //member/shadow:shadow_test \
             //member/sources:sources_test \
             //snode:snode_test \
