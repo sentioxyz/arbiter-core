@@ -14,6 +14,7 @@ import (
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 	"github.com/sentioxyz/arbiter-core/member/install"
+	"github.com/sentioxyz/arbiter-core/member/serve"
 	"github.com/sentioxyz/arbiter-core/member/sources"
 )
 
@@ -102,6 +103,9 @@ type Config struct {
 	FetchTimeout time.Duration
 	// FeedMaxWalk and FeedCacheEntries: 0 selects the manifestfeed defaults.
 	FeedMaxWalk, FeedCacheEntries int
+	// Serve configures the serving endpoint (Plan S3-C4 contract §30); nil
+	// means no endpoint and P2's installer, byte for byte.
+	Serve *serve.Config
 }
 
 // Deps are the role's connections (contract §23.1). The role opens none of
