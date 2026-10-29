@@ -19,10 +19,19 @@
 # containers and the network. Every TestMechanics_ function, the restart test
 # and every TestS3_ function must report PASS; a skipped test fails the run.
 #
+# It also starts the interserver pair of M16 (plan S3-D clarification K56):
+# two more Keeper clients of node A, ch-iscred with interserver credentials
+# (clickhouse-mechanics-interserver.xml, allow_empty true) and ch-isplain
+# without. Unfiltered runs also run the owner rebuild's ClickHouse tests
+# (//snode/rebuild:rebuild_test, plan S3-D Task 50) on node A and node B
+# after the objstore tests; every Test function of
+# snode/rebuild/rebuild_ch_test.go must report PASS.
+#
 # Environment: ARBITER_CH_PLATFORM (for example linux/amd64) is passed to
 # docker pull and docker run of the ClickHouse image.
 # ARBITER_CH_MECHANICS_FILTER (a Go regexp) limits the suite to the
-# TestMechanics_ functions it matches and skips the SNode and objstore runs.
+# TestMechanics_ functions it matches and skips the SNode, objstore and rebuild
+# runs.
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -33,6 +42,8 @@ network="arbiter-core-mech-${suffix}"
 ch_a="arbiter-core-mech-a-${suffix}"
 ch_b="arbiter-core-mech-b-${suffix}"
 minio="arbiter-core-mech-minio-${suffix}"
+ch_iscred="arbiter-core-mech-iscred-${suffix}"
+ch_isplain="arbiter-core-mech-isplain-${suffix}"
 
 # The S3 endpoint of M12-M14 and the objstore tests (plan S3-C1 contract
 # §17). These keys are fixed CI-only literals of an ephemeral container on a
@@ -53,7 +64,7 @@ s3_readonly_secret="mech-readonly-secret-0003"
 tmp_dir=""
 
 cleanup() {
-  docker rm -f "${ch_a}" "${ch_b}" "${minio}" >/dev/null 2>&1 || true
+  docker rm -f "${ch_a}" "${ch_b}" "${minio}" "${ch_iscred}" "${ch_isplain}" >/dev/null 2>&1 || true
   docker network rm "${network}" >/dev/null 2>&1 || true
   if [ -n "${tmp_dir}" ]; then
     rm -rf "${tmp_dir}"
@@ -82,6 +93,8 @@ on_exit() {
     docker logs --tail 100 "${ch_a}" >&2 2>&1 || true
     docker logs --tail 100 "${ch_b}" >&2 2>&1 || true
     docker logs --tail 50 "${minio}" >&2 2>&1 || true
+    docker logs --tail 100 "${ch_iscred}" >&2 2>&1 || true
+    docker logs --tail 100 "${ch_isplain}" >&2 2>&1 || true
   fi
   cleanup
   exit "${status}"
@@ -141,11 +154,29 @@ if [ -z "${port_b}" ]; then
   exit 1
 fi
 
+# The interserver pair of M16: Keeper clients of node A, never restarted.
+# Only ch-iscred mounts the interserver credentials.
+docker run -d ${platform_flag:+"${platform_flag}"} \
+  --name "${ch_iscred}" --hostname "${ch_iscred}" \
+  -p 127.0.0.1::9000 \
+  -v "${repo_root}/scripts/ci/clickhouse-shared-keeper-client.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
+  -v "${repo_root}/scripts/ci/clickhouse-mechanics-interserver.xml:/etc/clickhouse-server/config.d/interserver.xml:ro" \
+  "${common[@]}" "${image}" >/dev/null
+docker run -d ${platform_flag:+"${platform_flag}"} \
+  --name "${ch_isplain}" --hostname "${ch_isplain}" \
+  -p 127.0.0.1::9000 \
+  -v "${repo_root}/scripts/ci/clickhouse-shared-keeper-client.xml:/etc/clickhouse-server/config.d/keeper.xml:ro" \
+  "${common[@]}" "${image}" >/dev/null
+port_iscred="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' "${ch_iscred}")"
+port_isplain="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' "${ch_isplain}")"
+
 ready=false
 for _ in $(seq 1 120); do
   if docker exec "${ch_a}" clickhouse-client --query "SELECT 1" >/dev/null 2>&1 &&
     docker exec "${ch_b}" clickhouse-client --query "SELECT 1" >/dev/null 2>&1 &&
-    docker exec "${ch_b}" clickhouse-client --query "SELECT count() FROM system.zookeeper WHERE path = '/'" >/dev/null 2>&1; then
+    docker exec "${ch_b}" clickhouse-client --query "SELECT count() FROM system.zookeeper WHERE path = '/'" >/dev/null 2>&1 &&
+    docker exec "${ch_iscred}" clickhouse-client --query "SELECT count() FROM system.zookeeper WHERE path = '/'" >/dev/null 2>&1 &&
+    docker exec "${ch_isplain}" clickhouse-client --query "SELECT count() FROM system.zookeeper WHERE path = '/'" >/dev/null 2>&1; then
     ready=true
     break
   fi
@@ -217,6 +248,9 @@ export CH_RESTART_ADDR="127.0.0.1:${port_b}"
 export CH_PEER_ADDR="arbiter-core-clickhouse-a:9000"
 export ARBITER_CH_EXPECT_VERSION_PREFIX="${version_prefix}"
 export ARBITER_CH_IMAGE="${image}"
+export ARBITER_CH_INTERSERVER=1
+export CH_ISCRED_ADDR="127.0.0.1:${port_iscred}"
+export CH_ISPLAIN_ADDR="127.0.0.1:${port_isplain}"
 export ARBITER_CH_S3=1
 export CH_S3_ENDPOINT="http://arbiter-core-minio:9000"
 export CH_S3_BUCKET="${s3_bucket}"
@@ -232,6 +266,7 @@ env_flags=(
   --test_env=CH_S3_NODELETE_ACCESS_KEY --test_env=CH_S3_NODELETE_SECRET_KEY
   --test_env=CH_S3_LOCKDELETE_ACCESS_KEY --test_env=CH_S3_LOCKDELETE_SECRET_KEY
   --test_env=CH_S3_READONLY_ACCESS_KEY --test_env=CH_S3_READONLY_SECRET_KEY
+  --test_env=ARBITER_CH_INTERSERVER --test_env=CH_ISCRED_ADDR --test_env=CH_ISPLAIN_ADDR
 )
 
 required="$(grep -ho '^func TestMechanics_[A-Za-z0-9_]*' dataplane/chmechanics/*_test.go | sed 's/^func //' | sort -u || true)"
@@ -262,6 +297,7 @@ if grep -q -- "--- SKIP:" "${log}"; then
   exit 1
 fi
 grep -F 'mechanics server ' "${log}" || true
+grep -F 'M16 interserver refusal: ' "${log}" || true
 echo "mechanics: $(printf '%s\n' "${required}" | wc -l | tr -d ' ') test(s) passed on ${image}"
 
 # M13 measures what a backup key must be allowed to delete (plan S3-C1
@@ -331,6 +367,31 @@ if [ -z "${ARBITER_CH_MECHANICS_FILTER:-}" ]; then
     exit 1
   fi
   echo "objstore: $(printf '%s\n' "${s3_required}" | wc -l | tr -d ' ') S3 test(s) passed on ${image}"
+
+  # The owner rebuild's ClickHouse tests (plan S3-D Task 50): node A is the
+  # rebuilt server (it holds the Keeper and the backups disk), node B the
+  # pool's and an old server's. Every Test function of the file must pass.
+  rebuild_required="$(grep -ho '^func Test[A-Za-z0-9_]*' snode/rebuild/rebuild_ch_test.go | sed 's/^func //' | sort -u || true)"
+  if [ -z "${rebuild_required}" ]; then
+    echo "no rebuild ClickHouse test to run" >&2
+    exit 1
+  fi
+  export ARBITER_CH_REBUILD=1
+  bazel test //snode/rebuild:rebuild_test "${env_flags[@]}" --test_env=ARBITER_CH_REBUILD \
+    --test_arg=-test.v --nocache_test_results --test_timeout=1800 --test_output=errors
+  rebuild_log="$(bazel info bazel-testlogs)/snode/rebuild/rebuild_test/test.log"
+  for name in ${rebuild_required}; do
+    if ! grep -Eq -- "^--- PASS: ${name} \(" "${rebuild_log}"; then
+      echo "rebuild test ${name} did not run and pass" >&2
+      exit 1
+    fi
+  done
+  if grep -q -- "--- SKIP:" "${rebuild_log}"; then
+    echo "a rebuild test was skipped:" >&2
+    grep -- "--- SKIP:" "${rebuild_log}" >&2
+    exit 1
+  fi
+  echo "rebuild: $(printf '%s\n' "${rebuild_required}" | wc -l | tr -d ' ') test(s) passed on ${image}"
 fi
 
 # M14's server-log half: no S3 secret may reach a server log. ClickHouse

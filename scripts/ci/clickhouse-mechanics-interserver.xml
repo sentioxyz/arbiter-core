@@ -1,0 +1,11 @@
+<clickhouse>
+  <!-- M16 (dataplane/chmechanics): the credentialed interserver server of the
+       mixed state of interserver step 1 (plan S3-D clarification K56). The
+       password is a fixed CI-only value for two throwaway containers; it
+       guards nothing. -->
+  <interserver_http_credentials>
+    <user>si_interserver</user>
+    <password>mechanics-interserver-test</password>
+    <allow_empty>true</allow_empty>
+  </interserver_http_credentials>
+</clickhouse>
