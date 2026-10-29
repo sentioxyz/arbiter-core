@@ -2,6 +2,8 @@ package ddl
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -294,5 +296,68 @@ func assertOwnReplicaAttaches(t *testing.T, conn clickhouse.Conn, p Pinned, sch 
 	}
 	if err := VerifyProtocolTable(ctx, conn, unsafe); err != nil {
 		t.Fatalf("the re-attached table must verify: %v", err)
+	}
+}
+
+// TestReplicaIsActive: a replica is active while a server holds its table
+// attached (its is_active node exists) and inactive once that table is
+// detached; an unknown replica or table is not active (plan S3-D contract §34,
+// clarification K54).
+func TestReplicaIsActive(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	replicaConn := requireReplicaCH(t)
+	p := testPinned(t)
+	dropDatabasesSync(t, conn, p)
+	dropDatabasesSync(t, replicaConn, p)
+	sch := ensureSchema(t)
+	if active, err := ReplicaIsActive(ctx, conn, p, sch.TableID, p.NodeID); err != nil || active {
+		t.Fatalf("before the table exists: active %v, %v", active, err)
+	}
+	if err := EnsureTable(ctx, replicaConn, p, sch, 3, ModeCreateAndVerify); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := ReplicaIsActive(ctx, conn, p, sch.TableID, p.NodeID); err != nil || !active {
+		t.Fatalf("held by the other server: active %v, %v; want true", active, err)
+	}
+	if active, err := ReplicaIsActive(ctx, conn, p, sch.TableID, "another-node"); err != nil || active {
+		t.Fatalf("an unknown replica: active %v, %v", active, err)
+	}
+	detachUnsafe(t, replicaConn, p, sch, false)
+	if active, err := ReplicaIsActive(ctx, conn, p, sch.TableID, p.NodeID); err != nil || active {
+		t.Fatalf("after DETACH: active %v, %v; want false", active, err)
+	}
+	if replicas, err := KeeperReplicas(ctx, conn, p, sch.TableID); err != nil || !slices.Equal(replicas, []string{p.NodeID}) {
+		t.Fatalf("the detached replica must stay registered: %v, %v", replicas, err)
+	}
+}
+
+// TestScopedUnsafeRootChildren: the children of /sentio/<shard>/unsafe_inc,
+// none while it does not exist (plan S3-D contract §34, spec §8.8).
+func TestScopedUnsafeRootChildren(t *testing.T) {
+	ctx := context.Background()
+	conn := requireCH(t)
+	requireKeeper(t, conn)
+	p := testPinned(t)
+	sum := sha1.Sum([]byte(t.Name()))
+	p.KeeperShardID = 2_000_000 + binary.BigEndian.Uint32(sum[:4])%1_000_000
+	children, err := ScopedUnsafeRootChildren(ctx, conn, p)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("before the scoped root exists: %v, %v", children, err)
+	}
+	db := "hg_scoped_" + uniqueSuffix(t)
+	t.Cleanup(func() { _ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+quoteIdent(db)+" SYNC") })
+	if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(db)); err != nil {
+		t.Fatal(err)
+	}
+	path := fmt.Sprintf("/sentio/%d/unsafe_inc/t_x__i7", p.KeeperShardID)
+	if err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s.t (v UInt64) ENGINE = ReplicatedMergeTree(%s, %s) ORDER BY v",
+		quoteIdent(db), quoteLiteral(path), quoteLiteral(p.NodeID))); err != nil {
+		t.Fatal(err)
+	}
+	children, err = ScopedUnsafeRootChildren(ctx, conn, p)
+	if err != nil || !slices.Equal(children, []string{"t_x__i7"}) {
+		t.Fatalf("children = %v, %v; want [t_x__i7]", children, err)
 	}
 }
