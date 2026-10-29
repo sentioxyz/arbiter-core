@@ -110,10 +110,14 @@ func (c *Client) RunVerifierSubscription(ctx context.Context, replicaID string, 
 	)
 }
 
+// RunPromotionSubscription subscribes nodeID to the leader's promotion
+// stream. Its hello always carries settle: every SNode of this release
+// answers PromotionCommand.settle from its journal (housegate spec 2026-10-14
+// §14, P4), and a leader older than the field ignores it.
 func (c *Client) RunPromotionSubscription(ctx context.Context, nodeID string, onCommand func(*pb.PromotionCommand) error) error {
 	return runSubscription(ctx, c,
 		func(ctx context.Context, conn *grpc.ClientConn) (recvStream[*pb.PromotionCommand], error) {
-			return pb.NewPromotionGatewayClient(conn).SubscribePromotions(ctx, &pb.SNodeHello{NodeId: nodeID})
+			return pb.NewPromotionGatewayClient(conn).SubscribePromotions(ctx, &pb.SNodeHello{NodeId: nodeID, Settle: true})
 		},
 		onCommand,
 	)
