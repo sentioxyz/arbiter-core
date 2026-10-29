@@ -607,6 +607,31 @@ func TestRebuildIsIdempotent(t *testing.T) {
 	if !strings.Contains(lines[len(lines)-1], `"already_rebuilt":true`) {
 		t.Fatalf("done line %s", lines[len(lines)-1])
 	}
+
+	// A journal that holds the rebuilt inventories at the right seqs but
+	// under other names (a later rebuild restored hg_safe again and stopped
+	// before its journal write) is not done: the run refreshes the names.
+	stateFile := filepath.Join(f.cfg.StateDir, "state.json")
+	stale := strings.ReplaceAll(journal, `"safe_part_name":"`, `"safe_part_name":"stale_`)
+	if stale == journal {
+		t.Fatal("the journal holds no safe_part_name to make stale")
+	}
+	if err := os.WriteFile(stateFile, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err = Rebuild(context.Background(), f.cfg, f.a, f.inputs(), f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.AlreadyRebuilt {
+		t.Fatal("a journal with another run's part names was taken as already rebuilt")
+	}
+	if strings.Contains(f.journal(), "stale_") || fmt.Sprint(f.wantSafeParts()) != fmt.Sprint(names) {
+		t.Fatalf("the run did not refresh the journaled names, or changed hg_safe: %s", f.journal())
+	}
+	if report, err = Rebuild(context.Background(), f.cfg, f.a, f.inputs(), f.store); err != nil || !report.AlreadyRebuilt {
+		t.Fatalf("the run after the refresh: %+v, %v; want already rebuilt", report, err)
+	}
 }
 
 func TestRebuildRefusesForeignSafeParts(t *testing.T) {

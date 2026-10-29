@@ -46,7 +46,10 @@ var ErrRebuildIntentPending = errors.New("snode: a promotion intent is pending; 
 // refuses as that function does, reads state.json without creating the
 // directory (a missing journal is an empty one), and reports, per inventory in
 // order, whether the journal already holds a rebuilt inventory of that
-// partition at that PublishSeq.
+// partition at that PublishSeq. When an inventory carries Parts, the journaled
+// inventory must also hold exactly those parts, names included: a rebuild
+// that restored hg_safe again and stopped before its journal write leaves the
+// previous run's names journaled, and the owner audit would then miss them.
 func CheckRebuildJournal(stateDir string, inventories []RebuiltSafeInventory) ([]bool, error) {
 	s, err := readLocalState(stateDir)
 	if err != nil {
@@ -58,7 +61,8 @@ func CheckRebuildJournal(stateDir string, inventories []RebuiltSafeInventory) ([
 	out := make([]bool, len(inventories))
 	for i, inv := range inventories {
 		got, ok := s.AckedSafeInventories[key(inv.TableID, inv.PartitionID)]
-		out[i] = ok && got.Rebuilt && got.PromotionSeq == inv.PublishSeq
+		out[i] = ok && got.Rebuilt && got.PromotionSeq == inv.PublishSeq &&
+			(inv.Parts == nil || sameMappings(got.Parts, inv.Parts))
 	}
 	return out, nil
 }
@@ -124,4 +128,23 @@ func readLocalState(dir string) (localState, error) {
 	}
 	s.ensureMaps()
 	return s, nil
+}
+
+// sameMappings reports whether two inventories hold the same multiset of
+// (part name, row LtHash, hash_of_all_files).
+func sameMappings(a, b []arbiter.SafePartMapping) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left := make(map[arbiter.SafePartMapping]int, len(a))
+	for _, m := range a {
+		left[m]++
+	}
+	for _, m := range b {
+		if left[m] == 0 {
+			return false
+		}
+		left[m]--
+	}
+	return true
 }

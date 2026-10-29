@@ -242,3 +242,26 @@ func TestStateFileWithoutRebuiltLoadsUnchanged(t *testing.T) {
 		t.Fatalf("the state file changed shape: %s", b)
 	}
 }
+
+// TestCheckRebuildJournalComparesTheJournaledNamesWhenGivenParts: a journal
+// that holds a rebuilt inventory at the right seq but under other part names
+// (a second rebuild that restored hg_safe and stopped before its journal
+// write) is not "already rebuilt" for an inventory carrying the current
+// names; without Parts the check is by seq only, as before.
+func TestCheckRebuildJournalComparesTheJournaledNamesWhenGivenParts(t *testing.T) {
+	dir := rebuildJournalS(t, 5)
+	if err := RecordRebuiltSafeInventories(dir, []RebuiltSafeInventory{rebuiltInventoryS()}); err != nil {
+		t.Fatal(err)
+	}
+	renamed := rebuiltInventoryS()
+	renamed.Parts = []arbiter.SafePartMapping{{PartRowLtHash: "0xrowA", SafePartName: "p0_4_4_0", PartPhysHash: "hA"}}
+	bySeq := rebuiltInventoryS()
+	bySeq.Parts = nil
+	done, err := CheckRebuildJournal(dir, []RebuiltSafeInventory{rebuiltInventoryS(), renamed, bySeq})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []bool{true, false, true}; !reflect.DeepEqual(done, want) {
+		t.Fatalf("CheckRebuildJournal = %v, want %v", done, want)
+	}
+}

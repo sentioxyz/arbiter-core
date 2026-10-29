@@ -495,7 +495,9 @@ func dryRun(ctx context.Context, cfg Config, conn clickhouse.Conn, partitions []
 // alreadyRebuilt reports whether a run would change nothing: every owned
 // table's hg_safe exists and equals the arbiter's SafeParts by content in
 // every partition, holds no other partition, and the journal records every
-// partition rebuilt at its PublishSeq. Then the report lists the partitions
+// partition rebuilt at its PublishSeq under the part names hg_safe holds now
+// (a rebuild that restored again and stopped before its journal write leaves
+// other names journaled, and is not done). Then the report lists the partitions
 // with nothing fetched, and nothing is written, the fence included (the
 // server holds the replicas itself).
 func alreadyRebuilt(ctx context.Context, cfg Config, conn clickhouse.Conn, tables []ownedTable, partitions []ownedPartition, journaled []bool) (bool, Report, error) {
@@ -512,16 +514,29 @@ func alreadyRebuilt(ctx context.Context, cfg Config, conn clickhouse.Conn, table
 		}
 	}
 	report := Report{AlreadyRebuilt: true}
+	current := make([]snode.RebuiltSafeInventory, 0, len(partitions))
 	for _, p := range partitions {
-		_, have, err := localContent(ctx, conn, cfg.Pinned.SafeDB, p.table.Physical, p.table.Schema, p.state.PartitionID)
+		parts, have, err := localContent(ctx, conn, cfg.Pinned.SafeDB, p.table.Physical, p.table.Schema, p.state.PartitionID)
 		if err != nil {
 			return false, Report{}, err
 		}
 		if left, ok := subtract(manifest(p), have); !ok || len(left) > 0 {
 			return false, Report{}, nil
 		}
+		names := make([]arbiter.SafePartMapping, 0, len(parts))
+		for i, part := range parts {
+			names = append(names, arbiter.SafePartMapping{PartRowLtHash: have[i].Row, SafePartName: part.Name, PartPhysHash: have[i].Phys})
+		}
+		current = append(current, snode.RebuiltSafeInventory{TableID: p.table.TableID, PartitionID: p.state.PartitionID, PublishSeq: p.state.PublishSeq, Parts: names})
 		report.Partitions = append(report.Partitions, PartitionReport{TableID: p.table.TableID, PartitionID: p.state.PartitionID,
 			PublishSeq: p.state.PublishSeq, Parts: len(p.state.SafeParts), Root: p.state.BasePartitionRoot})
+	}
+	journaledNames, err := snode.CheckRebuildJournal(cfg.StateDir, current)
+	if err != nil {
+		return false, Report{}, err
+	}
+	if slices.Contains(journaledNames, false) {
+		return false, Report{}, nil
 	}
 	return true, report, nil
 }
