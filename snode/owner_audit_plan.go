@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/housegate/housegate/pkg/replay"
+
+	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -19,7 +22,9 @@ type ownerAuditPart struct {
 }
 
 // ownerAuditReference is a partition's reference inventory: this SNode's last
-// acknowledged inventory ("local") or the arbiter's SafeParts ("fsm"), with
+// acknowledged inventory ("local"; "rebuilt" when it is an inventory a rebuild
+// wrote and the rebuilt rule of ownerAuditReferenceFor chose it) or the
+// arbiter's SafeParts ("fsm"), with
 // the promotion that acknowledged it (0 for the arbiter's answer that it never
 // promoted the partition).
 type ownerAuditReference struct {
@@ -45,7 +50,13 @@ type ownerAuditInputs struct {
 // this SNode's own promotion watermark, which every journaled acknowledgement
 // advances: then this SNode's state is behind, refusal is fsm_ahead and
 // nothing may be dropped. Equal seqs with different inventories are
-// fsm_disagrees. ok is false with no refusal when there is no reference.
+// fsm_disagrees. A rebuilt local inventory (plan S3-D clarification K52) at
+// the arbiter's publish seq is compared by content instead: it is the
+// reference ("rebuilt") exactly when its multiset of (row LtHash,
+// hash_of_all_files) equals the arbiter's SafeParts, whatever the names, and
+// fsm_disagrees otherwise; with the arbiter unavailable it is the local
+// reference like any other. ok is false with no refusal when there is no
+// reference.
 func ownerAuditReferenceFor(in ownerAuditInputs) (ref ownerAuditReference, ok bool, refusal OwnerAuditReason, detail string) {
 	var local, fsm *ownerAuditReference
 	if in.Local != nil {
@@ -70,6 +81,15 @@ func ownerAuditReferenceFor(in ownerAuditInputs) (ref ownerAuditReference, ok bo
 		}
 		fsm = &f
 	}
+	if local != nil && fsm != nil && in.Local.Rebuilt && in.FSM != nil && in.FSM.PublishSeq == in.Local.PromotionSeq {
+		if !sameContent(in.Local.Parts, in.FSM.SafeParts) {
+			return ownerAuditReference{}, false, OwnerAuditFSMDisagrees, fmt.Sprintf(
+				"the rebuilt inventory of promotion %d differs from the arbiter's by row hash or hash_of_all_files", in.Local.PromotionSeq)
+		}
+		rebuilt := *local
+		rebuilt.Source = "rebuilt"
+		return rebuilt, true, "", ""
+	}
 	switch {
 	case local == nil && fsm == nil:
 		return ownerAuditReference{}, false, "", ""
@@ -86,6 +106,27 @@ func ownerAuditReferenceFor(in ownerAuditInputs) (ref ownerAuditReference, ok bo
 	}
 	return ownerAuditReference{}, false, OwnerAuditFSMDisagrees, fmt.Sprintf(
 		"this SNode and the arbiter acknowledged different inventories for promotion %d", local.Seq)
+}
+
+// sameContent reports whether a rebuilt inventory and the arbiter's SafeParts
+// hold the same multiset of (row LtHash, hash_of_all_files), names aside.
+func sameContent(local []arbiter.SafePartMapping, fsm []replay.PartManifestEntry) bool {
+	if len(local) != len(fsm) {
+		return false
+	}
+	type content struct{ row, phys string }
+	left := make(map[content]int, len(local))
+	for _, m := range local {
+		left[content{m.PartRowLtHash, m.PartPhysHash}]++
+	}
+	for _, e := range fsm {
+		c := content{e.PartRowLtHash, e.PartPhysHash}
+		if left[c] == 0 {
+			return false
+		}
+		left[c]--
+	}
+	return true
 }
 
 func samePartSet(a, b []ownerAuditPart) bool {

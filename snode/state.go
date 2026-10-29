@@ -52,9 +52,18 @@ type promotionIntent struct {
 // promotion PromotionSeq. The owner audit compares hg_safe with it (housegate
 // spec 2026-10-14 §14). It lives apart from LastAcks, which a not-applied
 // acknowledgement (a base CAS refusal) overwrites.
+//
+// Rebuilt marks an inventory a same-identity owner rebuild wrote
+// (RecordRebuiltSafeInventories, plan S3-D clarification K52): the parts the
+// rebuild restored into hg_safe under new names, at the arbiter's PublishSeq.
+// The owner audit takes it as the reference when it equals the arbiter's
+// SafeParts by row LtHash and hash_of_all_files; the next applied promotion
+// replaces it with an ordinary inventory. It is omitted while false, so a
+// state without a rebuild keeps CORE_TAG_P3's shape.
 type ackedSafeInventory struct {
 	PromotionSeq uint64                    `json:"promotion_seq"`
 	Parts        []arbiter.SafePartMapping `json:"parts"`
+	Rebuilt      bool                      `json:"rebuilt,omitempty"`
 }
 
 type localState struct {
