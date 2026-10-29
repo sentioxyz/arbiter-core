@@ -349,7 +349,7 @@ func TestPromotionAndCleanupAcksAreSigned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := role.handlePromote(context.Background(), wire.PromoteToPB(promote), jws); err != nil {
+	if err := role.handlePromote(context.Background(), wire.PromoteToPB(promote), jws, false); err != nil {
 		t.Fatal(err)
 	}
 	cleanup := arbiter.UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 7}
@@ -521,7 +521,7 @@ func TestPromotionOfAnotherOwnersTableIsDroppedWithoutAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := role.handlePromote(context.Background(), wire.PromoteToPB(promote), jws); err != nil {
+	if err := role.handlePromote(context.Background(), wire.PromoteToPB(promote), jws, false); err != nil {
 		t.Fatal(err)
 	}
 	cleanup := arbiter.UnsafeCleanup{TableID: "db.theirs", PartitionID: "all", PromotionSeq: 9}

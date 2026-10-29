@@ -105,6 +105,8 @@ type Role struct {
 	audit *ownerAuditState
 	// auditPassMu serializes the owner audit's full passes.
 	auditPassMu sync.Mutex
+	// settle counts the settle answers (settle.go); its zero value is ready.
+	settle settleCounters
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -636,8 +638,12 @@ func (r *Role) dispatchPromotionCommand(ctx context.Context, cmd *pb.PromotionCo
 	var err error
 	switch m := cmd.GetCmd().(type) {
 	case *pb.PromotionCommand_Promote:
-		if err = r.handlePromote(ctx, m.Promote, cmd.GetAuthorityJws()); err != nil {
-			r.d.Logger.Error("promotion failed; the subscription redelivers it",
+		if err = r.handlePromote(ctx, m.Promote, cmd.GetAuthorityJws(), cmd.GetSettle()); err != nil {
+			msg := "promotion failed; the subscription redelivers it"
+			if cmd.GetSettle() {
+				msg = "settle answer failed; the leader sends the promotion again while its settle is active"
+			}
+			r.d.Logger.Error(msg,
 				"promotion_seq", m.Promote.GetPromotionSeq(), "table", m.Promote.GetTableId(),
 				"partition", m.Promote.GetPartitionId(), "err", err)
 		}

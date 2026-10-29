@@ -141,7 +141,7 @@ func promoteSeededPart(t *testing.T, ctx context.Context, role *Role, claims *so
 			PartRowLtHash: part.PartRowLtHash, PartName: part.PartName,
 		}},
 	}
-	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(t, signer, cmd)); err != nil {
+	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(t, signer, cmd), false); err != nil {
 		t.Fatalf("promote seeded part: %v", err)
 	}
 	return part

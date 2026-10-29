@@ -52,9 +52,18 @@ type promotionIntent struct {
 // promotion PromotionSeq. The owner audit compares hg_safe with it (housegate
 // spec 2026-10-14 §14). It lives apart from LastAcks, which a not-applied
 // acknowledgement (a base CAS refusal) overwrites.
+//
+// Rebuilt marks an inventory a same-identity owner rebuild wrote
+// (RecordRebuiltSafeInventories, plan S3-D clarification K52): the parts the
+// rebuild restored into hg_safe under new names, at the arbiter's PublishSeq.
+// The owner audit takes it as the reference when it equals the arbiter's
+// SafeParts by row LtHash and hash_of_all_files; the next applied promotion
+// replaces it with an ordinary inventory. It is omitted while false, so a
+// state without a rebuild keeps CORE_TAG_P3's shape.
 type ackedSafeInventory struct {
 	PromotionSeq uint64                    `json:"promotion_seq"`
 	Parts        []arbiter.SafePartMapping `json:"parts"`
+	Rebuilt      bool                      `json:"rebuilt,omitempty"`
 }
 
 type localState struct {
@@ -291,6 +300,32 @@ func (st *stateStore) RecordAck(k partitionKey, seq uint64, ack arbiter.Promotio
 	next.LastAcks[ks] = ack
 	next.BaseRoots[ks] = newBaseRoot
 	next.BaseSnapshotIDs[ks] = newBaseSnapshotID
+	return st.persistStateLocked(next)
+}
+
+// RecordSettledNotApplied journals a settle's not-applied answer to promotion
+// seq of k (plan S3-D clarification K53) as RecordAck journals a base CAS
+// refusal: the watermark moves to seq, ack becomes the last acknowledgement,
+// the base stays (newBaseRoot and newBaseSnapshotID are k's current base) and
+// the acknowledged inventory is kept. A promotion intent of k at seq is
+// removed in the same write: its REPLACE never became visible (the caller
+// reconciled it first), and the arbiter consumes the promotion on this
+// acknowledgement, so nothing may ever publish it.
+func (st *stateStore) RecordSettledNotApplied(k partitionKey, seq uint64, ack arbiter.PromotionAck, newBaseRoot, newBaseSnapshotID string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	ks := key(k.Table, k.Partition)
+	next := cloneLocalState(st.s)
+	if inv, ok := st.s.ackedSafeInventory(ks); ok {
+		next.AckedSafeInventories[ks] = inv
+	}
+	next.Watermarks[ks] = seq
+	next.LastAcks[ks] = ack
+	next.BaseRoots[ks] = newBaseRoot
+	next.BaseSnapshotIDs[ks] = newBaseSnapshotID
+	if intent, ok := next.PromotionIntents[ks]; ok && intent.PromotionSeq == seq {
+		delete(next.PromotionIntents, ks)
+	}
 	return st.persistStateLocked(next)
 }
 

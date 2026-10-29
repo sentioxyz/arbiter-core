@@ -140,7 +140,7 @@ func TestRecreatedTable_PromotesFromAnEmptyBaseAfterThePurge(t *testing.T) {
 				PartRowLtHash: part.PartRowLtHash, PartName: part.PartName,
 			}},
 		}
-		if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(t, signer, cmd)); err != nil {
+		if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(t, signer, cmd), false); err != nil {
 			t.Fatalf("promote %d: %v", seq, err)
 		}
 		acks := fake.promotionAcks()

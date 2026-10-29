@@ -101,7 +101,7 @@ func TestHandlePromote_HappyPath(t *testing.T) {
 	}
 	jws := mustSignPromotion(t, signer, cmd)
 
-	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err != nil {
+	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws, false); err != nil {
 		t.Fatalf("handlePromote: %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestHandlePromote_BadJWSRejected(t *testing.T) {
 	}
 	jws := mustSignPromotion(t, badSigner, cmd)
 
-	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err == nil {
+	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws, false); err == nil {
 		t.Fatal("bad authority token accepted")
 	}
 	if got := len(claims.promotionAcks()); got != 0 {
@@ -179,13 +179,13 @@ func TestHandlePromote_StaleSeqResendsPersistedAck(t *testing.T) {
 		}},
 	}
 	jws := mustSignPromotion(t, signer, cmd)
-	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err != nil {
+	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws, false); err != nil {
 		t.Fatalf("first promote: %v", err)
 	}
 	table := CHTableName(schema.TableID)
 	before := activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, table)
 
-	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err != nil {
+	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws, false); err != nil {
 		t.Fatalf("duplicate promote: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestHandlePromote_PostReplaceFailureRestartRetryConverges(t *testing.T) {
 			PartRowLtHash: first.PartRowLtHash, PartName: first.PartName,
 		}},
 	}
-	if err := role.handlePromote(ctx, wire.PromoteToPB(firstCmd), mustSignPromotion(t, signer, firstCmd)); err != nil {
+	if err := role.handlePromote(ctx, wire.PromoteToPB(firstCmd), mustSignPromotion(t, signer, firstCmd), false); err != nil {
 		t.Fatalf("first promote: %v", err)
 	}
 	cleanup := cleanupCommand(schema.TableID, first)
@@ -242,7 +242,7 @@ func TestHandlePromote_PostReplaceFailureRestartRetryConverges(t *testing.T) {
 	baseConn := role.d.Conn
 	failing := &failAfterReplaceConn{Conn: baseConn}
 	role.d.Conn = failing
-	if err := role.handlePromote(ctx, wire.PromoteToPB(secondCmd), secondJWS); err == nil ||
+	if err := role.handlePromote(ctx, wire.PromoteToPB(secondCmd), secondJWS, false); err == nil ||
 		!strings.Contains(err.Error(), "injected post-REPLACE failure") {
 		t.Fatalf("post-REPLACE failure = %v", err)
 	}
@@ -268,7 +268,7 @@ func TestHandlePromote_PostReplaceFailureRestartRetryConverges(t *testing.T) {
 	if _, err := restarted.PromotedUnsafeParts(schema.TableID); err == nil {
 		t.Fatal("durable unresolved intent was lost across restart")
 	}
-	if err := restarted.handlePromote(ctx, wire.PromoteToPB(secondCmd), secondJWS); err != nil {
+	if err := restarted.handlePromote(ctx, wire.PromoteToPB(secondCmd), secondJWS, false); err != nil {
 		t.Fatalf("retry after restart: %v", err)
 	}
 	if got := rowCount(t, ctx, baseConn, restarted.cfg.SafeDatabase+"."+CHTableName(schema.TableID)); got != 4 {
@@ -316,7 +316,7 @@ func assertLegacyAckRefresh(t *testing.T, ctx context.Context, role *Role, claim
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err != nil {
+	if err := restarted.handlePromote(ctx, wire.PromoteToPB(cmd), jws, false); err != nil {
 		t.Fatalf("refresh legacy ACK: %v", err)
 	}
 	afterParts := activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, CHTableName(cmd.TableID))
@@ -408,7 +408,7 @@ func TestHandlePromote_PreReplaceIntentRecoversAfterContentNeutralSafeRewrite(t 
 	if err != nil {
 		t.Fatalf("restart role: %v", err)
 	}
-	if err := restarted.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(t, signer, cmd)); err != nil {
+	if err := restarted.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(t, signer, cmd), false); err != nil {
 		t.Fatalf("retry after content-neutral safe rewrite: %v", err)
 	}
 	if got := rowCount(t, ctx, role.d.Conn, restarted.cfg.SafeDatabase+"."+table); got != 4 {
@@ -453,7 +453,7 @@ func TestHandlePromote_BaseCASMismatchAcksNotApplied(t *testing.T) {
 	}
 	jws := mustSignPromotion(t, signer, cmd)
 
-	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws); err != nil {
+	if err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws, false); err != nil {
 		t.Fatalf("handlePromote: %v", err)
 	}
 
@@ -493,7 +493,7 @@ func TestHandlePromote_ShadowClosureGateRejectsDivergentContent(t *testing.T) {
 	}
 	jws := mustSignPromotion(t, signer, cmd)
 
-	err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws)
+	err := role.handlePromote(ctx, wire.PromoteToPB(cmd), jws, false)
 	if err == nil || !strings.Contains(err.Error(), "shadow closure mismatch") {
 		t.Fatalf("divergent shadow must be rejected by the closure gate, got %v", err)
 	}
@@ -532,7 +532,7 @@ func TestHandlePromote_ShadowClosureMismatchNamesReactivatedSafePart(t *testing.
 			PartRowLtHash: first.PartRowLtHash, PartName: first.PartName,
 		}},
 	}
-	if err := role.handlePromote(ctx, wire.PromoteToPB(firstCmd), mustSignPromotion(t, signer, firstCmd)); err != nil {
+	if err := role.handlePromote(ctx, wire.PromoteToPB(firstCmd), mustSignPromotion(t, signer, firstCmd), false); err != nil {
 		t.Fatalf("first promote: %v", err)
 	}
 	cleanup := cleanupCommand(schema.TableID, first)
@@ -566,7 +566,7 @@ func TestHandlePromote_ShadowClosureMismatchNamesReactivatedSafePart(t *testing.
 			PartRowLtHash: second.PartRowLtHash, PartName: second.PartName,
 		}},
 	}
-	err = role.handlePromote(ctx, wire.PromoteToPB(secondCmd), mustSignPromotion(t, signer, secondCmd))
+	err = role.handlePromote(ctx, wire.PromoteToPB(secondCmd), mustSignPromotion(t, signer, secondCmd), false)
 	if err == nil || !strings.Contains(err.Error(), "shadow closure mismatch") {
 		t.Fatalf("a safe part outside the base root must fail the closure gate, got %v", err)
 	}

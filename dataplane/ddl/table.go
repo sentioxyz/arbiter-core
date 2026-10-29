@@ -267,3 +267,26 @@ func clickHouseCode(err error) int32 {
 	}
 	return 0
 }
+
+// ReplicaIsActive reports whether replica of tableID's hg_unsafe table is
+// active: a server holds the table attached and its Keeper session is alive,
+// so <ZooKeeperPath>/replicas/<replica>/is_active exists. An unknown replica
+// or table is not active. A same-identity owner rebuild fences the lost
+// ClickHouse with it before SYSTEM DROP REPLICA (plan S3-D clarification K54).
+func ReplicaIsActive(ctx context.Context, conn clickhouse.Conn, p Pinned, tableID, replica string) (bool, error) {
+	path := ZooKeeperPath(p, tableID) + "/replicas/" + replica
+	var n uint64
+	if err := conn.QueryRow(ctx, `SELECT count() FROM system.zookeeper WHERE path = ? AND name = 'is_active'`, path).Scan(&n); err != nil {
+		return false, fmt.Errorf("ddl: read keeper path %s: %w", path, err)
+	}
+	return n > 0, nil
+}
+
+// ScopedUnsafeRootChildren returns the sorted children of the scoped unsafe
+// root /sentio/<keeper_shard_id>/unsafe_inc (housegate spec 2026-10-14 §8.2,
+// §8.8); none when it does not exist. Before the purge switch every
+// incarnation lives on the unscoped path, so the rebuild's fence requires it
+// to be empty.
+func ScopedUnsafeRootChildren(ctx context.Context, conn clickhouse.Conn, p Pinned) ([]string, error) {
+	return keeperChildren(ctx, conn, fmt.Sprintf("/sentio/%d/unsafe_inc", p.KeeperShardID))
+}

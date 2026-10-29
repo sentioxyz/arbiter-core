@@ -11,7 +11,12 @@ import (
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
-func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jws string) error {
+// handlePromote runs one promotion command. With settle false it applies the
+// promotion (today's path). With settle true, a leader in settle mode streamed
+// it (housegate spec 2026-10-14 §14; plan S3-D clarification K53): after the
+// same authorization, ownership check and partition lock it is answered from
+// this SNode's journal only (answerSettle) and never applied.
+func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jws string, settle bool) error {
 	cmd := wire.PromoteFromPB(m)
 	if _, err := r.authority.AuthorizePromotion(cmd, jws); err != nil {
 		return fmt.Errorf("promote authority: %w", err)
@@ -29,30 +34,12 @@ func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jw
 	mu.Lock()
 	defer mu.Unlock()
 
+	if settle {
+		return r.answerSettle(ctx, k, cmd)
+	}
 	if cmd.PromotionSeq <= r.state.Watermark(k) {
 		if ack, ok := r.state.LastAck(k); ok && ack.PromotionSeq == cmd.PromotionSeq {
-			// A pre-upgrade ACK may be durable locally but not yet consumed by
-			// Arbiter. Reconstruct its complete physical inventory without
-			// REPLACE or subtracting the candidates from UnpromotedSums again.
-			if ack.Applied && len(ack.SafePartitionParts) == 0 {
-				if err := legacyAckMatchesCommand(ack, cmd); err != nil {
-					return fmt.Errorf("refresh legacy promotion ack: %w", err)
-				}
-				sch, err := r.schemaFor(cmd.TableID)
-				if err != nil {
-					return err
-				}
-				table := CHTableName(cmd.TableID)
-				mappings, err := r.safeMappings(ctx, r.cfg.SafeDatabase+"."+table, table, sch, cmd, ack.PostPartitionCommitment)
-				if err != nil {
-					return fmt.Errorf("refresh legacy promotion ack: %w", err)
-				}
-				ack.Parts, ack.SafePartitionParts = mappings.Candidates, mappings.Partition
-				if err := r.state.RecordRefreshedAck(k, ack); err != nil {
-					return fmt.Errorf("journal refreshed promotion ack: %w", err)
-				}
-			}
-			return r.sendAck(ctx, ack)
+			return r.resendStoredAck(ctx, k, cmd, ack)
 		}
 		r.d.Logger.Warn("stale promotion below watermark with no stored ack", "seq", cmd.PromotionSeq)
 		return nil
@@ -85,6 +72,32 @@ func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jw
 		return fmt.Errorf("promotion %d: %w", cmd.PromotionSeq, err)
 	}
 	return r.finishAppliedPromotion(ctx, k, cmd, post, mappings)
+}
+
+// resendStoredAck sends ack, the journaled acknowledgement of cmd, again. A
+// pre-upgrade ACK may be durable locally but not yet consumed by Arbiter:
+// reconstruct its complete physical inventory first, without REPLACE or
+// subtracting the candidates from UnpromotedSums again.
+func (r *Role) resendStoredAck(ctx context.Context, k partitionKey, cmd arbiter.PromoteSafePartition, ack arbiter.PromotionAck) error {
+	if ack.Applied && len(ack.SafePartitionParts) == 0 {
+		if err := legacyAckMatchesCommand(ack, cmd); err != nil {
+			return fmt.Errorf("refresh legacy promotion ack: %w", err)
+		}
+		sch, err := r.schemaFor(cmd.TableID)
+		if err != nil {
+			return err
+		}
+		table := CHTableName(cmd.TableID)
+		mappings, err := r.safeMappings(ctx, r.cfg.SafeDatabase+"."+table, table, sch, cmd, ack.PostPartitionCommitment)
+		if err != nil {
+			return fmt.Errorf("refresh legacy promotion ack: %w", err)
+		}
+		ack.Parts, ack.SafePartitionParts = mappings.Candidates, mappings.Partition
+		if err := r.state.RecordRefreshedAck(k, ack); err != nil {
+			return fmt.Errorf("journal refreshed promotion ack: %w", err)
+		}
+	}
+	return r.sendAck(ctx, ack)
 }
 
 func legacyAckMatchesCommand(ack arbiter.PromotionAck, cmd arbiter.PromoteSafePartition) error {

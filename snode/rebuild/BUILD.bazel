@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rebuild",
+    srcs = [
+        "fence.go",
+        "objectstore.go",
+        "rebuild.go",
+        "report.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/snode/rebuild",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//:arbiter-core",
+        "//dataplane/chparts",
+        "//dataplane/ddl",
+        "//dataplane/objstore",
+        "//member/gate",
+        "//snode",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "rebuild_test",
+    srcs = [
+        "rebuild_ch_test.go",
+        "rebuild_test.go",
+    ],
+    embed = [":rebuild"],
+    deps = [
+        "//dataplane/chparts",
+        "//dataplane/chtest",
+        "//dataplane/ddl",
+        "//dataplane/objstore",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)

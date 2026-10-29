@@ -24,6 +24,7 @@ type fakeGateway struct {
 	promotionCalls     int
 	verifierDispatches []*pb.VerifierDispatch
 	promotions         []*pb.PromotionCommand
+	promotionHellos    []*pb.SNodeHello
 	err                error
 	block              bool
 }
@@ -48,9 +49,10 @@ func (g *fakeGateway) SubscribeVerifierDispatch(_ *pb.VerifierHello, stream grpc
 	return err
 }
 
-func (g *fakeGateway) SubscribePromotions(_ *pb.SNodeHello, stream grpc.ServerStreamingServer[pb.PromotionCommand]) error {
+func (g *fakeGateway) SubscribePromotions(hello *pb.SNodeHello, stream grpc.ServerStreamingServer[pb.PromotionCommand]) error {
 	g.mu.Lock()
 	g.promotionCalls++
+	g.promotionHellos = append(g.promotionHellos, hello)
 	msgs := append([]*pb.PromotionCommand(nil), g.promotions...)
 	err := g.err
 	g.mu.Unlock()
@@ -211,5 +213,39 @@ func TestRunPromotionSubscription_DeliversCommands(t *testing.T) {
 	}
 	if got != 7 {
 		t.Fatalf("promotion seq: got %d want 7", got)
+	}
+}
+
+// TestPromotionSubscriptionAdvertisesSettle: every SNode of this release
+// answers PromotionCommand.settle from its journal, so its hello always says
+// so (plan S3-D contract §34); the leader streams a settle only to a
+// subscription whose hello carried it.
+func TestPromotionSubscriptionAdvertisesSettle(t *testing.T) {
+	gateway := &fakeGateway{promotions: []*pb.PromotionCommand{promotionCommand(7)}}
+	cl, err := New(Config{Peers: []Peer{{ID: "n1", GRPCAddr: startGatewayPeer(t, gateway)}}})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	t.Cleanup(cl.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = cl.RunPromotionSubscription(ctx, "snode-3", func(*pb.PromotionCommand) error {
+		cancel()
+		return nil
+	})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("subscription must end with context cancellation, got %v", err)
+	}
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	if len(gateway.promotionHellos) == 0 {
+		t.Fatal("the gateway saw no hello")
+	}
+	for _, hello := range gateway.promotionHellos {
+		if hello.GetNodeId() != "snode-3" || !hello.GetSettle() {
+			t.Fatalf("hello = %v, want node_id snode-3 with settle", hello)
+		}
 	}
 }

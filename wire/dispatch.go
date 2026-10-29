@@ -133,3 +133,13 @@ func PromotionCommandPB(p arbiter.PromoteSafePartition, jws string) *pb.Promotio
 func CleanupCommandPB(c arbiter.UnsafeCleanup, jws string) *pb.PromotionCommand {
 	return &pb.PromotionCommand{Cmd: &pb.PromotionCommand_Cleanup{Cleanup: CleanupToPB(c)}, AuthorityJws: jws}
 }
+
+// SettlePromotionCommandPB wraps a signed promotion for the SNode stream with
+// settle set: the leader's settle mode (plan S3-D contract §35.3) sends it
+// only to an SNode whose hello carried settle, which answers it from its
+// journal and never applies it. It is PromotionCommandPB's message otherwise.
+func SettlePromotionCommandPB(p arbiter.PromoteSafePartition, jws string) *pb.PromotionCommand {
+	cmd := PromotionCommandPB(p, jws)
+	cmd.Settle = true
+	return cmd
+}

@@ -4,8 +4,10 @@ go_test(
     name = "chmechanics_test",
     srcs = [
         "backup_test.go",
+        "interserver_test.go",
         "mechanics_test.go",
         "parts_test.go",
+        "rebuild_test.go",
         "replication_test.go",
         "s3_test.go",
         "transport_test.go",
