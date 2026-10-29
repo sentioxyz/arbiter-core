@@ -116,7 +116,7 @@ func (f *subsetFixture) promote(ctx context.Context, role *Role, cmd arbiter.Pro
 	if err != nil {
 		return err
 	}
-	return role.handlePromote(ctx, wire.PromoteToPB(cmd), jws)
+	return role.handlePromote(ctx, wire.PromoteToPB(cmd), jws, false)
 }
 
 // assertSafeHoldsExactly asserts that hg_safe holds exactly the rows of the

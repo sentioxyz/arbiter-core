@@ -186,7 +186,7 @@ func (f *ownerAuditFixtureS) promote(ctx context.Context, seq uint64, part arbit
 	cmd := arbiter.PromoteSafePartition{TableID: f.schema.TableID, PartitionID: part.PartitionID, PromotionSeq: seq,
 		BaseSafeSnapshotID: snapshot, BasePartitionRoot: base,
 		CandidateParts: []arbiter.PartRef{{TableID: f.schema.TableID, PartitionID: part.PartitionID, PartRowLtHash: part.PartRowLtHash, PartName: part.PartName}}}
-	return f.role.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(f.t, f.signer, cmd))
+	return f.role.handlePromote(ctx, wire.PromoteToPB(cmd), mustSignPromotion(f.t, f.signer, cmd), false)
 }
 
 // cleanup drops part from hg_unsafe as promotion seq's cleanup.
