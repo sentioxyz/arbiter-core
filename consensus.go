@@ -209,3 +209,32 @@ func (c ReleaseIndexerCommand) Validate() error {
 	}
 	return nil
 }
+
+// SettleTrackCommand is the canonical signing form of an authority-signed
+// settle of a quarantined track (housegate spec 2026-10-14 §14 "Exits from the
+// release refusals", P4; plan S3-D clarification K53); its wire form is
+// pb.SettleTrackRequest minus authority_jws and timeout_ms. It is never a Raft
+// command: only the leader checks it, before it streams anything, and no
+// Apply reads it. PromotionSeqs lists, strictly ascending, exactly the track's
+// issued, unacknowledged promotions at signing time; ExpectedGeneration is the
+// track's quarantine_generation. Indexer 0 and generation 0 are signed like
+// any other value (no omitempty).
+type SettleTrackCommand struct {
+	IndexerID          uint64   `json:"indexer_id"`
+	ExpectedGeneration uint64   `json:"expected_generation"`
+	PromotionSeqs      []uint64 `json:"promotion_seqs"`
+}
+
+// Validate refuses an empty list and one that is not strictly ascending. It
+// never sorts, so no one signs, and no leader compares, an ambiguous list.
+func (c SettleTrackCommand) Validate() error {
+	if len(c.PromotionSeqs) == 0 {
+		return fmt.Errorf("settle track: promotion_seqs must be non-empty and strictly ascending")
+	}
+	for i := 1; i < len(c.PromotionSeqs); i++ {
+		if c.PromotionSeqs[i-1] >= c.PromotionSeqs[i] {
+			return fmt.Errorf("settle track: promotion_seqs must be non-empty and strictly ascending")
+		}
+	}
+	return nil
+}
