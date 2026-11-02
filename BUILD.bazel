@@ -18,16 +18,19 @@ go_library(
     srcs = [
         "consensus.go",
         "domains.go",
+        "stage3.go",
         "table_registry.go",
         "types.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core",
     visibility = ["//visibility:public"],
+    deps = ["@housegate//pkg/replay"],
 )
 
 go_test(
     name = "arbiter-core_test",
     srcs = [
+        "consensus_stage3_test.go",
         "consensus_test.go",
         "settle_test.go",
         "tracks_test.go",
