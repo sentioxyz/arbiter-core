@@ -1,0 +1,56 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "consensus",
+    srcs = [
+        "config.go",
+        "quiescence.go",
+        "verify_role.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/member/consensus",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//authority",
+        "//dataplane",
+        "//dataplane/ddl",
+        "//dataplane/evidence",
+        "//dataplane/tableset",
+        "//member/install",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/chexec",
+        "@housegate//pkg/replay/payloadexec",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)
+
+go_test(
+    name = "consensus_test",
+    srcs = [
+        "fakes_test.go",
+        "policy_readiness_test.go",
+        "quiescence_regression_test.go",
+        "quiescence_test.go",
+        "verify_role_test.go",
+    ],
+    embed = [":consensus"],
+    deps = [
+        "//:arbiter-core",
+        "//authority",
+        "//authority/authoritytest",
+        "//dataplane",
+        "//dataplane/ddl",
+        "//dataplane/evidence",
+        "//wire",
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
+        "@com_github_sentioxyz_arbiter_proto//gen/pb",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
+        "@housegate//pkg/replay/payloadexec",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)

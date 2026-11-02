@@ -293,17 +293,20 @@ func TestValidateMemberPinnedRefusesProtocolDatabases(t *testing.T) {
 	}
 }
 
-// TestMemberUnsafeIntentHasNoCallerInP2: MemberUnsafeIntent is defined for
-// Plan S3-E1 Task 62, whose reconciler creates hg_member_unsafe replicas as
-// si_member_ddl. In P2 no non-test Go file of this module names it besides
-// its own declaration, so no P2 path creates a replicated table (housegate
-// spec 2026-10-14 §8.2; plan S3-C2 Global Constraints). Plan S3-E1 Task 62
-// replaces this guard when it adds the first caller.
-func TestMemberUnsafeIntentHasNoCallerInP2(t *testing.T) {
+// TestMemberUnsafeIntentIsCalledOnlyByTheMemberConsensusMode: from Plan
+// S3-E1 Task 62 on, MemberUnsafeIntent is named only in member/consensus, by
+// the hg_member_unsafe reconciler (unsafe_reconciler.go), which creates the
+// member's replicas as si_member_ddl, and by the verify role's readiness check
+// (verify_role.go), which verifies them as si_member. No other non-test Go
+// file of this module names it, so no other path creates a replicated table
+// in a member database (housegate spec 2026-10-14 §8.2, §8.3). It replaces
+// Plan S3-C2's TestMemberUnsafeIntentHasNoCallerInP2.
+func TestMemberUnsafeIntentIsCalledOnlyByTheMemberConsensusMode(t *testing.T) {
+	allowed := map[string]bool{"member/consensus/unsafe_reconciler.go": true, "member/consensus/verify_role.go": true}
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
 	declared := false
-	var uses []string
+	var uses, outside []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -325,8 +328,9 @@ func TestMemberUnsafeIntentHasNoCallerInP2(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		rel = filepath.ToSlash(rel)
 		var declaration *ast.Ident
-		if filepath.ToSlash(rel) == "dataplane/ddl/member.go" {
+		if rel == "dataplane/ddl/member.go" {
 			for _, decl := range file.Decls {
 				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "MemberUnsafeIntent" {
 					declaration, declared = fn.Name, true
@@ -336,6 +340,9 @@ func TestMemberUnsafeIntentHasNoCallerInP2(t *testing.T) {
 		ast.Inspect(file, func(n ast.Node) bool {
 			if id, ok := n.(*ast.Ident); ok && id.Name == "MemberUnsafeIntent" && id != declaration {
 				uses = append(uses, fset.Position(id.Pos()).String())
+				if !allowed[rel] {
+					outside = append(outside, fset.Position(id.Pos()).String())
+				}
 			}
 			return true
 		})
@@ -347,8 +354,11 @@ func TestMemberUnsafeIntentHasNoCallerInP2(t *testing.T) {
 	if !declared {
 		t.Fatalf("found no declaration of MemberUnsafeIntent in %s/dataplane/ddl/member.go", root)
 	}
-	if len(uses) > 0 {
-		t.Fatalf("MemberUnsafeIntent has callers in P2 (Plan S3-E1 Task 62 is its first): %v", uses)
+	if len(outside) > 0 {
+		t.Fatalf("MemberUnsafeIntent is named outside the member consensus mode's reconciler and readiness check: %v", outside)
+	}
+	if len(uses) == 0 {
+		t.Fatal("MemberUnsafeIntent has no caller: the member consensus mode (member/consensus) creates and verifies the hg_member_unsafe replicas with it")
 	}
 }
 

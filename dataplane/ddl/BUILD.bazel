@@ -43,9 +43,9 @@ go_test(
         "table_test.go",
         "verify_test.go",
     ],
-    # TestMemberUnsafeIntentHasNoCallerInP2 reads the module's sources through
-    # the runfiles symlink of member.go; "external" keeps Bazel from caching
-    # its result across changes in other packages.
+    # TestMemberUnsafeIntentIsCalledOnlyByTheMemberConsensusMode reads the
+    # module's sources through the runfiles symlink of member.go; "external"
+    # keeps Bazel from caching its result across changes in other packages.
     data = ["member.go"],
     embed = [":ddl"],
     tags = ["external"],
