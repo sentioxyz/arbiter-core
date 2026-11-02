@@ -198,6 +198,13 @@ type Command struct {
 	RecordTablePurged                *RecordTablePurged                `json:",omitempty"`
 	QuarantineIndexer                *QuarantineIndexer                `json:",omitempty"`
 	ReleaseIndexer                   *ReleaseIndexer                   `json:",omitempty"`
+	// Stage 3 (plan S3-E1 contract §39, §41): Raft tags 38-42, proposed only
+	// after the v21 activation and the command's switch.
+	RebalanceGroup    *RebalanceGroup    `json:",omitempty"`
+	ReselectVerifiers *ReselectVerifiers `json:",omitempty"`
+	MemberReady       *MemberReady       `json:",omitempty"`
+	MemberCheckpoint  *MemberCheckpoint  `json:",omitempty"`
+	MarkMemberLagging *MarkMemberLagging `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -375,6 +382,26 @@ func Encode(c Command) ([]byte, error) {
 		set++
 		out.Cmd = &pb.RaftCommand_ReleaseIndexer{ReleaseIndexer: ReleaseIndexerToRequest(*c.ReleaseIndexer)}
 	}
+	if c.RebalanceGroup != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_RebalanceGroup{RebalanceGroup: RebalanceGroupToRequest(*c.RebalanceGroup)}
+	}
+	if c.ReselectVerifiers != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_ReselectVerifiers{ReselectVerifiers: ReselectVerifiersToRequest(*c.ReselectVerifiers)}
+	}
+	if c.MemberReady != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_MemberReady{MemberReady: MemberReadyToRequest(*c.MemberReady)}
+	}
+	if c.MemberCheckpoint != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_MemberCheckpoint{MemberCheckpoint: MemberCheckpointToRequest(*c.MemberCheckpoint)}
+	}
+	if c.MarkMemberLagging != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_MarkMemberLagging{MarkMemberLagging: MarkMemberLaggingToRequest(*c.MarkMemberLagging)}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -457,6 +484,24 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_ReleaseIndexer:
 		v := ReleaseIndexerFromRequest(cmd.ReleaseIndexer)
 		return Command{ReleaseIndexer: &v}, nil
+	case *pb.RaftCommand_RebalanceGroup:
+		v := RebalanceGroupFromRequest(cmd.RebalanceGroup)
+		return Command{RebalanceGroup: &v}, nil
+	case *pb.RaftCommand_ReselectVerifiers:
+		v := ReselectVerifiersFromRequest(cmd.ReselectVerifiers)
+		return Command{ReselectVerifiers: &v}, nil
+	case *pb.RaftCommand_MemberReady:
+		v := MemberReadyFromRequest(cmd.MemberReady)
+		return Command{MemberReady: &v}, nil
+	case *pb.RaftCommand_MemberCheckpoint:
+		v, err := MemberCheckpointFromRequest(cmd.MemberCheckpoint)
+		if err != nil {
+			return Command{}, err
+		}
+		return Command{MemberCheckpoint: &v}, nil
+	case *pb.RaftCommand_MarkMemberLagging:
+		v := MarkMemberLaggingFromRequest(cmd.MarkMemberLagging)
+		return Command{MarkMemberLagging: &v}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{

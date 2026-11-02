@@ -132,3 +132,86 @@ func ReleaseIndexerToRequest(c ReleaseIndexer) *pb.ReleaseIndexerCmd {
 		AcknowledgedRejectedBlocks: mapSlice(c.AcknowledgedRejectedBlocks, func(b uint64) uint64 { return b }),
 		AuthorityJws:               c.AuthorityJWS}
 }
+
+// RebalanceGroupFromRequest decodes a ConsensusAdmin.RebalanceGroup request,
+// which is the RebalanceGroupCmd itself (plan S3-E1 contract §39). Add and
+// Remove are copied as sent, an empty list as nil: Canonical normalizes them
+// for signing.
+func RebalanceGroupFromRequest(m *pb.RebalanceGroupCmd) RebalanceGroup {
+	return RebalanceGroup{OwnerIndexerID: m.GetOwnerIndexerId(), DatabaseID: m.GetDatabaseId(),
+		ExpectedGeneration: m.GetExpectedGeneration(),
+		Add:                mapSlice(m.GetAdd(), func(id string) string { return id }),
+		Remove:             mapSlice(m.GetRemove(), func(id string) string { return id }),
+		NetworkFill:        m.GetNetworkFill(), AuthorityJWS: m.GetAuthorityJws()}
+}
+
+// RebalanceGroupToRequest builds the RebalanceGroup request (and the Raft
+// command body) with independent copies of the lists.
+func RebalanceGroupToRequest(c RebalanceGroup) *pb.RebalanceGroupCmd {
+	return &pb.RebalanceGroupCmd{OwnerIndexerId: c.OwnerIndexerID, DatabaseId: c.DatabaseID,
+		ExpectedGeneration: c.ExpectedGeneration,
+		Add:                mapSlice(c.Add, func(id string) string { return id }),
+		Remove:             mapSlice(c.Remove, func(id string) string { return id }),
+		NetworkFill:        c.NetworkFill, AuthorityJws: c.AuthorityJWS}
+}
+
+// ReselectVerifiersFromRequest decodes a ReselectVerifiersCmd; the expected
+// set is copied as sent, an empty one as nil.
+func ReselectVerifiersFromRequest(m *pb.ReselectVerifiersCmd) ReselectVerifiers {
+	return ReselectVerifiers{L3BlockSeq: m.GetL3BlockSeq(),
+		ExpectedSet:  mapSlice(m.GetExpectedSet(), func(id string) string { return id }),
+		AuthorityJWS: m.GetAuthorityJws()}
+}
+
+// ReselectVerifiersToRequest builds the Raft command body.
+func ReselectVerifiersToRequest(c ReselectVerifiers) *pb.ReselectVerifiersCmd {
+	return &pb.ReselectVerifiersCmd{L3BlockSeq: c.L3BlockSeq,
+		ExpectedSet:  mapSlice(c.ExpectedSet, func(id string) string { return id }),
+		AuthorityJws: c.AuthorityJWS}
+}
+
+// MarkMemberLaggingFromRequest decodes a ConsensusAdmin.MarkMemberLagging
+// request, which is the MarkMemberLaggingCmd itself; an absent observed entry
+// decodes to the zero frontier.
+func MarkMemberLaggingFromRequest(m *pb.MarkMemberLaggingCmd) MarkMemberLagging {
+	return MarkMemberLagging{NodeID: m.GetNodeId(), OwnerIndexerID: m.GetOwnerIndexerId(), DatabaseID: m.GetDatabaseId(),
+		ObservedEntry: TrackFrontierFromPB(m.GetObservedEntry()), AuthorityJWS: m.GetAuthorityJws()}
+}
+
+// MarkMemberLaggingToRequest builds the MarkMemberLagging request (and the
+// Raft command body).
+func MarkMemberLaggingToRequest(c MarkMemberLagging) *pb.MarkMemberLaggingCmd {
+	return &pb.MarkMemberLaggingCmd{NodeId: c.NodeID, OwnerIndexerId: c.OwnerIndexerID, DatabaseId: c.DatabaseID,
+		ObservedEntry: TrackFrontierToPB(c.ObservedEntry), AuthorityJws: c.AuthorityJWS}
+}
+
+// MemberReadyFromRequest decodes a VerifierGateway.SubmitMemberReady request,
+// which is the MemberReadyCmd itself.
+func MemberReadyFromRequest(m *pb.MemberReadyCmd) MemberReady {
+	return MemberReady{NodeID: m.GetNodeId(), OwnerIndexerID: m.GetOwnerIndexerId(), DatabaseID: m.GetDatabaseId(),
+		Generation: m.GetGeneration(), Ed25519Signature: m.GetEd25519Signature()}
+}
+
+// MemberReadyToRequest builds the SubmitMemberReady request (and the Raft
+// command body).
+func MemberReadyToRequest(c MemberReady) *pb.MemberReadyCmd {
+	return &pb.MemberReadyCmd{NodeId: c.NodeID, OwnerIndexerId: c.OwnerIndexerID, DatabaseId: c.DatabaseID,
+		Generation: c.Generation, Ed25519Signature: c.Ed25519Signature}
+}
+
+// MemberCheckpointFromRequest decodes a VerifierGateway.SubmitMemberCheckpoint
+// request, which is the MemberCheckpointCmd itself. It refuses an exclusion
+// reason outside the closed set (MemberCheckpointBodyFromPB).
+func MemberCheckpointFromRequest(m *pb.MemberCheckpointCmd) (MemberCheckpoint, error) {
+	cp, err := MemberCheckpointBodyFromPB(m.GetCheckpoint())
+	if err != nil {
+		return MemberCheckpoint{}, err
+	}
+	return MemberCheckpoint{Checkpoint: cp, ReplicaJWS: m.GetReplicaJws()}, nil
+}
+
+// MemberCheckpointToRequest builds the SubmitMemberCheckpoint request (and the
+// Raft command body).
+func MemberCheckpointToRequest(c MemberCheckpoint) *pb.MemberCheckpointCmd {
+	return &pb.MemberCheckpointCmd{Checkpoint: MemberCheckpointBodyToPB(c.Checkpoint), ReplicaJws: c.ReplicaJWS}
+}
