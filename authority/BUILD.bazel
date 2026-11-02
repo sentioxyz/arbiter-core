@@ -43,6 +43,7 @@ go_test(
         "settle_test.go",
         "snapshot_query_abort_test.go",
         "snode_messages_test.go",
+        "stage3_test.go",
         "tracks_golden_test.go",
     ],
     embed = [":authority"],
