@@ -69,8 +69,11 @@ type Config struct {
 	Interval time.Duration
 	// SweepDecommissioned makes this node remove, after its own drop,
 	// every Keeper replica of a purged table that is not in the arbiter's
-	// purge node set. Only the source SNode sets it.
+	// purge node set, on both Keeper roots, and run the report-only Keeper
+	// audit (keeper_audit.go). Only the source SNode sets it.
 	SweepDecommissioned bool
+	// KeeperAuditInterval paces the Keeper audit (0 = DefaultKeeperAuditInterval).
+	KeeperAuditInterval time.Duration
 	// Owner, when set, restricts this reconciler to the incarnations owned
 	// by that SI indexer (housegate spec 2026-10-10 §8): an SNode creates,
 	// verifies, purges, reports and sweeps only its own tables. An
@@ -109,6 +112,10 @@ type Stats struct {
 	Failures      map[string]uint64
 	Unknown       []string
 	LeftoverDrops uint64
+	// KeeperFindings are the last Keeper audit's findings, sorted by path
+	// then replica; KeeperAuditRuns counts the audits that completed.
+	KeeperFindings  []KeeperFinding
+	KeeperAuditRuns uint64
 }
 
 type tableStatus struct {
@@ -133,6 +140,10 @@ type Reconciler struct {
 	failures      map[string]uint64
 	unknown       []string
 	leftoverDrops uint64
+	// The Keeper audit's last findings, completed runs and start time.
+	keeperFindings  []KeeperFinding
+	keeperAuditRuns uint64
+	lastKeeperAudit time.Time
 	// owed names the keys whose last Dropped hook call failed; their tables
 	// are not created again until the hook succeeds. In memory only: a
 	// restart forgets it.
@@ -160,6 +171,9 @@ func New(cfg Config, d Deps) (*Reconciler, error) {
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = ddl.DefaultReconcileInterval
+	}
+	if cfg.KeeperAuditInterval <= 0 {
+		cfg.KeeperAuditInterval = DefaultKeeperAuditInterval
 	}
 	if cfg.Owner != nil {
 		owner := *cfg.Owner
@@ -316,7 +330,8 @@ func (r *Reconciler) WaitReady(ctx context.Context, tableIDs []string, timeout t
 func (r *Reconciler) Stats() Stats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := Stats{States: map[State]int{}, Failures: map[string]uint64{}, Unknown: slices.Clone(r.unknown), LeftoverDrops: r.leftoverDrops}
+	out := Stats{States: map[State]int{}, Failures: map[string]uint64{}, Unknown: slices.Clone(r.unknown), LeftoverDrops: r.leftoverDrops,
+		KeeperFindings: slices.Clone(r.keeperFindings), KeeperAuditRuns: r.keeperAuditRuns}
 	for _, ts := range r.tables {
 		out.States[ts.state]++
 	}
@@ -528,6 +543,7 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 	}
 	if r.cfg.SweepDecommissioned {
 		r.sweepPurgedKeeperPaths(ctx, snap, history, skipSweep, unattributable, scopedLive)
+		r.auditKeeperIfDue(ctx, snap)
 	}
 	if err := r.reportUnknown(ctx, accounted); err != nil {
 		fatal = append(fatal, err)
