@@ -62,6 +62,10 @@ type VerifyDeps struct {
 // evidence comes from its own hg_member_unsafe replicas (byte-side scans)
 // and its hg_rstage scratch (replays).
 type VerifyRole struct {
+	// metrics counts the evidence of every dispatch (plan S3-E1 Task 63);
+	// Mode sets it when it builds the role, and nil counts nothing.
+	metrics *Metrics
+
 	cfg     Config
 	d       VerifyDeps
 	log     *slog.Logger
@@ -217,9 +221,9 @@ func (v *VerifyRole) onDispatch(ctx context.Context) func(*pb.VerifierDispatch) 
 		}
 		switch msg := d.GetDispatch().(type) {
 		case *pb.VerifierDispatch_ReplayJob:
-			return v.handler.HandleReplayJob(ctx, msg.ReplayJob)
+			return v.countEvidence(EvidenceReplay, v.handler.HandleReplayJob(ctx, msg.ReplayJob))
 		case *pb.VerifierDispatch_ByteSideScan:
-			return v.handler.HandleScanRequest(ctx, msg.ByteSideScan)
+			return v.countEvidence(EvidenceScan, v.handler.HandleScanRequest(ctx, msg.ByteSideScan))
 		case *pb.VerifierDispatch_SnapshotQueryJob:
 			v.log.Warn("snapshot query job dispatched to a member; refusing", "block", msg.SnapshotQueryJob.GetBlockSeq())
 			return errSnapshotQueryNotServed
