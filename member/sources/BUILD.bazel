@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "sources",
     srcs = [
+        "member_unsafe_hardlink.go",
         "posture.go",
         "remote_pull.go",
         "restore.go",
@@ -27,6 +28,8 @@ go_test(
     srcs = [
         "ch_test.go",
         "fake_conn_test.go",
+        "member_unsafe_hardlink_ch_test.go",
+        "member_unsafe_hardlink_test.go",
         "posture_ch_test.go",
         "posture_test.go",
         "remote_pull_ch_test.go",
