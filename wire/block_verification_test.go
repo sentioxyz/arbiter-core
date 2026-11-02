@@ -14,10 +14,12 @@ import (
 )
 
 // blockHeaderViewFields names the pb.L3BlockHeader fields BlockHeaderView
-// reads, one per BlockHeaderView field (plan S3-C2 contract §21.2).
-var blockHeaderViewFields = map[protoreflect.Name]bool{
-	"l3_block_seq": true, "statement_seq_start": true, "statement_count": true,
-	"prev_safe_snapshot_id": true, "prev_state_root": true, "table_set_transition": true, "track": true,
+// reads, with the number of BlockHeaderView fields each fills (plan S3-C2
+// contract §21.2): track fills TrackIndexerID and, since plan S3-E1 contract
+// §41, GroupKey.
+var blockHeaderViewFields = map[protoreflect.Name]int{
+	"l3_block_seq": 1, "statement_seq_start": 1, "statement_count": 1,
+	"prev_safe_snapshot_id": 1, "prev_state_root": 1, "table_set_transition": 1, "track": 2,
 }
 
 func blockAttestationFixture(replica string, seq uint64) replay.ReplayAttestation {
@@ -50,7 +52,7 @@ func blockVerificationFixture() BlockVerification {
 	scan := func(r string) *arbiter.ByteSideScanMsg { s := blockScanFixture(r, 41); return &s }
 	return BlockVerification{
 		Header: BlockHeaderView{L3BlockSeq: 41, StatementSeqStart: 300, StatementCount: 2, PrevSafeSnapshotID: "0xprev-snap",
-			PrevStateRoot: "0xprev-state", IsTableSetTransition: true, TrackIndexerID: &track},
+			PrevStateRoot: "0xprev-state", IsTableSetTransition: true, TrackIndexerID: &track, GroupKey: "0xgroup-2-db"},
 		ChainHash: "0xchain-41",
 		ReplayJob: replay.ReplayJob{BlockSeq: 41, PrevSafeSnapshotID: "0xprev-snap", PrevStateRoot: "0xprev-state",
 			SchemaSnapshotID: "schema-genesis", ExecutorProfileID: "housegate-replay-mvp-v0", SourceClaimRoot: "0xclaims",
@@ -79,6 +81,16 @@ func blockVerificationFixture() BlockVerification {
 		},
 		VerdictEvaluated: true, Quorum: false, Finality: false, LastMergeable: true,
 		Anchor: &arbiter.AnchorRef{L3BlockHash: "0xl3-41", StateRoot: "0xstate-41", L2TxRef: "0xtx", L2BlockNumber: 9001, DARef: "da://anchor"},
+
+		// The stage-3 selection record (plan S3-E1 contract §41). On a real
+		// block the recorded key equals the header's; here they differ, so a
+		// converter that reads one for the other fails.
+		EligibleRing: []string{"verifier-1", "verifier-2", "verifier-3", "verifier-4"}, RingPosition: 2, MarkedCursorBlock: 9000,
+		GroupKey: "0xgroup-2-db-seal", GroupMembers: []string{"member-a", "member-b"}, GroupFill: true,
+		GroupDatabases: []BlockGroupRef{{DatabaseID: "db", GroupGeneration: 4}},
+		Reselections: []BlockReselection{{Replaced: []string{"verifier-2"}, Replacements: []string{"verifier-4"}, RingPosition: 3,
+			CursorBlock: 9030, AuthorityJWS: "h.p.s", AuthorityEpoch: 5}},
+		ReselectionsAtLatch: 1,
 	}
 }
 
@@ -122,7 +134,7 @@ func headerThroughReflection(t *testing.T, v BlockHeaderView) *pb.L3BlockHeader 
 			}
 		case "track":
 			if v.TrackIndexerID != nil {
-				r.Set(fd, protoreflect.ValueOfMessage((&pb.L3BlockTrack{IndexerId: *v.TrackIndexerID}).ProtoReflect()))
+				r.Set(fd, protoreflect.ValueOfMessage((&pb.L3BlockTrack{IndexerId: *v.TrackIndexerID, GroupKey: v.GroupKey}).ProtoReflect()))
 			}
 		case "l2_anchor_ref":
 			r.Set(fd, protoreflect.ValueOfMessage(AnchorRefToPB(arbiter.AnchorRef{L3BlockHash: "0xnot-read", StateRoot: "0xnot-read"}).ProtoReflect()))
@@ -200,6 +212,34 @@ func evidenceThroughReflection(t *testing.T, v VerifierEvidence) *pb.VerifierEvi
 	return m
 }
 
+// reselectionThroughReflection builds one BlockReselection field by field.
+func reselectionThroughReflection(t *testing.T, v BlockReselection) *pb.BlockReselection {
+	t.Helper()
+	m := &pb.BlockReselection{}
+	r := m.ProtoReflect()
+	fields := r.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		switch fd.Name() {
+		case "replaced":
+			appendStrings(r, fd, v.Replaced)
+		case "replacements":
+			appendStrings(r, fd, v.Replacements)
+		case "ring_position":
+			r.Set(fd, protoreflect.ValueOfUint32(v.RingPosition))
+		case "cursor_block":
+			r.Set(fd, protoreflect.ValueOfUint64(v.CursorBlock))
+		case "authority_jws":
+			r.Set(fd, protoreflect.ValueOfString(v.AuthorityJWS))
+		case "authority_epoch":
+			r.Set(fd, protoreflect.ValueOfUint64(v.AuthorityEpoch))
+		default:
+			t.Fatalf("%s has no case: BlockReselection and this test must carry it", fd.FullName())
+		}
+	}
+	return m
+}
+
 // blockVerificationThroughReflection builds v's message field by field
 // through protoreflect, never through BlockVerificationToPB. Every field of
 // pb.BlockVerification, pb.StatementCandidates and pb.VerifierEvidence needs a
@@ -244,6 +284,32 @@ func blockVerificationThroughReflection(t *testing.T, v BlockVerification) *pb.B
 			r.Set(fd, protoreflect.ValueOfBool(v.Finality))
 		case "last_mergeable":
 			r.Set(fd, protoreflect.ValueOfBool(v.LastMergeable))
+		case "eligible_ring":
+			appendStrings(r, fd, v.EligibleRing)
+		case "ring_position":
+			r.Set(fd, protoreflect.ValueOfUint32(v.RingPosition))
+		case "marked_cursor_block":
+			r.Set(fd, protoreflect.ValueOfUint64(v.MarkedCursorBlock))
+		case "group_key":
+			r.Set(fd, protoreflect.ValueOfString(v.GroupKey))
+		case "group_members":
+			appendStrings(r, fd, v.GroupMembers)
+		case "group_fill":
+			r.Set(fd, protoreflect.ValueOfBool(v.GroupFill))
+		case "group_databases":
+			for _, g := range v.GroupDatabases {
+				ref := (&pb.BlockGroupRef{}).ProtoReflect()
+				ref.Set(ref.Descriptor().Fields().ByName("database_id"), protoreflect.ValueOfString(g.DatabaseID))
+				ref.Set(ref.Descriptor().Fields().ByName("group_generation"), protoreflect.ValueOfUint64(g.GroupGeneration))
+				r.Mutable(fd).List().Append(protoreflect.ValueOfMessage(ref))
+			}
+		case "reselections":
+			list := r.Mutable(fd).List()
+			for _, rs := range v.Reselections {
+				list.Append(protoreflect.ValueOfMessage(reselectionThroughReflection(t, rs).ProtoReflect()))
+			}
+		case "reselections_at_latch":
+			r.Set(fd, protoreflect.ValueOfUint32(v.ReselectionsAtLatch))
 		default:
 			t.Fatalf("%s has no case: BlockVerification and this test must carry it", fd.FullName())
 		}
@@ -254,17 +320,23 @@ func blockVerificationThroughReflection(t *testing.T, v BlockVerification) *pb.B
 // TestBlockVerificationFromPBReadsEveryField: every field of
 // pb.BlockVerification, pb.StatementCandidates and pb.VerifierEvidence is set
 // through protoreflect and read back, and of the header exactly the fields of
-// BlockHeaderView are read (plan S3-C2 contract §21.2). The four top-level
-// bools and the transition flag take three patterns, so a swap of any two of
-// them, or a flag read from the track, is caught.
+// BlockHeaderView are read (plan S3-C2 contract §21.2). The five top-level
+// bools (group_fill since plan S3-E1) and the transition flag take three
+// patterns, so a swap of any two of them, or a flag read from the track, is
+// caught.
 func TestBlockVerificationFromPBReadsEveryField(t *testing.T) {
-	if n := reflect.TypeOf(BlockHeaderView{}).NumField(); n != len(blockHeaderViewFields) {
-		t.Fatalf("BlockHeaderView has %d fields, the test names %d header fields", n, len(blockHeaderViewFields))
+	read := 0
+	for _, n := range blockHeaderViewFields {
+		read += n
 	}
-	for _, flags := range [][5]bool{{true, false, false, true, true}, {false, true, false, true, false}, {false, false, true, false, true}} {
+	if n := reflect.TypeOf(BlockHeaderView{}).NumField(); n != read {
+		t.Fatalf("BlockHeaderView has %d fields, the test names header fields filling %d", n, read)
+	}
+	for _, flags := range [][6]bool{{true, false, false, true, true, false}, {false, true, false, true, false, true}, {false, false, true, false, true, true}} {
 		want := blockVerificationFixture()
 		want.VerdictEvaluated, want.Quorum, want.Finality, want.LastMergeable = flags[0], flags[1], flags[2], flags[3]
 		want.Header.IsTableSetTransition = flags[4]
+		want.GroupFill = flags[5]
 
 		got, err := BlockVerificationFromPB(blockVerificationThroughReflection(t, want))
 
@@ -278,7 +350,7 @@ func TestBlockVerificationFromPBReadsEveryField(t *testing.T) {
 	back := BlockVerificationToPB(blockVerificationFixture()).GetHeader().ProtoReflect()
 	fields := back.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
-		if fd := fields.Get(i); !blockHeaderViewFields[fd.Name()] && back.Has(fd) {
+		if fd := fields.Get(i); blockHeaderViewFields[fd.Name()] == 0 && back.Has(fd) {
 			t.Errorf("BlockVerificationToPB set header field %s, which BlockHeaderView does not carry", fd.FullName())
 		}
 	}
@@ -289,7 +361,10 @@ func TestBlockVerificationFromPBReadsEveryField(t *testing.T) {
 // well as present.
 func TestBlockVerificationRoundTrip(t *testing.T) {
 	sparse := blockVerificationFixture()
-	sparse.Header.IsTableSetTransition, sparse.Header.TrackIndexerID = false, nil
+	sparse.Header.IsTableSetTransition, sparse.Header.TrackIndexerID, sparse.Header.GroupKey = false, nil, ""
+	sparse.EligibleRing, sparse.RingPosition, sparse.MarkedCursorBlock = nil, 0, 0
+	sparse.GroupKey, sparse.GroupMembers, sparse.GroupFill, sparse.GroupDatabases = "", nil, false, nil
+	sparse.Reselections, sparse.ReselectionsAtLatch = nil, 0
 	sparse.Anchor = nil
 	sparse.ScanParts, sparse.SourceNodes = nil, nil
 	sparse.Evidence = []VerifierEvidence{{ReplicaID: "verifier-1"}, {ReplicaID: "verifier-2", Evaluated: true}}
@@ -356,6 +431,83 @@ func TestBlockVerificationTrackKeepsIndexerZeroDistinctFromAbsent(t *testing.T) 
 				t.Fatalf("indexer 0's track read as %v", got.Header.TrackIndexerID)
 			case got.Header.IsTableSetTransition:
 				t.Fatal("a block with a track and no table_set_transition read as a transition block")
+			}
+		})
+	}
+}
+
+// TestBlockVerificationCarriesTheSelectionRecord: the stage-3 selection
+// record of a block (BlockVerification fields 14-22) and the header's
+// group_key survive both converters and the wire bytes; a block marked before
+// the switches carries none of them; and the decoder refuses an unsorted ring
+// or member list and a ring position outside the ring (plan S3-E1 contract
+// §41).
+func TestBlockVerificationCarriesTheSelectionRecord(t *testing.T) {
+	track := uint64(0)
+	want := BlockVerification{
+		Header:       BlockHeaderView{L3BlockSeq: 100, StatementSeqStart: 500, StatementCount: 1, TrackIndexerID: &track, GroupKey: "0xgroup-0-dex"},
+		VerifierSet:  []string{"member-b", "verifier-1", "verifier-3"},
+		EligibleRing: []string{"member-b", "verifier-1", "verifier-2", "verifier-3"}, RingPosition: 3, MarkedCursorBlock: 5508940,
+		GroupKey: "0xgroup-0-dex", GroupMembers: []string{"member-b"}, GroupFill: true,
+		GroupDatabases: []BlockGroupRef{{DatabaseID: "dex", GroupGeneration: 3}, {DatabaseID: "lend", GroupGeneration: 1}},
+		Reselections: []BlockReselection{{Replaced: []string{"verifier-2"}, Replacements: []string{"verifier-3"}, RingPosition: 3,
+			CursorBlock: 5508970, AuthorityJWS: "h.p.s", AuthorityEpoch: 6}},
+		ReselectionsAtLatch: 1,
+	}
+	m := BlockVerificationToPB(want)
+	if m.GetHeader().GetTrack().GetGroupKey() != "0xgroup-0-dex" || m.GetRingPosition() != 3 || m.GetMarkedCursorBlock() != 5508940 ||
+		m.GetGroupKey() != "0xgroup-0-dex" || !m.GetGroupFill() || m.GetReselectionsAtLatch() != 1 || len(m.GetEligibleRing()) != 4 {
+		t.Fatalf("selection record encoded as %v", m)
+	}
+	for _, g := range m.GetGroupDatabases() {
+		assertEveryFieldPopulated(t, g.ProtoReflect(), nil)
+	}
+	assertEveryFieldPopulated(t, m.GetReselections()[0].ProtoReflect(), nil)
+	raw, err := proto.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded pb.BlockVerification
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := BlockVerificationFromPB(&decoded); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip (%v)\n got %+v\nwant %+v", err, got, want)
+	}
+
+	before := BlockVerificationToPB(BlockVerification{Header: BlockHeaderView{L3BlockSeq: 7, TrackIndexerID: &track},
+		VerifierSet: []string{"verifier-1", "verifier-2", "verifier-3"}})
+	fields := before.ProtoReflect().Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		if fd := fields.Get(i); fd.Number() >= 14 && before.ProtoReflect().Has(fd) {
+			t.Fatalf("a block marked before the switches carries %s", fd.FullName())
+		}
+	}
+	if n := proto.Size(before.GetHeader().GetTrack()); n != 0 {
+		t.Fatalf("indexer 0's track without a group key encodes %d bytes, want none", n)
+	}
+	if got, err := BlockVerificationFromPB(before); err != nil || got.EligibleRing != nil || got.RingPosition != 0 || got.Header.GroupKey != "" {
+		t.Fatalf("a pre-switch block decoded as %+v, %v", got, err)
+	}
+
+	const order = "block verification: eligible_ring and group_members must be sorted ascending without duplicates"
+	for name, tc := range map[string]struct {
+		mutate func(*pb.BlockVerification)
+		want   string
+	}{
+		"unsorted ring": {func(m *pb.BlockVerification) {
+			m.EligibleRing[0], m.EligibleRing[1] = m.EligibleRing[1], m.EligibleRing[0]
+		}, order},
+		"duplicate ring entry":    {func(m *pb.BlockVerification) { m.EligibleRing[1] = m.EligibleRing[0] }, order},
+		"unsorted group members":  {func(m *pb.BlockVerification) { m.GroupMembers = []string{"member-c", "member-b"} }, order},
+		"position past the ring":  {func(m *pb.BlockVerification) { m.RingPosition = 4 }, "block verification: ring_position 4 is outside an eligible ring of 4"},
+		"position without a ring": {func(m *pb.BlockVerification) { m.EligibleRing, m.RingPosition = nil, 1 }, "block verification: ring_position 1 is outside an eligible ring of 0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := BlockVerificationToPB(want)
+			tc.mutate(m)
+			if _, err := BlockVerificationFromPB(m); err == nil || err.Error() != tc.want {
+				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
 	}
