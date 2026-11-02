@@ -203,6 +203,80 @@ func (s TableRegistrySnapshot) Owner(inc TableIncarnation) uint64 {
 	return s.Params.SIIndexerID
 }
 
+// NetworkPool returns, sorted and without duplicates, the nodes of
+// purgeNodeSet (the arbiter's purge node set: every registered, non-evicted
+// SNode and verifier, every registered member among them) that are the
+// network pool as the registry view shows it (housegate spec 2026-10-14
+// §8.2): no si_indexers entry's SNode, and named nowhere in the view as a
+// current, past or Leaving member of a group, a purge member of an
+// incarnation or the node of a published checkpoint sequence. The view does
+// not carry the verifiers parameter, so a registered member that it names
+// nowhere yet, before it is first placed in a group, counts here; such a
+// member holds no hg_member_unsafe replica (plan S3-E1 contract §42.3).
+func (s TableRegistrySnapshot) NetworkPool(purgeNodeSet []string) []string {
+	named := map[string]bool{}
+	for _, e := range s.SIIndexers {
+		named[e.SNodeNodeID] = true
+	}
+	for _, g := range s.Groups {
+		for _, m := range g.Members {
+			named[m.NodeID] = true
+		}
+		for _, id := range g.PastMembers {
+			named[id] = true
+		}
+		for _, l := range g.Leaving {
+			named[l.NodeID] = true
+		}
+	}
+	for _, inc := range s.Incarnations {
+		for _, id := range inc.PurgeMembers {
+			named[id] = true
+		}
+	}
+	for _, seq := range s.MemberCheckpointSeqs {
+		named[seq.NodeID] = true
+	}
+	var pool []string
+	for _, id := range purgeNodeSet {
+		if id != "" && !named[id] {
+			pool = append(pool, id)
+		}
+	}
+	slices.Sort(pool)
+	return slices.Compact(pool)
+}
+
+// KnownKeeperReplica reports whether replica may hold a Keeper replica on the
+// path of inc's hg_unsafe and hg_member_unsafe tables (housegate spec
+// 2026-10-14 §8.2: the owner, a pool verifier or a current or past member;
+// §8.8): the owner's SNode, a node of pool (the network pool, NetworkPool of
+// the arbiter's purge node set), a current or past member of the group
+// G(Owner(inc), inc.DatabaseID) (a Leaving member, which keeps its replicas
+// until its release, is a past member too), or a node of inc.PurgeMembers.
+// Another owner's SNode and a member of another group are not known, though
+// the purge node set lists them. The owner's Keeper audit reports every
+// other replica.
+func (s TableRegistrySnapshot) KnownKeeperReplica(inc TableIncarnation, pool []string, replica string) bool {
+	if replica == "" {
+		return false
+	}
+	owner := s.Owner(inc)
+	if entry, ok := s.SIIndexer(owner); ok && entry.SNodeNodeID == replica {
+		return true
+	}
+	if slices.Contains(pool, replica) || slices.Contains(inc.PurgeMembers, replica) {
+		return true
+	}
+	group, ok := s.Group(owner, inc.DatabaseID)
+	if !ok {
+		return false
+	}
+	return slices.ContainsFunc(group.Members, func(m GroupMember) bool { return m.NodeID == replica }) ||
+		slices.Contains(group.PastMembers, replica) ||
+		slices.ContainsFunc(group.Leaving, func(l LeavingMember) bool { return l.NodeID == replica })
+}
+
 // ManifestOwner is the SI indexer a published manifest attributes tableKey to:
 // the port of arbiter's fsm.manifestTableOwnerLocked (fsm/reads_manifest.go).
 // Scanning the incarnations from the newest, the first of tableKey that is not

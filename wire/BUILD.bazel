@@ -44,6 +44,7 @@ go_test(
         "convert_test.go",
         "dispatch_from_test.go",
         "dispatch_table_set_test.go",
+        "known_keeper_replica_test.go",
         "legacy_command_golden_test.go",
         "manifest_owner_test.go",
         "registration_request_only_test.go",
