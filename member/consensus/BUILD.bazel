@@ -3,6 +3,8 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "consensus",
     srcs = [
+        "checkpoint.go",
+        "checkpoint_seq.go",
         "config.go",
         "quiescence.go",
         "unsafe_reconciler.go",
@@ -11,6 +13,7 @@ go_library(
     importpath = "github.com/sentioxyz/arbiter-core/member/consensus",
     visibility = ["//visibility:public"],
     deps = [
+        "//:arbiter-core",
         "//authority",
         "//dataplane",
         "//dataplane/ddl",
@@ -30,10 +33,13 @@ go_library(
 go_test(
     name = "consensus_test",
     srcs = [
+        "checkpoint_seq_test.go",
+        "checkpoint_test.go",
         "fakes_test.go",
         "policy_readiness_test.go",
         "quiescence_regression_test.go",
         "quiescence_test.go",
+        "stage3_fixtures_test.go",
         "unsafe_reconciler_test.go",
         "verify_role_test.go",
     ],
@@ -45,6 +51,7 @@ go_test(
         "//dataplane",
         "//dataplane/ddl",
         "//dataplane/evidence",
+        "//member/install",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
         "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
