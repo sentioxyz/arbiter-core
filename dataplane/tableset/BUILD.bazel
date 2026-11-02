@@ -19,6 +19,8 @@ go_library(
 go_test(
     name = "tableset_test",
     srcs = [
+        "keeper_scope_ch_test.go",
+        "keeper_scope_test.go",
         "owner_ch_test.go",
         "owner_test.go",
         "reconciler_ch_test.go",
