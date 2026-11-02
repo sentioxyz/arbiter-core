@@ -112,11 +112,11 @@ func checkScannerRegistry(s scanner, registry dataplane.RegistryView) error {
 		return nil
 	}
 	switch {
-	case registry != nil && ch.registry == nil:
+	case registry != nil && ch.Registry() == nil:
 		return errors.New("verifier: Deps.Registry is set but Deps.Scanner follows no table registry; build it with NewRegistryScanner(cfg, conn, registry)")
-	case registry == nil && ch.registry != nil:
+	case registry == nil && ch.Registry() != nil:
 		return errors.New("verifier: Deps.Scanner follows a table registry but Deps.Registry is nil")
-	case registry != nil && !sameRegistryView(ch.registry, registry):
+	case registry != nil && !sameRegistryView(ch.Registry(), registry):
 		return errors.New("verifier: Deps.Scanner follows a different table registry than Deps.Registry")
 	}
 	return nil

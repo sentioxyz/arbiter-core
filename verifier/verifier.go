@@ -3,12 +3,10 @@ package verifier
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -20,16 +18,16 @@ import (
 	"github.com/housegate/housegate/pkg/replay"
 	"github.com/housegate/housegate/pkg/replay/snapshotquery"
 
-	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
+	"github.com/sentioxyz/arbiter-core/dataplane/evidence"
 	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
-type replayCore interface {
-	Verify(ctx context.Context, job replay.ReplayJob) (replay.ReplayAttestation, error)
-}
+// replayCore and scanner are the evidence handler's collaborators
+// (dataplane/evidence), which the stage-3 member's verify role shares.
+type replayCore = evidence.ReplayCore
 
 // SnapshotQueryCore is deliberately separate from replayCore. Query replay has
 // a different receipt, a protected invocation reference, and no legacy fallback.
@@ -45,9 +43,7 @@ type SnapshotQueryReferenceProvider interface {
 	SnapshotQueryReference(ctx context.Context, job replay.SnapshotQueryJob) (string, error)
 }
 
-type scanner interface {
-	Scan(ctx context.Context, parts []arbiter.PartRef) ([]arbiter.PartScan, error)
-}
+type scanner = evidence.Scanner
 
 type Deps struct {
 	Client                 *dataplane.Client
@@ -75,9 +71,10 @@ type Role struct {
 	tables *tableset.Reconciler
 	// genesisID is the genesis snapshot id signed messages bind.
 	genesisID string
-	// seqMu guards lastSeq, the last registration_seq this process reserved.
-	seqMu   sync.Mutex
-	lastSeq uint64
+	// seq reserves registration_seq values (registration.json in StateDir).
+	seq *evidence.RegistrationSeq
+	// evidence answers replay jobs and scan requests.
+	evidence *evidence.Handler
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -104,7 +101,8 @@ func New(cfg Config, d Deps) (*Role, error) {
 			return nil, fmt.Errorf("verifier: %w", err)
 		}
 	}
-	r := &Role{cfg: cfg, d: d, priv: ed25519.NewKeyFromSeed(cfg.Ed25519Seed), genesisID: genesisID}
+	r := &Role{cfg: cfg, d: d, priv: ed25519.NewKeyFromSeed(cfg.Ed25519Seed), genesisID: genesisID,
+		seq: evidence.NewRegistrationSeq(cfg.StateDir)}
 	r.ensureFn = r.ensureProtocolTablesMode
 	if cfg.protocolTables != ddl.ModeOff {
 		tables, err := tableset.New(tableset.Config{
@@ -118,7 +116,22 @@ func New(cfg Config, d Deps) (*Role, error) {
 	} else if d.Registry != nil {
 		return nil, errors.New("verifier: following the table registry requires managed protocol tables")
 	}
+	handler, err := r.newEvidenceHandler()
+	if err != nil {
+		return nil, fmt.Errorf("verifier: %w", err)
+	}
+	r.evidence = handler
 	return r, nil
+}
+
+// newEvidenceHandler builds the role's evidence handler: its replay core and
+// scanner, and the add gate (requireAddedTablesReady) with its sentinel and
+// log line.
+func (r *Role) newEvidenceHandler() (*evidence.Handler, error) {
+	return evidence.NewHandler(evidence.Config{ReplicaID: r.cfg.ReplicaID, Ed25519Seed: r.cfg.Ed25519Seed}, evidence.Deps{
+		Client: r.d.Client, Replay: r.d.Replay, Scanner: r.d.Scanner,
+		TablesReady: r.requireAddedTablesReady, NotReady: ErrAddedTableNotReady, Logger: r.d.Logger,
+	})
 }
 
 func (r *Role) pinned() ddl.Pinned {
@@ -328,32 +341,37 @@ func (r *Role) reconcileProtocolTablesFrom(ctx context.Context, registryChanged 
 	}
 }
 
+// handleReplayJob delegates through a private adapter; only Verify sees the
+// original wire job. Role.Run delivers one synchronous callback per generation.
 func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {
-	job := wire.ReplayJobFromPB(m)
-	if err := r.requireAddedTablesReady(ctx, job); err != nil {
-		if !errors.Is(err, ErrAddedTableNotReady) {
-			return err // the context ended while waiting
-		}
-		r.d.Logger.Warn("table-set transition adds a table this verifier has not created; refusing to attest", "block", m.GetBlockSeq(), "err", err)
-		return err
-	}
-	att, err := r.d.Replay.Verify(withReplayMemoJob(ctx, m), job)
-	if err != nil {
-		r.d.Logger.Warn("replay verify failed; refusing to attest", "block", m.GetBlockSeq(), "err", err)
-		return err
-	}
-	err = r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewVerifierGatewayClient(conn).SubmitAttestation(ctx, wire.AttestationToPB(att))
-		return err
+	bound := &memoEvidenceCore{core: r.d.Replay, original: m}
+	handler, err := evidence.NewHandler(evidence.Config{ReplicaID: r.cfg.ReplicaID, Ed25519Seed: r.cfg.Ed25519Seed}, evidence.Deps{
+		Client: r.d.Client, Replay: bound, Scanner: r.d.Scanner,
+		TablesReady: r.requireAddedTablesReady, NotReady: ErrAddedTableNotReady, Logger: r.d.Logger,
 	})
 	if err != nil {
+		return err
+	}
+	err = handler.HandleReplayJob(ctx, m)
+	if bound.verified && err != nil {
 		switch status.Code(err) {
 		case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied:
 			forgetReplayMemoRun(ctx)
 		}
 	}
-	r.logSubmitFailure(ctx, "replay attestation", m.GetBlockSeq(), err, "receipt_hash", att.ReceiptHash)
 	return err
+}
+
+type memoEvidenceCore struct {
+	core     replayCore
+	original *pb.ReplayJob
+	verified bool
+}
+
+func (c *memoEvidenceCore) Verify(ctx context.Context, job replay.ReplayJob) (replay.ReplayAttestation, error) {
+	att, err := c.core.Verify(withReplayMemoJob(ctx, c.original), job)
+	c.verified = err == nil
+	return att, err
 }
 
 func (r *Role) handleSnapshotQueryJob(ctx context.Context, m *pb.SnapshotQueryJob) error {
@@ -420,26 +438,10 @@ func verifySnapshotQueryEnvelope(envelope replay.SnapshotQueryEnvelope) (string,
 	return snapshotquery.VerifyEnvelope(envelope)
 }
 
+// handleScanRequest answers a byte-side scan request through the evidence
+// handler.
 func (r *Role) handleScanRequest(ctx context.Context, m *pb.ByteSideScanRequest) error {
-	parts := wire.PartRefsFromPB(m.GetParts())
-	scans, err := r.d.Scanner.Scan(ctx, parts)
-	if err != nil {
-		r.d.Logger.Warn("byte-side scan failed; refusing to attest", "block", m.GetBlockSeq(), "err", err)
-		return err
-	}
-	msg := arbiter.ByteSideScanMsg{ReplicaID: r.cfg.ReplicaID, BlockSeq: m.GetBlockSeq(), Parts: scans}
-	hash, err := replay.CanonicalDigest(arbiter.DomainByteSideScan, msg.Body())
-	if err != nil {
-		return fmt.Errorf("scan hash: %w", err)
-	}
-	msg.ScanHash = hash
-	msg.Signature = hex.EncodeToString(ed25519.Sign(r.priv, []byte(hash)))
-	err = r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
-		_, err := pb.NewVerifierGatewayClient(conn).SubmitByteSideScan(ctx, wire.ScanToPB(msg))
-		return err
-	})
-	r.logSubmitFailure(ctx, "byte-side scan", m.GetBlockSeq(), err, "scan_hash", hash, "parts", len(scans))
-	return err
+	return r.evidence.HandleScanRequest(ctx, m)
 }
 
 // logSubmitFailure reports evidence the arbiter did not record. The gateway
