@@ -36,17 +36,17 @@ func readinessSnapshot() wire.TableRegistrySnapshot {
 }
 
 // TestPlanReadinessAnnouncesOnlySyncedGroups: a group is announced, at its
-// current generation, once every Pending, Active or Retiring live table of
-// its database has a synced local replica at that incarnation's Keeper path;
-// a ready member, another member's group and a group without such a table
-// are never announced.
+// current generation, once every Pending or Active live table of its
+// database has a synced local replica at that incarnation's Keeper path; a
+// ready member, another member's group and a group without such a table are
+// never announced. A Retiring table is never waited for: the reconciler
+// creates no hg_member_unsafe replica from Retiring on (spec §8.8).
 func TestPlanReadinessAnnouncesOnlySyncedGroups(t *testing.T) {
 	snap := readinessSnapshot()
 	paths := ReplicaPaths(snap, fixtureNode, 0)
 	wantPaths := map[string]string{
 		"dex__pools": "/sentio/0/unsafe_inc/dex__pools/7",
 		"dex__swaps": "/sentio/0/unsafe/dex__swaps",
-		"nft__mints": "/sentio/0/unsafe/nft__mints",
 		"nft__drops": "/sentio/0/unsafe/nft__drops",
 	}
 	if !reflect.DeepEqual(paths, wantPaths) {
@@ -67,5 +67,29 @@ func TestPlanReadinessAnnouncesOnlySyncedGroups(t *testing.T) {
 	}
 	if got := PlanReadiness(snap, "member-c", LocalReplicas{"other__t": true}); !reflect.DeepEqual(got, []arbiter.MemberReadyBody{{NodeID: "member-c", OwnerIndexerID: 0, DatabaseID: "other", Generation: 1}}) {
 		t.Fatalf("member-c's plan = %v, want only its own waiting group", got)
+	}
+}
+
+// TestPlanReadinessDoesNotWaitForARetiringTable: a member that joins while a
+// table of its group's database is Retiring holds no replica of it (the
+// reconciler never creates one from Retiring on, spec §8.8), so readiness
+// waits only for the Pending and Active tables: nft is announced with
+// nft.mints (Retiring) absent once nft.drops (Pending) is synced, and the
+// Retiring table has no replica path to check.
+func TestPlanReadinessDoesNotWaitForARetiringTable(t *testing.T) {
+	snap := readinessSnapshot()
+	if _, ok := ReplicaPaths(snap, fixtureNode, 0)["nft__mints"]; ok {
+		t.Fatalf("ReplicaPaths lists the Retiring nft__mints; want only Pending and Active tables")
+	}
+	got := PlanReadiness(snap, fixtureNode, LocalReplicas{"dex__pools": true, "dex__swaps": true, "nft__drops": true})
+	want := []arbiter.MemberReadyBody{
+		{NodeID: fixtureNode, OwnerIndexerID: 0, DatabaseID: "dex", Generation: 3},
+		{NodeID: fixtureNode, OwnerIndexerID: 0, DatabaseID: "nft", Generation: 2},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("with the Retiring nft__mints absent, PlanReadiness = %v, want %v", got, want)
+	}
+	if got := PlanReadiness(snap, fixtureNode, LocalReplicas{"dex__pools": true, "dex__swaps": true, "nft__mints": true}); len(got) != 1 || got[0].DatabaseID != "dex" {
+		t.Fatalf("with only the Retiring nft__mints synced, PlanReadiness = %v, want dex alone (nft.drops is not synced)", got)
 	}
 }

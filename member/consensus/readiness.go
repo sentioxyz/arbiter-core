@@ -30,14 +30,16 @@ type LocalReplicas map[string]bool
 
 // readinessTables lists the incarnations whose hg_member_unsafe replicas a
 // member of g holds before it reports ready: the live incarnation of every
-// table of g's database owned by g's owner, when it is Pending, Active or
-// Retiring. A Purging incarnation's replica is the one the reconciler drops
-// once quiet (spec §8.8), so it never holds readiness back.
+// table of g's database owned by g's owner, when it is Pending or Active.
+// The reconciler creates no hg_member_unsafe replica from Retiring on and
+// drops a Purging incarnation's once quiet (spec §8.8), so a member that
+// joins while a table is Retiring or Purging holds none and neither holds
+// readiness back.
 func readinessTables(snap wire.TableRegistrySnapshot, g wire.DatabaseGroup) []wire.TableIncarnation {
 	var out []wire.TableIncarnation
 	for _, live := range liveTablesOf(snap, g.OwnerIndexerID, g.DatabaseID) {
 		switch live.Status {
-		case wire.TableStatusPending, wire.TableStatusActive, wire.TableStatusRetiring:
+		case wire.TableStatusPending, wire.TableStatusActive:
 			out = append(out, live)
 		}
 	}
@@ -59,8 +61,9 @@ func awaitingReadiness(snap wire.TableRegistrySnapshot, nodeID string) []wire.Da
 // PlanReadiness plans nodeID's MemberReady messages (spec §6.4): one body per
 // group that names the node as a current member that is not Ready(), at the
 // group's current generation, once the live incarnation of every table of
-// the group's database owned by its owner that is Pending, Active or
-// Retiring (at least one) has an active, synced local replica. local comes
+// the group's database owned by its owner that is Pending or Active (at
+// least one; a Retiring table is never waited for) has an active, synced
+// local replica. local comes
 // from ReadLocalReplicas over ReplicaPaths of the same snapshot, which checks
 // each replica's Keeper path, so a replica of another incarnation of the same
 // name never counts.
