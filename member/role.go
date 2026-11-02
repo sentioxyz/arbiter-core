@@ -102,6 +102,9 @@ type parts struct {
 	installer installer
 	shadow    shadowVerifier // nil unless Config.Shadow
 	follower  *manifestfeed.Follower
+	// bootNonce is startup step (7)'s boot nonce; the consensus mode's
+	// verify role names its replay scratch with it (plan S3-E1 Task 63).
+	bootNonce string
 }
 
 // Role is one si-member. New validates; Run starts it and returns when ctx
@@ -145,6 +148,10 @@ type Role struct {
 
 	// serving is nil without Config.Serve (Plan S3-C4 contract §30.6).
 	serving *serving
+
+	// mode is the member consensus mode, nil without Config.Consensus (plan
+	// S3-E1 K66).
+	mode consensusMode
 }
 
 // New validates cfg and d. It opens nothing and writes nothing.
@@ -166,14 +173,18 @@ func New(cfg Config, d Deps) (*Role, error) {
 	}
 	peers := slices.Clone(cfg.Peers)
 	slices.SortFunc(peers, func(a, b Peer) int { return cmp.Compare(a.IndexerID, b.IndexerID) })
-	sv, err := newServing(cfg, d)
+	mode, err := newConsensusMode(cfg, d, logger, now, peers)
+	if err != nil {
+		return nil, err
+	}
+	sv, err := newServing(cfg, d, mode)
 	if err != nil {
 		return nil, err
 	}
 	return &Role{
 		cfg: cfg, d: d, log: logger.With("role", "si-member", "node_id", cfg.NodeID), now: now, env: realSeams(), peers: peers,
 		published: map[uint64]replay.TrackFrontier{}, behindSince: map[uint64]time.Time{},
-		serving: sv,
+		serving: sv, mode: mode,
 	}, nil
 }
 
@@ -247,8 +258,15 @@ func (r *Role) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("member: read the purge node set: %w", err)
 	}
-	if err := copyset.CheckNodeIDUnused(snap, purge, r.cfg.NodeID); err != nil {
+	if err := copyset.CheckNodeIDUnused(snap, r.nodeIDCheckSet(purge), r.cfg.NodeID); err != nil {
 		return err
+	}
+	for _, g := range snap.Groups {
+		for _, m := range g.Members {
+			if err := r.checkGovernedHost(g.OwnerIndexerID, g.DatabaseID, m.NodeID, m.HostIndexerID); err != nil {
+				return err
+			}
+		}
 	}
 	for _, p := range r.peers {
 		if _, ok := snap.SIIndexer(p.IndexerID); !ok {
@@ -361,8 +379,13 @@ func (r *Role) build(store *manifestfeed.Store, bootNonce string) (*parts, error
 	pulls := make(map[uint64]sources.Source, len(r.peers))
 	for _, p := range r.peers {
 		// The P2 source order (contract §22.3): owner pull, peer unsafe
-		// pulls, restore.
-		list := []sources.Source{sources.NewOwnerPull(r.d.Conn, p.Collection, p.SafeDatabase)}
+		// pulls, restore; the consensus mode puts the member's own
+		// hg_member_unsafe replica first (plan S3-E1 contract §42.3).
+		var list []sources.Source
+		if r.mode != nil {
+			list = append(list, sources.NewMemberUnsafeHardlink(r.d.Conn, r.cfg.Pinned.MemberUnsafeDB))
+		}
+		list = append(list, sources.NewOwnerPull(r.d.Conn, p.Collection, p.SafeDatabase))
 		for _, name := range r.cfg.PoolCollections {
 			list = append(list, sources.NewPeerUnsafePull(r.d.Conn, name))
 		}
@@ -397,7 +420,7 @@ func (r *Role) build(store *manifestfeed.Store, bootNonce string) (*parts, error
 		return nil, fmt.Errorf("member: installer: %w", err)
 	}
 	r.attachServing(inst)
-	p := &parts{copies: copies, installer: inst}
+	p := &parts{copies: copies, installer: inst, bootNonce: bootNonce}
 	if r.cfg.Shadow {
 		v, err := r.env.newShadow(shadow.Config{
 			NodeID: r.cfg.NodeID, BootNonce: bootNonce, NetworkID: r.cfg.NetworkID, StateDir: r.cfg.StateDir,
@@ -435,7 +458,7 @@ func (r *Role) runParts(parent context.Context, p *parts, store *manifestfeed.St
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	failed := make(chan error, 7)
+	failed := make(chan error, 8)
 	var wg sync.WaitGroup
 	start := func(name string, run func(context.Context) error) {
 		wg.Add(1)
@@ -465,6 +488,9 @@ func (r *Role) runParts(parent context.Context, p *parts, store *manifestfeed.St
 	})
 	start("self-audit", func(ctx context.Context) error { return r.selfAudit(ctx, p) })
 	start("serving", r.runServing)
+	if r.mode != nil {
+		start("consensus", func(ctx context.Context) error { return r.mode.Run(ctx, store, p.installer, p.bootNonce) })
+	}
 	if p.shadow != nil {
 		start("shadow", p.shadow.Run)
 	}

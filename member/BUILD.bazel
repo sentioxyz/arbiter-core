@@ -4,6 +4,7 @@ go_library(
     name = "member",
     srcs = [
         "config.go",
+        "consensus_mode.go",
         "lock.go",
         "role.go",
         "serving.go",
@@ -16,6 +17,7 @@ go_library(
         "//dataplane",
         "//dataplane/chrestart",
         "//dataplane/ddl",
+        "//member/consensus",
         "//member/copyset",
         "//member/install",
         "//member/manifestfeed",
@@ -31,6 +33,7 @@ go_library(
 go_test(
     name = "member_test",
     srcs = [
+        "consensus_mode_test.go",
         "fake_arbiter_test.go",
         "role_test.go",
         "serving_test.go",
@@ -40,10 +43,12 @@ go_test(
     embed = [":member"],
     deps = [
         "//:arbiter-core",
+        "//authority/authoritytest",
         "//dataplane",
         "//dataplane/chrestart",
         "//dataplane/dastore",
         "//dataplane/ddl",
+        "//member/consensus",
         "//member/copyset",
         "//member/install",
         "//member/manifestfeed",

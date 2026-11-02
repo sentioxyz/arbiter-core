@@ -15,6 +15,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//dataplane",
+        "//member/consensus",
         "//wire",
         "@com_github_prometheus_client_golang//prometheus",
         "@housegate//pkg/replay",
@@ -27,6 +28,7 @@ go_test(
     srcs = [
         "client_test.go",
         "conditions_test.go",
+        "consensus_status_test.go",
         "fakes_test.go",
         "handler_test.go",
         "lease_test.go",
@@ -38,6 +40,7 @@ go_test(
     deps = [
         "//dataplane/chtest",
         "//dataplane/ddl",
+        "//member/consensus",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
         "@com_github_prometheus_client_golang//prometheus",

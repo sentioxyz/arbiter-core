@@ -10,6 +10,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay"
 	"github.com/housegate/housegate/pkg/sitable"
 
+	"github.com/sentioxyz/arbiter-core/member/consensus"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -63,6 +64,9 @@ func Reasons() []Reason {
 type ServingView struct {
 	NodeID    string         `json:"node_id"`
 	Databases []DatabaseView `json:"databases"`
+	// Consensus is the member consensus mode's status (plan S3-E1 contract
+	// §42.3): mode off without member.Config.Consensus.
+	Consensus consensus.Status `json:"consensus"`
 }
 
 // DatabaseView is one database of one owner.

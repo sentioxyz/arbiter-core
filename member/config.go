@@ -13,6 +13,7 @@ import (
 
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
+	"github.com/sentioxyz/arbiter-core/member/consensus"
 	"github.com/sentioxyz/arbiter-core/member/install"
 	"github.com/sentioxyz/arbiter-core/member/serve"
 	"github.com/sentioxyz/arbiter-core/member/sources"
@@ -106,6 +107,13 @@ type Config struct {
 	// Serve configures the serving endpoint (Plan S3-C4 contract §30); nil
 	// means no endpoint and P2's installer, byte for byte.
 	Serve *serve.Config
+	// Consensus configures the member consensus mode (housegate spec
+	// 2026-10-14 §8.1-§8.3, §8.6, §8.8, §9.1; plan S3-E1 K66): the VERIFIER
+	// registration and verify role, readiness, checkpoints, purge reports and
+	// the hg_member_unsafe hard-link source. Its NodeID, NetworkID,
+	// GenesisSnapshotID and StateDir must be the member's. nil keeps the P2/P3
+	// member byte for byte.
+	Consensus *consensus.Config
 }
 
 // Deps are the role's connections (contract §23.1). The role opens none of
