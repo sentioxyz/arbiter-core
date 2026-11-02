@@ -81,6 +81,14 @@ type TableIncarnation struct {
 	// 2026-10-10 D4); nil for one recorded before the signed-claims
 	// activation, whose owner is the founding indexer (see Owner).
 	OwnerIndexerID *uint64
+	// ScopedKeeperPath marks a chain incarnation recorded after the stage-3
+	// purge switch (housegate spec 2026-10-14 §8.8): its hg_unsafe and
+	// hg_member_unsafe replicas use /sentio/<shard>/unsafe_inc/<db__table>/<seq>.
+	ScopedKeeperPath bool
+	// PurgeMembers lists, ascending, the nodes that were members of the
+	// incarnation's group at any generation since it was recorded (plan S3-E1
+	// K60); each must report its purge. nil before the placement switch.
+	PurgeMembers []string
 }
 
 // Key is the logical table id <database>.<table>.
@@ -128,6 +136,16 @@ type TableRegistrySnapshot struct {
 	// released with rejected parts not yet cleaned. nil before the tracks
 	// activation and while none is. Every committed change bumps Version.
 	QuarantinedIndexers []uint64
+	// Groups are the database groups sorted by (owner, database) (housegate
+	// spec 2026-10-14 §6.2); nil before the placement switch.
+	Groups []DatabaseGroup
+	// MemberCheckpointSeqs are the highest accepted checkpoint sequences,
+	// sorted by (node, owner) (spec §9.1); nil before the checkpoints switch.
+	MemberCheckpointSeqs []MemberCheckpointSeq
+	// Stage3 is the committed stage-3 parameter, so data-plane nodes learn the
+	// switches through the registry follower (plan S3-E1 K64); nil before the
+	// v21 activation. Every committed change bumps Version.
+	Stage3 *arbiter.Stage3Params
 }
 
 // Live mirrors arbiter's TableRegistryView.Live: the newest incarnation of key
@@ -254,7 +272,10 @@ func quarantinedFromPB(m *pb.TableRegistrySnapshot, entries []arbiter.SIIndexerE
 
 // TableRegistrySnapshotFromPB decodes a snapshot. Every status and origin must
 // be a known, specified value and every retire reason a known value; the
-// incarnations must be numbered 1..n in order.
+// incarnations must be numbered 1..n in order. The stage-3 view must be as the
+// arbiter keeps it (plan S3-E1 contract §41): sorted purge members, groups
+// and checkpoint sequences, every group owned by an enrolled indexer, every
+// member class and exclusion reason known, and a valid stage3 parameter.
 func TableRegistrySnapshotFromPB(m *pb.TableRegistrySnapshot) (TableRegistrySnapshot, error) {
 	if m == nil {
 		return TableRegistrySnapshot{}, fmt.Errorf("table registry snapshot is required")
@@ -284,6 +305,9 @@ func TableRegistrySnapshotFromPB(m *pb.TableRegistrySnapshot) (TableRegistrySnap
 		if inc.GetSeq() != uint64(i)+1 {
 			return TableRegistrySnapshot{}, fmt.Errorf("table registry snapshot: incarnation %d has seq %d", i+1, inc.GetSeq())
 		}
+		if !ascendingUnique(inc.GetPurgeMembers()) {
+			return TableRegistrySnapshot{}, fmt.Errorf("table registry snapshot: incarnation %d: purge_members must be sorted ascending without duplicates", inc.GetSeq())
+		}
 		owner := cloneUint64(inc.OwnerIndexerId)
 		if owner != nil {
 			if _, ok := out.SIIndexer(*owner); !ok {
@@ -312,9 +336,24 @@ func TableRegistrySnapshotFromPB(m *pb.TableRegistrySnapshot) (TableRegistrySnap
 			RefusedReason: inc.GetRefusedReason(), RefusedCode: inc.GetRefusedCode(),
 			Deleted: L2EventRefFromPB(inc.GetDeleted()), RetireReason: reason,
 			AddBlockSeq: inc.GetAddBlockSeq(), RetireBlockSeq: inc.GetRetireBlockSeq(),
-			PurgedBy:       mapSlice(inc.GetPurgedBy(), func(id string) string { return id }),
-			OwnerIndexerID: owner,
+			PurgedBy:         mapSlice(inc.GetPurgedBy(), func(id string) string { return id }),
+			OwnerIndexerID:   owner,
+			ScopedKeeperPath: inc.GetScopedKeeperPath(),
+			PurgeMembers:     mapSlice(inc.GetPurgeMembers(), func(id string) string { return id }),
 		})
+	}
+	enrolled := func(id uint64) bool { _, ok := out.SIIndexer(id); return ok }
+	if out.Groups, err = groupsFromPB(m, enrolled); err != nil {
+		return TableRegistrySnapshot{}, err
+	}
+	if out.MemberCheckpointSeqs, err = memberCheckpointSeqsFromPB(m); err != nil {
+		return TableRegistrySnapshot{}, err
+	}
+	if p := Stage3ParamsFromPB(m.GetStage3()); p != nil {
+		if err := p.Validate(); err != nil {
+			return TableRegistrySnapshot{}, fmt.Errorf("table registry snapshot: %w", err)
+		}
+		out.Stage3 = p
 	}
 	return out, nil
 }
@@ -327,10 +366,13 @@ func TableRegistrySnapshotToPB(s TableRegistrySnapshot) *pb.TableRegistrySnapsho
 		Params: TableRegistryParamsToPB(&params), Version: s.Version, Seeded: s.Seeded,
 		Cursor: &pb.TableRegistryCursor{BlockNumber: s.Cursor.BlockNumber, BlockHash: s.Cursor.BlockHash,
 			LogIndex: s.Cursor.LogIndex, BlockComplete: s.Cursor.BlockComplete},
-		ClientLanes:         ClientLaneParamsToPB(s.ClientLanes),
-		SiIndexers:          SIIndexerEntriesToPB(s.SIIndexers),
-		SeededIndexers:      mapSlice(s.SeededIndexers, func(id uint64) uint64 { return id }),
-		QuarantinedIndexers: mapSlice(s.QuarantinedIndexers, func(id uint64) uint64 { return id }),
+		ClientLanes:          ClientLaneParamsToPB(s.ClientLanes),
+		SiIndexers:           SIIndexerEntriesToPB(s.SIIndexers),
+		SeededIndexers:       mapSlice(s.SeededIndexers, func(id uint64) uint64 { return id }),
+		QuarantinedIndexers:  mapSlice(s.QuarantinedIndexers, func(id uint64) uint64 { return id }),
+		Groups:               groupsToPB(s.Groups),
+		MemberCheckpointSeqs: memberCheckpointSeqsToPB(s.MemberCheckpointSeqs),
+		Stage3:               Stage3ParamsToPB(s.Stage3),
 	}
 	for _, inc := range s.Incarnations {
 		out.Incarnations = append(out.Incarnations, &pb.TableIncarnation{
@@ -341,8 +383,10 @@ func TableRegistrySnapshotToPB(s TableRegistrySnapshot) *pb.TableRegistrySnapsho
 			RefusedReason: inc.RefusedReason, RefusedCode: inc.RefusedCode,
 			Deleted: L2EventRefToPB(inc.Deleted), RetireReason: pb.TableRetireReason(inc.RetireReason),
 			AddBlockSeq: inc.AddBlockSeq, RetireBlockSeq: inc.RetireBlockSeq,
-			PurgedBy:       mapSlice(inc.PurgedBy, func(id string) string { return id }),
-			OwnerIndexerId: cloneUint64(inc.OwnerIndexerID),
+			PurgedBy:         mapSlice(inc.PurgedBy, func(id string) string { return id }),
+			OwnerIndexerId:   cloneUint64(inc.OwnerIndexerID),
+			ScopedKeeperPath: inc.ScopedKeeperPath,
+			PurgeMembers:     mapSlice(inc.PurgeMembers, func(id string) string { return id }),
 		})
 	}
 	return out
