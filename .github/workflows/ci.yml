@@ -112,6 +112,7 @@ jobs:
             //dataplane/chtest:chtest_test \
             //dataplane/ddl:ddl_test \
             //dataplane/tableset:tableset_test \
+            //member/consensus:consensus_test \
             //member/copyset:copyset_test \
             //member/install:install_test \
             //member/serve:serve_test \
