@@ -38,7 +38,9 @@ type TableInstallState struct {
 // only when it is a copy of the live incarnation of its table owned by owner
 // in snap (a copy of an earlier incarnation of the same name installs nothing
 // of the live one). Its reason, in this order: foreign or diverged as the
-// journal marks it; audit_pending while the installer's audit is not clean
+// journal marks it; not_installed while its install pass is changing it
+// before the journal write (its bytes may already be a newer manifest's);
+// audit_pending while the installer's audit is not clean
 // (an audit completed since the start or the last ClickHouse restart and no
 // copy awaits a repair, spec §8.7), so a checkpoint never claims a copy the
 // last audit did not see clean; then, for a copy whose journal is not at the
@@ -57,6 +59,8 @@ func InstallStateOf(snap wire.TableRegistrySnapshot, owner uint64, j install.Own
 			reason = arbiter.ExclusionForeign
 		case t.Diverged:
 			reason = arbiter.ExclusionDiverged
+		case t.Installing:
+			reason = arbiter.ExclusionNotInstalled
 		case !stats.AuditClean:
 			reason = arbiter.ExclusionAuditPending
 		case t.SnapshotID != j.SnapshotID || t.Entry != j.Entry:

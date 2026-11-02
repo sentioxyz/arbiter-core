@@ -133,3 +133,28 @@ func TestPlanCheckpointExcludesTablesWithClosedReasons(t *testing.T) {
 		}
 	}
 }
+
+// TestPlanCheckpointExcludesACopyWhileItsInstallCommits: a copy the installer
+// reports Installing (its pass changed it but has not written the journal
+// yet) may already hold bytes of a newer manifest than the journal names, so
+// it is excluded as not_installed even with a clean audit and the journal at
+// the checkpoint's manifest; once it is no longer Installing it counts again.
+func TestPlanCheckpointExcludesACopyWhileItsInstallCommits(t *testing.T) {
+	snap := fixtureSnapshot(fixtureStage3("checkpoints"), []wire.DatabaseGroup{
+		fixtureGroup(0, "dex", 3, fixtureMember(fixtureNode, 1, 1, wire.MemberClassCaughtUp)),
+	}, fixtureInc(1, "dex", "a", 0, wire.TableStatusActive), fixtureInc(2, "dex", "b", 0, wire.TableStatusActive))
+	journal := install.OwnerJournal{SnapshotID: "0xsnap", Entry: fixtureEntry(0, 90, 40)}
+	a := install.TableState{Owner: 0, TableKey: "dex.a", IncarnationSeq: 1, SnapshotID: "0xsnap", Entry: journal.Entry}
+	b := install.TableState{Owner: 0, TableKey: "dex.b", IncarnationSeq: 2, SnapshotID: "0xsnap", Entry: journal.Entry}
+	b.Installing = true
+	cp, ok := PlanCheckpoint(snap, fixtureNode, 0, InstallStateOf(snap, 0, journal, []install.TableState{a, b}, install.Stats{AuditClean: true}))
+	want := []arbiter.ExcludedTable{{TableID: "dex.b", Reason: arbiter.ExclusionNotInstalled}}
+	if !ok || len(cp.Groups) != 1 || !reflect.DeepEqual(cp.Groups[0].Excluded, want) {
+		t.Fatalf("PlanCheckpoint = %+v, %v; want dex.b excluded as not_installed while it installs", cp, ok)
+	}
+	b.Installing = false
+	cp, ok = PlanCheckpoint(snap, fixtureNode, 0, InstallStateOf(snap, 0, journal, []install.TableState{a, b}, install.Stats{AuditClean: true}))
+	if !ok || len(cp.Groups) != 1 || len(cp.Groups[0].Excluded) != 0 {
+		t.Fatalf("PlanCheckpoint = %+v, %v; want nothing excluded once the install wrote its journal", cp, ok)
+	}
+}

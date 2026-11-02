@@ -707,3 +707,42 @@ func TestInstallsPauseAboveTheDiskBudget(t *testing.T) {
 		t.Fatalf("stats = %+v, want installs running at %d of %d bytes under the default ratio", s, used, budget)
 	}
 }
+
+// TestTablesReportACopyInstallingFromItsFirstAttachToTheJournalWrite: between
+// a pass's first change of a copy and the owner's journal write, the copy's
+// bytes may already differ from the manifest the journal still names, so
+// Tables reports it Installing (the member consensus mode excludes it from a
+// checkpoint, plan S3-E1 Task 63 review); after the journal write, and after a
+// pass that stopped and left the copy Diverged, it is no longer Installing.
+func TestTablesReportACopyInstallingFromItsFirstAttachToTheJournalWrite(t *testing.T) {
+	f := newFixture(t, requireCH(t))
+	c := f.table(0, "dex.swaps", 3, false)
+	f.setSources(0, f.source("owner_pull", f.pull(1)))
+	var inst *Installer
+	var during []TableState
+	var stop error
+	inst = f.newInstaller(func(_ *Config, d *Deps) {
+		d.AfterAttach = func(string, string) error {
+			during = inst.Tables(0)
+			return stop
+		}
+	})
+	f.start(inst)
+	f.promote(c, row{"", 1})
+	f.mustApply(inst, f.update("s1", 10, c))
+	if len(during) != 1 || !during[0].Installing {
+		t.Fatalf("Tables(0) after the attach and before the journal write = %+v, want the copy Installing", during)
+	}
+	if got := inst.Tables(0); len(got) != 1 || got[0].Installing || got[0].SnapshotID != "s1" {
+		t.Fatalf("Tables(0) after the journal write = %+v, want the copy at s1 and not Installing", got)
+	}
+
+	stop = errors.New("stopped after the attach")
+	f.promote(c, row{"", 2})
+	if err := inst.Apply(context.Background(), f.update("s2", 11, c)); !errors.Is(err, stop) {
+		t.Fatalf("Apply = %v, want the injected stop", err)
+	}
+	if got := inst.Tables(0); len(got) != 1 || got[0].Installing || !got[0].Diverged {
+		t.Fatalf("Tables(0) after the stopped pass = %+v, want the copy Diverged and not Installing", got)
+	}
+}
