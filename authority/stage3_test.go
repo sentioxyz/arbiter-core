@@ -2,10 +2,15 @@ package authority
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core"
 )
@@ -263,5 +268,413 @@ func TestNormalizeSortsFailureDomainsAndChecksThemAgainstSIIndexers(t *testing.T
 	b, errB := ConsensusParamsUpdateHash(empty)
 	if errA != nil || errB != nil || a == b {
 		t.Fatalf("stage3 is not bound by the update hash: %s, %s (%v, %v)", a, b, errA, errB)
+	}
+}
+
+// stage3TestMessages are one value of each stage-3 message for the internal
+// tests; the consent and the checkpoint name the test authority key as their
+// signer.
+func stage3TestMessages(s *Signer) (arbiter.RebalanceGroupCommand, arbiter.ReselectVerifiersCommand, arbiter.MarkMemberLaggingCommand, GroupMemberConsentStatement, arbiter.MemberCheckpoint) {
+	return arbiter.RebalanceGroupCommand{DatabaseID: "dex", ExpectedGeneration: 1, Add: []string{"member-c"}, Remove: []string{"member-b"}, NetworkFill: true},
+		arbiter.ReselectVerifiersCommand{L3BlockSeq: 100, ExpectedSet: []string{"member-b", "verifier-1", "verifier-2"}},
+		arbiter.MarkMemberLaggingCommand{NodeID: "member-b", DatabaseID: "dex", ObservedEntry: replay.TrackFrontier{SafeBlockSeq: 90, AppliedPromotionSeq: 40}},
+		GroupMemberConsentStatement{NetworkID: "devnet2", GenesisSnapshotID: "0xgenesis", HostIndexerID: 1, NodeID: "member-b",
+			Ed25519Pubkey: bytes.Repeat([]byte{0x0b}, 32), ReplicaSigner: s.Address()},
+		arbiter.MemberCheckpoint{NodeID: "member-b", CheckpointSeq: 1, Groups: []arbiter.CheckpointGroup{{DatabaseID: "dex", GroupGeneration: 1}},
+			SnapshotID: "0xsnap", Entry: replay.TrackFrontier{SafeBlockSeq: 90, AppliedPromotionSeq: 40}}
+}
+
+// TestStage3TokensDoNotCrossPurposes: each stage-3 ES256K message accepts
+// only its own token. Its own hash signed under any other purpose (stage-3 or
+// earlier, with or without a context) is refused as the wrong purpose; each
+// real token verifies as its own message and as no other; an authority token
+// verifies only in its exact consensus context; a member message only in its
+// network context; and a MemberReady signature and a verifier message
+// signature of the same ed25519 key never stand for each other (plan S3-E1
+// K63).
+func TestStage3TokensDoNotCrossPurposes(t *testing.T) {
+	s, v := newTestPair(t)
+	ctx := testTracksContext()
+	msgCtx := MessageContext{NetworkID: ctx.NetworkID, GenesisSnapshotID: ctx.GenesisSnapshotID}
+	rebalance, reselect, lagging, consent, checkpoint := stage3TestMessages(s)
+	hash := func(h string, err error) string {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	type message struct {
+		name, purpose, hash string
+		contextBound        bool
+		verify              func(token string, cc ConsensusContext, mc MessageContext) error
+	}
+	messages := []message{
+		{"rebalance group", RebalanceGroupPurpose, hash(RebalanceGroupHash(rebalance)), true, func(tok string, cc ConsensusContext, _ MessageContext) error {
+			_, err := v.VerifyRebalanceGroup(rebalance, tok, cc)
+			return err
+		}},
+		{"reselect verifiers", ReselectVerifiersPurpose, hash(ReselectVerifiersHash(reselect)), true, func(tok string, cc ConsensusContext, _ MessageContext) error {
+			_, err := v.VerifyReselectVerifiers(reselect, tok, cc)
+			return err
+		}},
+		{"mark member lagging", MarkMemberLaggingPurpose, hash(MarkMemberLaggingHash(lagging)), true, func(tok string, cc ConsensusContext, _ MessageContext) error {
+			_, err := v.VerifyMarkMemberLagging(lagging, tok, cc)
+			return err
+		}},
+		{"group member consent", GroupMemberConsentPurpose, hash(GroupMemberConsentHash(consent)), false, func(tok string, _ ConsensusContext, mc MessageContext) error {
+			stmt := consent
+			stmt.NetworkID, stmt.GenesisSnapshotID = mc.NetworkID, mc.GenesisSnapshotID
+			return VerifyGroupMemberConsent(stmt, tok, s.Address())
+		}},
+		{"member checkpoint", MemberCheckpointPurpose, hash(MemberCheckpointHash(msgCtx, checkpoint)), false, func(tok string, _ ConsensusContext, mc MessageContext) error {
+			return VerifyMemberCheckpoint(mc, checkpoint, tok, s.Address())
+		}},
+	}
+	purposes := []string{RebalanceGroupPurpose, ReselectVerifiersPurpose, MarkMemberLaggingPurpose, GroupMemberConsentPurpose, MemberReadyPurpose,
+		MemberCheckpointPurpose, PromotionPurpose, ConsensusParamsUpdatePurpose, EvictNodePurpose, QuarantineIndexerPurpose, ReleaseIndexerPurpose,
+		SettleTrackPurpose, SNodeEnrollmentPurpose, SNodeMessagePurpose, ArtifactDispositionAdminPurpose, QueryProfileActivationPurpose,
+		SnapshotQueryAbortPurpose}
+	tokens := map[string]string{}
+	for _, m := range messages {
+		var own string
+		var err error
+		if m.contextBound {
+			own, err = s.signWithContextPurpose(m.hash, m.purpose, ctx, 1)
+		} else {
+			own, err = s.signPayload(JWSCommandPayload{Iat: 1, Purpose: m.purpose, CmdHash: m.hash})
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens[m.name] = own
+		for _, purpose := range purposes {
+			if purpose == m.purpose {
+				continue
+			}
+			withContext, err := s.signWithContextPurpose(m.hash, purpose, ctx, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bare, err := s.signPayload(JWSCommandPayload{Iat: 1, Purpose: purpose, CmdHash: m.hash})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tok := range []string{withContext, bare} {
+				if err := m.verify(tok, ctx, msgCtx); err == nil || !strings.Contains(err.Error(), "unexpected purpose") {
+					t.Fatalf("%s: its hash under purpose %s: err = %v, want the purpose refusal", m.name, purpose, err)
+				}
+			}
+		}
+	}
+	for name, tok := range tokens {
+		for _, m := range messages {
+			if err := m.verify(tok, ctx, msgCtx); (m.name == name) != (err == nil) {
+				t.Fatalf("the %s token as a %s: err = %v", name, m.name, err)
+			}
+		}
+	}
+	nextEpoch, otherNetwork, otherGenesis := ctx, ctx, ctx
+	nextEpoch.AuthorityEpoch = 3
+	otherNetwork.NetworkID = "mainnet"
+	otherGenesis.GenesisSnapshotID = "0xother"
+	otherMsgCtx := MessageContext{NetworkID: "mainnet", GenesisSnapshotID: ctx.GenesisSnapshotID}
+	for _, m := range messages {
+		if !m.contextBound {
+			if err := m.verify(tokens[m.name], ctx, otherMsgCtx); err == nil {
+				t.Fatalf("%s verified in another network", m.name)
+			}
+			continue
+		}
+		for cname, cc := range map[string]ConsensusContext{"next epoch": nextEpoch, "other network": otherNetwork, "other genesis": otherGenesis} {
+			if err := m.verify(tokens[m.name], cc, msgCtx); err == nil || err.Error() != m.name+" token: consensus context mismatch" {
+				t.Fatalf("%s in the %s: err = %v", m.name, cname, err)
+			}
+		}
+		contextless, err := s.signPayload(JWSCommandPayload{Iat: 1, Purpose: m.purpose, CmdHash: m.hash})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.verify(contextless, ctx, msgCtx); err == nil || err.Error() != m.name+" token: consensus context mismatch" {
+			t.Fatalf("%s without a context: err = %v", m.name, err)
+		}
+	}
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x0b}, ed25519.SeedSize))
+	pub := priv.Public().(ed25519.PublicKey)
+	body := arbiter.MemberReadyBody{NodeID: "member-b", DatabaseID: "dex", Generation: 1}
+	sig, err := SignMemberReady(priv, msgCtx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyMemberReady(pub, msgCtx, body, sig); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyMemberReady(pub, otherMsgCtx, body, sig); err == nil || err.Error() != "member ready: signature does not verify" {
+		t.Fatalf("member ready in another network: %v", err)
+	}
+	markActive := MarkActiveBody{NodeID: "member-b", RegistrationSeq: 1}
+	verifierSig, err := SignVerifierMessage(priv, VerifierMessageMarkActive, msgCtx, markActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyMemberReady(pub, msgCtx, body, verifierSig); err == nil {
+		t.Fatal("a verifier message signature verified as a MemberReady")
+	}
+	if err := VerifyVerifierMessage(pub, VerifierMessageMarkActive, msgCtx, markActive, sig); err == nil {
+		t.Fatal("a MemberReady signature verified as a verifier message")
+	}
+}
+
+// TestStage3AuthorityCommandsAuthorizeOnlyFreshTokens: Authorize adds the
+// token age to Verify for the three authority commands; Verify reads no
+// clock, so Apply and restore accept the stale token.
+func TestStage3AuthorityCommandsAuthorizeOnlyFreshTokens(t *testing.T) {
+	s, v := newTestPair(t)
+	ctx := testTracksContext()
+	rebalance, reselect, lagging, _, _ := stage3TestMessages(s)
+	for name, tc := range map[string]struct {
+		sign      func(iat int64) (string, error)
+		verify    func(token string) (string, error)
+		authorize func(token string) (string, error)
+	}{
+		"rebalance group": {
+			func(iat int64) (string, error) { return s.SignRebalanceGroupWithContextAt(rebalance, ctx, iat) },
+			func(tok string) (string, error) { return v.VerifyRebalanceGroup(rebalance, tok, ctx) },
+			func(tok string) (string, error) { return v.AuthorizeRebalanceGroup(rebalance, tok, ctx) },
+		},
+		"reselect verifiers": {
+			func(iat int64) (string, error) { return s.SignReselectVerifiersWithContextAt(reselect, ctx, iat) },
+			func(tok string) (string, error) { return v.VerifyReselectVerifiers(reselect, tok, ctx) },
+			func(tok string) (string, error) { return v.AuthorizeReselectVerifiers(reselect, tok, ctx) },
+		},
+		"mark member lagging": {
+			func(iat int64) (string, error) { return s.SignMarkMemberLaggingWithContextAt(lagging, ctx, iat) },
+			func(tok string) (string, error) { return v.VerifyMarkMemberLagging(lagging, tok, ctx) },
+			func(tok string) (string, error) { return v.AuthorizeMarkMemberLagging(lagging, tok, ctx) },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stale, err := tc.sign(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if addr, err := tc.verify(stale); err != nil || addr != s.Address() {
+				t.Fatalf("deterministic verify of a stale token: %q, %v", addr, err)
+			}
+			if _, err := tc.authorize(stale); err == nil || err.Error() != "authority token expired" {
+				t.Fatalf("authorize of a stale token: %v", err)
+			}
+			fresh, err := tc.sign(time.Now().Unix())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if addr, err := tc.authorize(fresh); err != nil || addr != s.Address() {
+				t.Fatalf("authorize of a fresh token: %q, %v", addr, err)
+			}
+		})
+	}
+	fresh, err := s.SignRebalanceGroupWithContext(rebalance, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.AuthorizeRebalanceGroup(rebalance, fresh, ctx); err != nil {
+		t.Fatalf("SignRebalanceGroupWithContext: %v", err)
+	}
+	if fresh, err = s.SignReselectVerifiersWithContext(reselect, ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.AuthorizeReselectVerifiers(reselect, fresh, ctx); err != nil {
+		t.Fatalf("SignReselectVerifiersWithContext: %v", err)
+	}
+	if fresh, err = s.SignMarkMemberLaggingWithContext(lagging, ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.AuthorizeMarkMemberLagging(lagging, fresh, ctx); err != nil {
+		t.Fatalf("SignMarkMemberLaggingWithContext: %v", err)
+	}
+}
+
+// TestStage3HashesRefuseMalformedMessages: every refusal of the authority
+// commands, the consent and MemberReady, verbatim (contract §41), the empty
+// lists that hash as absent ones, and the lowercase replica signer of the
+// consent.
+func TestStage3HashesRefuseMalformedMessages(t *testing.T) {
+	s, _ := newTestPair(t)
+	rebalance, reselect, lagging, consent, _ := stage3TestMessages(s)
+	ctx := MessageContext{NetworkID: "devnet2", GenesisSnapshotID: "0xgenesis"}
+	refusal := func(name, want string, err error) {
+		t.Helper()
+		if err == nil || err.Error() != want {
+			t.Fatalf("%s: err = %v, want %q", name, err, want)
+		}
+	}
+	const sets = "rebalance group: add and remove must each be sorted ascending without duplicates and share no node"
+	for name, mutate := range map[string]func(*arbiter.RebalanceGroupCommand){
+		"unsorted add":    func(c *arbiter.RebalanceGroupCommand) { c.Add = []string{"member-d", "member-c"} },
+		"duplicate add":   func(c *arbiter.RebalanceGroupCommand) { c.Add = []string{"member-c", "member-c"} },
+		"unsorted remove": func(c *arbiter.RebalanceGroupCommand) { c.Remove = []string{"member-b", "member-a"} },
+		"shared node":     func(c *arbiter.RebalanceGroupCommand) { c.Remove = []string{"member-c"} },
+	} {
+		c := rebalance
+		mutate(&c)
+		_, err := RebalanceGroupHash(c)
+		refusal(name, sets, err)
+	}
+	noDatabase := rebalance
+	noDatabase.DatabaseID = " "
+	_, err := RebalanceGroupHash(noDatabase)
+	refusal("no database", "rebalance group: database_id must be non-empty", err)
+	nilLists, emptyLists := rebalance, rebalance
+	nilLists.Add, nilLists.Remove = nil, nil
+	emptyLists.Add, emptyLists.Remove = []string{}, []string{}
+	a, errA := RebalanceGroupHash(nilLists)
+	b, errB := RebalanceGroupHash(emptyLists)
+	if errA != nil || errB != nil || a != b {
+		t.Fatalf("empty add and remove hash as %s, absent ones as %s (%v, %v)", b, a, errB, errA)
+	}
+	for name, set := range map[string][]string{
+		"two ids": {"member-b", "verifier-1"}, "four ids": {"a", "b", "c", "d"}, "unsorted": {"verifier-1", "member-b", "verifier-2"},
+		"duplicate": {"member-b", "member-b", "verifier-1"}, "empty id": {"", "member-b", "verifier-1"},
+	} {
+		c := reselect
+		c.ExpectedSet = set
+		_, err := ReselectVerifiersHash(c)
+		refusal(name, "reselect verifiers: expected_set must be three sorted, unique node ids", err)
+	}
+	for name, mutate := range map[string]func(*arbiter.MarkMemberLaggingCommand){
+		"no node":     func(c *arbiter.MarkMemberLaggingCommand) { c.NodeID = "" },
+		"no database": func(c *arbiter.MarkMemberLaggingCommand) { c.DatabaseID = "" },
+	} {
+		c := lagging
+		mutate(&c)
+		_, err := MarkMemberLaggingHash(c)
+		refusal(name, "mark member lagging: node_id and database_id must be non-empty", err)
+	}
+	otherOwner := lagging
+	otherOwner.ObservedEntry.IndexerID = 1
+	_, err = MarkMemberLaggingHash(otherOwner)
+	refusal("observed entry of another owner", "mark member lagging: observed_entry.indexer_id 1 must equal owner_indexer_id 0", err)
+	noNetwork := consent
+	noNetwork.NetworkID = ""
+	_, err = GroupMemberConsentHash(noNetwork)
+	refusal("consent without a network", "group member consent: message context: network ID and genesis snapshot ID must be non-empty", err)
+	for name, mutate := range map[string]func(*GroupMemberConsentStatement){
+		"no node":   func(c *GroupMemberConsentStatement) { c.NodeID = "" },
+		"no signer": func(c *GroupMemberConsentStatement) { c.ReplicaSigner = " " },
+		"short key": func(c *GroupMemberConsentStatement) { c.Ed25519Pubkey = c.Ed25519Pubkey[:31] },
+	} {
+		c := consent
+		mutate(&c)
+		_, err := GroupMemberConsentHash(c)
+		refusal(name, "group member consent: node ID and replica signer must be non-empty and the ed25519 key 32 bytes", err)
+	}
+	upperCase := consent
+	upperCase.ReplicaSigner = "0x" + strings.ToUpper(consent.ReplicaSigner[2:])
+	lower, errL := GroupMemberConsentHash(consent)
+	upper, errU := GroupMemberConsentHash(upperCase)
+	if errL != nil || errU != nil || lower != upper {
+		t.Fatalf("an upper-case replica signer hashes as %s, the lowercase one as %s (%v, %v)", upper, lower, errU, errL)
+	}
+	body := arbiter.MemberReadyBody{NodeID: "member-b", DatabaseID: "dex", Generation: 1}
+	for name, mutate := range map[string]func(*arbiter.MemberReadyBody){
+		"no node":      func(b *arbiter.MemberReadyBody) { b.NodeID = "" },
+		"no database":  func(b *arbiter.MemberReadyBody) { b.DatabaseID = " " },
+		"generation 0": func(b *arbiter.MemberReadyBody) { b.Generation = 0 },
+	} {
+		b := body
+		mutate(&b)
+		_, err := MemberReadyHash(ctx, b)
+		refusal(name, "member ready: node_id and database_id must be non-empty and generation at least 1", err)
+	}
+	_, err = MemberReadyHash(MessageContext{GenesisSnapshotID: "0xgenesis"}, body)
+	refusal("member ready without a network", "member ready: message context: network ID and genesis snapshot ID must be non-empty", err)
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x0b}, ed25519.SeedSize))
+	_, err = SignMemberReady(priv[:32], ctx, body)
+	refusal("short private key", "member ready: ed25519 private key must be 64 bytes, got 32", err)
+	err = VerifyMemberReady(priv.Public().(ed25519.PublicKey)[:31], ctx, body, "00")
+	refusal("short public key", "member ready: ed25519 public key must be 32 bytes, got 31", err)
+	err = VerifyMemberReady(priv.Public().(ed25519.PublicKey), ctx, body, "zz")
+	refusal("signature not hex", "member ready: signature must be 64 bytes of hex", err)
+}
+
+// TestMemberCheckpointHashRefusesMalformedCheckpoints: every checkpoint
+// refusal, verbatim (contract §41); the closed reason set; an empty excluded
+// list hashes as an absent one without touching the caller's groups; and
+// every field binds the hash.
+func TestMemberCheckpointHashRefusesMalformedCheckpoints(t *testing.T) {
+	ctx := MessageContext{NetworkID: "devnet2", GenesisSnapshotID: "0xgenesis"}
+	valid := func() arbiter.MemberCheckpoint {
+		return arbiter.MemberCheckpoint{NodeID: "member-b", OwnerIndexerID: 1, CheckpointSeq: 4,
+			Groups: []arbiter.CheckpointGroup{
+				{DatabaseID: "dex", GroupGeneration: 2, Excluded: []arbiter.ExcludedTable{{TableID: "dex.a", Reason: arbiter.ExclusionDiverged}, {TableID: "dex.b", Reason: arbiter.ExclusionRetiring}}},
+				{DatabaseID: "nft", GroupGeneration: 1},
+			},
+			SnapshotID: "0xsnap", Entry: replay.TrackFrontier{IndexerID: 1, SafeBlockSeq: 90, AppliedPromotionSeq: 40}}
+	}
+	base, err := MemberCheckpointHash(ctx, valid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const groups = "member checkpoint: groups must be non-empty and sorted by database_id without duplicates"
+	const excluded = "member checkpoint: group dex: excluded must be sorted by table_id without duplicates and name a known reason"
+	for name, tc := range map[string]struct {
+		mutate func(*arbiter.MemberCheckpoint)
+		want   string
+	}{
+		"seq 0":                    {func(c *arbiter.MemberCheckpoint) { c.CheckpointSeq = 0 }, "member checkpoint: checkpoint_seq must be at least 1 and snapshot_id non-empty"},
+		"no snapshot":              {func(c *arbiter.MemberCheckpoint) { c.SnapshotID = " " }, "member checkpoint: checkpoint_seq must be at least 1 and snapshot_id non-empty"},
+		"entry of another indexer": {func(c *arbiter.MemberCheckpoint) { c.Entry.IndexerID = 2 }, "member checkpoint: entry.indexer_id 2 must equal owner_indexer_id 1"},
+		"absent entry":             {func(c *arbiter.MemberCheckpoint) { c.Entry = replay.TrackFrontier{} }, "member checkpoint: entry.indexer_id 0 must equal owner_indexer_id 1"},
+		"no groups":                {func(c *arbiter.MemberCheckpoint) { c.Groups = nil }, groups},
+		"unsorted groups":          {func(c *arbiter.MemberCheckpoint) { c.Groups[0], c.Groups[1] = c.Groups[1], c.Groups[0] }, groups},
+		"duplicate group":          {func(c *arbiter.MemberCheckpoint) { c.Groups[1].DatabaseID = "dex" }, groups},
+		"unsorted excluded": {func(c *arbiter.MemberCheckpoint) {
+			c.Groups[0].Excluded[0], c.Groups[0].Excluded[1] = c.Groups[0].Excluded[1], c.Groups[0].Excluded[0]
+		}, excluded},
+		"duplicate excluded": {func(c *arbiter.MemberCheckpoint) { c.Groups[0].Excluded[1].TableID = "dex.a" }, excluded},
+		"no reason":          {func(c *arbiter.MemberCheckpoint) { c.Groups[0].Excluded[0].Reason = "" }, excluded},
+		"unknown reason":     {func(c *arbiter.MemberCheckpoint) { c.Groups[0].Excluded[0].Reason = "stale" }, excluded},
+		"pb enum name":       {func(c *arbiter.MemberCheckpoint) { c.Groups[0].Excluded[0].Reason = "NOT_INSTALLED" }, excluded},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := valid()
+			tc.mutate(&c)
+			if _, err := MemberCheckpointHash(ctx, c); err == nil || err.Error() != tc.want {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if _, err := MemberCheckpointHash(MessageContext{NetworkID: "devnet2"}, valid()); err == nil ||
+		err.Error() != "member checkpoint: message context: network ID and genesis snapshot ID must be non-empty" {
+		t.Fatalf("checkpoint without a genesis: %v", err)
+	}
+	for _, reason := range []arbiter.CheckpointExclusionReason{arbiter.ExclusionNotInstalled, arbiter.ExclusionDiverged, arbiter.ExclusionForeign,
+		arbiter.ExclusionDiskThreshold, arbiter.ExclusionAuditPending, arbiter.ExclusionRetiring} {
+		c := valid()
+		c.Groups[0].Excluded[0].Reason = reason
+		if _, err := MemberCheckpointHash(ctx, c); err != nil {
+			t.Fatalf("reason %s refused: %v", reason, err)
+		}
+	}
+	empty := valid()
+	empty.Groups[1].Excluded = []arbiter.ExcludedTable{}
+	if h, err := MemberCheckpointHash(ctx, empty); err != nil || h != base || empty.Groups[1].Excluded == nil {
+		t.Fatalf("an empty excluded list hashes as %s (%v), the absent one as %s; the caller's list is %#v", h, err, base, empty.Groups[1].Excluded)
+	}
+	for name, mutate := range map[string]func(*arbiter.MemberCheckpoint){
+		"node":             func(c *arbiter.MemberCheckpoint) { c.NodeID = "member-c" },
+		"owner and entry":  func(c *arbiter.MemberCheckpoint) { c.OwnerIndexerID, c.Entry.IndexerID = 2, 2 },
+		"seq":              func(c *arbiter.MemberCheckpoint) { c.CheckpointSeq = 5 },
+		"group generation": func(c *arbiter.MemberCheckpoint) { c.Groups[1].GroupGeneration = 2 },
+		"excluded reason":  func(c *arbiter.MemberCheckpoint) { c.Groups[0].Excluded[0].Reason = arbiter.ExclusionForeign },
+		"snapshot":         func(c *arbiter.MemberCheckpoint) { c.SnapshotID = "0xother" },
+		"entry block":      func(c *arbiter.MemberCheckpoint) { c.Entry.SafeBlockSeq = 91 },
+		"entry promotion":  func(c *arbiter.MemberCheckpoint) { c.Entry.AppliedPromotionSeq = 41 },
+	} {
+		c := valid()
+		mutate(&c)
+		if h, err := MemberCheckpointHash(ctx, c); err != nil || h == base {
+			t.Fatalf("%s is not bound by the checkpoint hash: %s, %v", name, h, err)
+		}
 	}
 }

@@ -14,6 +14,7 @@ go_library(
         "signer.go",
         "snapshot_query_abort.go",
         "snode_messages.go",
+        "stage3.go",
         "validator.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/authority",
