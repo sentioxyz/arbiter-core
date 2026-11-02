@@ -4,6 +4,7 @@ go_library(
     name = "authoritytest",
     srcs = [
         "fixtures.go",
+        "stage3.go",
         "tracks.go",
         "vectors.go",
     ],
@@ -12,6 +13,7 @@ go_library(
     deps = [
         "//:arbiter-core",
         "//authority",
+        "@housegate//pkg/replay",
     ],
 )
 
