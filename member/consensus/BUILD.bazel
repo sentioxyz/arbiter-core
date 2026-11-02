@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "config.go",
         "quiescence.go",
+        "unsafe_reconciler.go",
         "verify_role.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/member/consensus",
@@ -16,6 +17,7 @@ go_library(
         "//dataplane/evidence",
         "//dataplane/tableset",
         "//member/install",
+        "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/replay",
@@ -32,6 +34,7 @@ go_test(
         "policy_readiness_test.go",
         "quiescence_regression_test.go",
         "quiescence_test.go",
+        "unsafe_reconciler_test.go",
         "verify_role_test.go",
     ],
     embed = [":consensus"],
