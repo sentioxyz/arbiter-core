@@ -211,7 +211,7 @@ Consensus-parameter updates use the canonical `arbiter.ConsensusParamsUpdate`
 and Raft command slot 18. `(*authority.Validator).VerifyConsensusParamsUpdate`
 supports deterministic replay without clock checks; use
 `AuthorizeConsensusParamsUpdate` only at live API boundaries. Both fail closed
-for an empty authority allowlist. See the [protocol specification](docs/specs/2026-09-17-consensus-parameter-updates.md)
+for an empty authority allowlist. See the [protocol specification](https://github.com/sentioxyz/sentio-ws/blob/main/internal-docs/sentio-network/stages/04-si-v2/arbiter-hardening/2026-09-17-consensus-parameter-updates--spec-arbiter-core.md)
 for signed preconditions, address normalization, and the all-voters upgrade gate.
 
 Client sequence lanes add `StatementID.ClientLane`, `ConsensusParamsUpdate.ClientLanes` and the request-only `NodeRegistration.features`. Legacy statement ids, consensus-update digests and Raft command bytes are unchanged when no lane is in use, pinned by `wire/legacy_command_golden_test.go` and `authority/consensus_golden_test.go`. `NodeRegistration.features` is never copied into a Raft command or replicated state, and `wire.Decode` refuses a `RegisterNode` command that carries it. SNode and verifier registrations advertise `client_lanes_v1`.
