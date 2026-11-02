@@ -190,14 +190,14 @@ func TestScanner_ResolvesChainTablesThroughTheRegistry(t *testing.T) {
 	view := newFakeRegistryView()
 	view.set(genesisIncarnationV(1, cfg.NetworkID, cfg.Tables[0]), chainIncarnationV(t, 2, cfg.NetworkID, chain, wire.TableStatusActive))
 	s := NewRegistryScanner(cfg, nil, view)
-	got, err := s.schemaFor("db.c")
+	got, err := s.SchemaFor("db.c")
 	if err != nil || got.TableID != "db.c" || len(got.Columns) != 1 || got.Columns[0].Name != "w" {
 		t.Fatalf("schemaFor(db.c) = %+v, %v", got, err)
 	}
-	if got, err := s.schemaFor("db.t"); err != nil || got.Columns[0].Name != "v" {
+	if got, err := s.SchemaFor("db.t"); err != nil || got.Columns[0].Name != "v" {
 		t.Fatalf("schemaFor(db.t) = %+v, %v", got, err)
 	}
-	if _, err := NewScanner(cfg, nil).schemaFor("db.c"); err == nil {
+	if _, err := NewScanner(cfg, nil).SchemaFor("db.c"); err == nil {
 		t.Fatal("a scanner without the registry must not know chain tables")
 	}
 	// A same-name chain recreation of a retired genesis table is scanned
@@ -206,7 +206,7 @@ func TestScanner_ResolvesChainTablesThroughTheRegistry(t *testing.T) {
 	purged := genesisIncarnationV(1, cfg.NetworkID, cfg.Tables[0])
 	purged.Status = wire.TableStatusPurged
 	view.set(purged, chainIncarnationV(t, 2, cfg.NetworkID, recreated, wire.TableStatusActive))
-	if got, err := s.schemaFor("db.t"); err != nil || got.Columns[0].Name != "x" {
+	if got, err := s.SchemaFor("db.t"); err != nil || got.Columns[0].Name != "x" {
 		t.Fatalf("schemaFor(recreated db.t) = %+v, %v", got, err)
 	}
 }
@@ -221,14 +221,14 @@ func TestScanner_RefusesARegistrySchemaThatDoesNotHashToItsSchemaHash(t *testing
 	forged.SchemaHash = payloadexec.TableSchemaHash(cfg.NetworkID, other)
 	view := newFakeRegistryView()
 	view.set(genesisIncarnationV(1, cfg.NetworkID, cfg.Tables[0]), forged)
-	_, err := NewRegistryScanner(cfg, nil, view).schemaFor("db.c")
+	_, err := NewRegistryScanner(cfg, nil, view).SchemaFor("db.c")
 	if err == nil || !strings.Contains(err.Error(), "hashes to") {
 		t.Fatalf("schemaFor(forged db.c) = %v, want a schema_hash mismatch", err)
 	}
 	// A schema_json hashed under another network is refused the same way.
 	crossNet := chainIncarnationV(t, 2, "othernet", chain, wire.TableStatusActive)
 	view.set(genesisIncarnationV(1, cfg.NetworkID, cfg.Tables[0]), crossNet)
-	if _, err := NewRegistryScanner(cfg, nil, view).schemaFor("db.c"); err == nil {
+	if _, err := NewRegistryScanner(cfg, nil, view).SchemaFor("db.c"); err == nil {
 		t.Fatal("a schema hashed under another network id must be refused")
 	}
 }
@@ -242,7 +242,7 @@ func TestScanner_EnabledRegistryNeverFallsBackToConfiguredTables(t *testing.T) {
 	s := NewRegistryScanner(cfg, nil, view)
 
 	// Registry not (yet) enabled: the configured tables apply.
-	if got, err := s.schemaFor("db.t"); err != nil || got.Columns[0].Name != "v" {
+	if got, err := s.SchemaFor("db.t"); err != nil || got.Columns[0].Name != "v" {
 		t.Fatalf("disabled registry: schemaFor(db.t) = %+v, %v", got, err)
 	}
 
@@ -270,7 +270,7 @@ func TestScanner_EnabledRegistryNeverFallsBackToConfiguredTables(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			view.set(tc.incs...)
-			if got, err := s.schemaFor("db.t"); err == nil {
+			if got, err := s.SchemaFor("db.t"); err == nil {
 				t.Fatalf("schemaFor(db.t) = %+v; an enabled registry must not fall back to the configured schema", got)
 			}
 		})
@@ -279,7 +279,7 @@ func TestScanner_EnabledRegistryNeverFallsBackToConfiguredTables(t *testing.T) {
 	// before the retirement is still scanned).
 	for _, status := range []wire.TableIncarnationStatus{wire.TableStatusRetiring, wire.TableStatusPurging} {
 		view.set(purged, chainIncarnationV(t, 2, cfg.NetworkID, recreated, status))
-		if got, err := s.schemaFor("db.t"); err != nil || got.Columns[0].Name != "x" {
+		if got, err := s.SchemaFor("db.t"); err != nil || got.Columns[0].Name != "x" {
 			t.Fatalf("%s: schemaFor(db.t) = %+v, %v", status, got, err)
 		}
 	}
@@ -408,6 +408,7 @@ func newGateRoleV(t *testing.T, registry dataplane.RegistryView, managed bool, l
 		}
 		r.tables = tables
 	}
+	withEvidenceV(t, r)
 	return r, core
 }
 

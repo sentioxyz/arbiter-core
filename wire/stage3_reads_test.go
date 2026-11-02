@@ -128,10 +128,17 @@ func TestPartitionStatesConvertersCopyEveryField(t *testing.T) {
 // TestPromotionOutcomesConvertersCopyEveryField: the same for
 // GetPromotionOutcomes. The stored acknowledgement is the body the source
 // signed without its request-only source_jws; its signature travels in ack_jws.
+// The outcome's track names the promotion's owner only (TrackIndexerID): the
+// stage-3 L3BlockTrack.group_key belongs to a block header, is read through
+// GetBlockVerification, and the arbiter never sets it on an outcome (plan
+// S3-E1 Task 59).
 func TestPromotionOutcomesConvertersCopyEveryField(t *testing.T) {
 	v := stage3PromotionOutcomesFixture()
 	m := PromotionOutcomesToPB(v)
-	assertEveryFieldPopulated(t, m.ProtoReflect(), map[protoreflect.FullName]bool{"arbiter.PromotionAck.source_jws": true})
+	assertEveryFieldPopulated(t, m.ProtoReflect(), map[protoreflect.FullName]bool{
+		"arbiter.PromotionAck.source_jws": true,
+		"arbiter.L3BlockTrack.group_key":  true,
+	})
 	if got := PromotionOutcomesFromPB(m); !reflect.DeepEqual(got, v) {
 		t.Fatalf("round trip\n got %+v\nwant %+v", got, v)
 	}

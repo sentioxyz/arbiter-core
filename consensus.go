@@ -32,9 +32,17 @@ const SignedClaimsFeature = "signed_claims_v1"
 // data-plane registration without it.
 const TrackManifestsFeature = "track_manifests_v1"
 
+// Stage3Feature is the capability string of a binary that decodes the stage-3
+// v21 wire contract: the stage3 parameter, the member VerifierEntry fields,
+// Raft tags 38-42 and the registry view of groups (housegate spec 2026-10-14
+// §10.3; plan S3-E1 K65). The v21 activation requires it from every voter and
+// from every registered, non-evicted data-plane node not on a quarantined
+// track; a leader that predates it keeps the string without acting on it.
+const Stage3Feature = "stage3_v1"
+
 // LocalNodeFeatures returns this binary's capability strings in a fresh slice.
 func LocalNodeFeatures() []string {
-	return []string{ClientLanesFeature, SignedClaimsFeature, TrackManifestsFeature}
+	return []string{ClientLanesFeature, SignedClaimsFeature, TrackManifestsFeature, Stage3Feature}
 }
 
 // signerAddressPattern is a normalized (lowercase) 20-byte address.
@@ -78,11 +86,32 @@ type SIIndexerEntry struct {
 
 // VerifierEntry lists one verifier that may register (spec D7): its node id
 // and the ed25519 key that signs its registration, activation, purge reports
-// and evidence.
+// and evidence. An entry without HostIndexerID is a network-pool verifier and
+// sets nothing else, so its canonical form is the one every earlier digest
+// hashed. An entry with HostIndexerID is a stage-3 member (housegate spec
+// 2026-10-14 §6.1) hosted by that SI indexer (a pointer: indexer 0 is a valid
+// host) and states every other field explicitly, with no absent-means-default
+// (plan S3-E1 K58): ReplicaSigner (lowercase 0x + 40 hex) signs its
+// checkpoints, ConsentJWS is the host signer's ES256K consent (purpose
+// arbiter-group-member-v1, verified by the FSM), Weight is 1-64, and
+// FailureDomain equals the stage3 parameter's domain of the host. Every
+// stage-3 field is omitempty, so a pool entry hashes as it always did.
 type VerifierEntry struct {
-	NodeID        string `json:"node_id"`
-	Ed25519Pubkey []byte `json:"ed25519_pubkey"`
+	NodeID        string  `json:"node_id"`
+	Ed25519Pubkey []byte  `json:"ed25519_pubkey"`
+	HostIndexerID *uint64 `json:"host_indexer_id,omitempty"`
+	ReplicaSigner string  `json:"replica_signer,omitempty"`
+	ConsentJWS    string  `json:"consent_jws,omitempty"`
+	Weight        uint32  `json:"weight,omitempty"`
+	FailureDomain string  `json:"failure_domain,omitempty"`
+	Verify        bool    `json:"verify,omitempty"`
+	Replicate     bool    `json:"replicate,omitempty"`
+	Counts        bool    `json:"counts,omitempty"`
+	SharedRMT     bool    `json:"shared_rmt,omitempty"`
 }
+
+// IsMember reports whether the entry is a stage-3 member: it names a host.
+func (e VerifierEntry) IsMember() bool { return e.HostIndexerID != nil }
 
 // Validate checks one normalized entry (lowercase Signer). Whether its
 // enrolment statement verifies, and every rule over committed state, is the
@@ -162,6 +191,13 @@ type ConsensusParamsUpdate struct {
 	// activation sets it; afterwards every update carries it and it is never
 	// lowered. The raise-only and carry rules are the FSM's.
 	TracksEnabled bool `json:"tracks_enabled,omitempty"`
+	// Stage3 is the stage-3 parameter (housegate spec 2026-10-14 §6.1,
+	// §10.3-§10.4). Absent (nil), and omitted from the canonical form so every
+	// earlier digest is unchanged, until the v21 activation sets it; afterwards
+	// every update carries it complete. authority.NormalizeConsensusParamsUpdate
+	// checks its static rules; the activation, carry and one-way rules are the
+	// FSM's.
+	Stage3 *Stage3Params `json:"stage3,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed

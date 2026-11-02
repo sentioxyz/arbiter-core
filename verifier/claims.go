@@ -1,13 +1,12 @@
 package verifier
 
 import (
-	"crypto/ed25519"
 	"time"
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 
-	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
+	"github.com/sentioxyz/arbiter-core/dataplane/evidence"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -41,18 +40,7 @@ func (r *Role) registrationRequests() (*pb.NodeRegistration, *pb.NodeRef, error)
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx := r.messageContext()
-	reg := wire.RegisterNode{Registration: arbiter.NodeRegistration{NodeID: r.cfg.ReplicaID,
-		Roles: []arbiter.NodeRole{arbiter.NodeRoleVerifier}, Ed25519Pubkey: r.priv.Public().(ed25519.PublicKey), RegistrationSeq: seq}}
-	if reg.Ed25519Signature, err = authority.SignVerifierMessage(r.priv, authority.VerifierMessageRegistration, ctx, reg.Registration); err != nil {
-		return nil, nil, err
-	}
-	mark := wire.MarkActive{NodeID: r.cfg.ReplicaID, RegistrationSeq: seq}
-	if mark.Ed25519Signature, err = authority.SignVerifierMessage(r.priv, authority.VerifierMessageMarkActive, ctx,
-		authority.MarkActiveBody{NodeID: mark.NodeID, RegistrationSeq: seq}); err != nil {
-		return nil, nil, err
-	}
-	return wire.RegisterNodeToRequest(reg, arbiter.LocalNodeFeatures()), wire.MarkActiveToRequest(mark), nil
+	return evidence.VerifierRegistrationRequests(r.priv, r.cfg.ReplicaID, seq, r.messageContext())
 }
 
 // signTablePurged is the reconciler's purge-report signer.

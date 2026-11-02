@@ -23,6 +23,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core/dataplane"
+	"github.com/sentioxyz/arbiter-core/member/consensus"
 )
 
 const (
@@ -181,6 +182,9 @@ type Deps struct {
 	StateDir string
 	// NodeID is the member's node id, answered as ServingView.NodeID.
 	NodeID string
+	// Consensus gives ServingView.Consensus at each view; nil answers
+	// consensus.OffStatus (plan S3-E1 contract §42.3).
+	Consensus func() consensus.Status
 }
 
 // Published gives the latest published manifest, read from the arbiter in
@@ -253,6 +257,8 @@ type Server struct {
 	metrics *Metrics
 	logger  *slog.Logger
 	nodeID  string
+	// consensus is Deps.Consensus; it is called without mu held.
+	consensus func() consensus.Status
 	// leaseFile is LeaseFile in Deps.StateDir.
 	leaseFile string
 
@@ -281,7 +287,7 @@ func New(cfg Config, deps Deps) (*Server, error) {
 	}
 	s := &Server{
 		cfg: cfg, reg: deps.Registry, pub: deps.Published, copies: deps.Copies,
-		dial: deps.Dial, now: deps.Now, metrics: deps.Metrics, logger: deps.Logger, nodeID: deps.NodeID,
+		dial: deps.Dial, now: deps.Now, metrics: deps.Metrics, logger: deps.Logger, nodeID: deps.NodeID, consensus: deps.Consensus,
 		leaseFile: filepath.Join(deps.StateDir, LeaseFile),
 		dbs:       map[OwnerDatabase]*dbState{}, owners: map[uint64]*ownerState{},
 		leases: map[string]*lease{}, byID: map[string]*lease{},
@@ -297,6 +303,9 @@ func New(cfg Config, deps Deps) (*Server, error) {
 	}
 	if s.logger == nil {
 		s.logger = slog.Default()
+	}
+	if s.consensus == nil {
+		s.consensus = consensus.OffStatus
 	}
 	for owner, addr := range cfg.OwnerHouseGate {
 		s.owners[owner] = &ownerState{addr: addr}
@@ -333,8 +342,10 @@ func (s *Server) Run(ctx context.Context) error {
 // Serving is the current serving view, databases sorted by name and owner.
 func (s *Server) Serving() ServingView {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now()
 	s.sweepLocked(now)
-	return s.viewLocked(now)
+	view := s.viewLocked(now)
+	s.mu.Unlock()
+	view.Consensus = s.consensus()
+	return view
 }

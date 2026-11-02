@@ -9,15 +9,24 @@ go_library(
 
 go_test(
     name = "confinement_test",
-    srcs = ["confinement_test.go"],
+    srcs = [
+        "confinement_test.go",
+        "consensus_test.go",
+    ],
     embed = [":confinement"],
     deps = [
+        "//:arbiter-core",
         "//dataplane/chrestart",
         "//dataplane/chtest",
         "//dataplane/ddl",
+        "//member/consensus",
+        "//member/install",
         "//member/sources",
+        "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
         "@housegate//pkg/lthash",
+        "@housegate//pkg/replay",
         "@housegate//pkg/replay/chexec",
         "@housegate//pkg/replay/payloadexec",
     ],

@@ -95,6 +95,9 @@ func (r *Role) Stats() Stats {
 	for _, v := range installSources {
 		s.Installs[v] = 0
 	}
+	if r.mode != nil {
+		s.Installs[sources.SourceMemberUnsafeHardlink] = 0
+	}
 	for _, v := range auditTriggers {
 		s.AuditRuns[v] = 0
 	}

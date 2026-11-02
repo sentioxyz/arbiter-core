@@ -34,7 +34,7 @@ type serving struct {
 // newServing builds the serving side of cfg.Serve; without it, nil and no
 // error. New calls it; the install journal is bound by attachServing once
 // the installer exists.
-func newServing(cfg Config, d Deps) (*serving, error) {
+func newServing(cfg Config, d Deps, mode consensusMode) (*serving, error) {
 	if cfg.Serve == nil {
 		return nil, nil
 	}
@@ -56,6 +56,7 @@ func newServing(cfg Config, d Deps) (*serving, error) {
 		Metrics:   metrics,
 		Logger:    d.Logger,
 		NodeID:    cfg.NodeID,
+		Consensus: consensusStatus(mode),
 		StateDir:  cfg.StateDir,
 	})
 	if err != nil {

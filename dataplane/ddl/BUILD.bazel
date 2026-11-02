@@ -6,6 +6,7 @@ go_library(
         "build.go",
         "engine_full.go",
         "ensure.go",
+        "keeper_roots.go",
         "member.go",
         "naming.go",
         "pinned.go",
@@ -30,6 +31,10 @@ go_test(
         "ch_test.go",
         "engine_full_test.go",
         "ensure_ch_test.go",
+        "keeper_roots_ch_test.go",
+        "keeper_roots_test.go",
+        "keeper_scope_ch_test.go",
+        "keeper_scope_test.go",
         "member_ch_test.go",
         "member_test.go",
         "naming_collision_test.go",
@@ -38,15 +43,16 @@ go_test(
         "table_test.go",
         "verify_test.go",
     ],
-    # TestMemberUnsafeIntentHasNoCallerInP2 reads the module's sources through
-    # the runfiles symlink of member.go; "external" keeps Bazel from caching
-    # its result across changes in other packages.
+    # TestMemberUnsafeIntentIsCalledOnlyByTheMemberConsensusMode reads the
+    # module's sources through the runfiles symlink of member.go; "external"
+    # keeps Bazel from caching its result across changes in other packages.
     data = ["member.go"],
     embed = [":ddl"],
     tags = ["external"],
     deps = [
         "//dataplane/chtest",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
         "@housegate//pkg/lthash",
         "@housegate//pkg/replay/payloadexec",
         "@housegate//pkg/sitable",

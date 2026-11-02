@@ -656,7 +656,7 @@ func TestSNodeRegistrationAdvertisesTrackManifests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{arbiter.ClientLanesFeature, arbiter.TrackManifestsFeature}; !slices.Equal(legacy.GetFeatures(), want) {
+	if want := []string{arbiter.ClientLanesFeature, arbiter.TrackManifestsFeature, arbiter.Stage3Feature}; !slices.Equal(legacy.GetFeatures(), want) {
 		t.Fatalf("unsigned SNode features = %v, want %v", legacy.GetFeatures(), want)
 	}
 	fake := &claimsFakeS{}

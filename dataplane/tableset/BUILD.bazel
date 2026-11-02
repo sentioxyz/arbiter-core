@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "tableset",
-    srcs = ["reconciler.go"],
+    srcs = [
+        "keeper_audit.go",
+        "reconciler.go",
+    ],
     importpath = "github.com/sentioxyz/arbiter-core/dataplane/tableset",
     visibility = ["//visibility:public"],
     deps = [
@@ -19,6 +22,10 @@ go_library(
 go_test(
     name = "tableset_test",
     srcs = [
+        "keeper_audit_ch_test.go",
+        "keeper_audit_test.go",
+        "keeper_scope_ch_test.go",
+        "keeper_scope_test.go",
         "owner_ch_test.go",
         "owner_test.go",
         "reconciler_ch_test.go",
@@ -30,6 +37,7 @@ go_test(
         "//dataplane/ddl",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+        "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
         "@housegate//pkg/lthash",
         "@housegate//pkg/replay/payloadexec",
         "@org_golang_google_grpc//codes",

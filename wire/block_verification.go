@@ -2,6 +2,7 @@ package wire
 
 import (
 	"errors"
+	"fmt"
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 
@@ -26,6 +27,10 @@ type BlockHeaderView struct {
 	// TrackIndexerID is header.track; nil on a block sealed before the tracks
 	// activation. Indexer 0 is a value, distinct from absent.
 	TrackIndexerID *uint64
+	// GroupKey is header.track.group_key (plan S3-E1 contract §39): set on
+	// every block sealed after the placement switch's cutover block, empty on
+	// every earlier block and on a block without a track.
+	GroupKey string
 }
 
 // StatementCandidates mirrors pb.StatementCandidates: one statement of the
@@ -74,11 +79,48 @@ type BlockVerification struct {
 	Anchor           *arbiter.AnchorRef // nil when the block has no anchor
 	Finality         bool
 	LastMergeable    bool
+	// The stage-3 selection record (housegate spec 2026-10-14 §7.1, §7.3,
+	// §7.4; plan S3-E1 contract §39), absent on every block marked before the
+	// owner_aware_selection switch: the eligible ring MarkReplaying drew from
+	// (sorted), the last ring position used and the registry cursor block at
+	// the marking; the group key, ready verify members and fill recorded at
+	// seal with every (database, group_generation) that carried the key (K62);
+	// every applied ReselectVerifiers and the count at the quorum latch.
+	EligibleRing        []string
+	RingPosition        uint32
+	MarkedCursorBlock   uint64
+	GroupKey            string
+	GroupMembers        []string
+	GroupFill           bool
+	GroupDatabases      []BlockGroupRef
+	Reselections        []BlockReselection
+	ReselectionsAtLatch uint32
+}
+
+// BlockGroupRef mirrors pb.BlockGroupRef: one database whose group carried the
+// block's group key at seal, at that group's generation.
+type BlockGroupRef struct {
+	DatabaseID      string
+	GroupGeneration uint64
+}
+
+// BlockReselection mirrors pb.BlockReselection: one applied ReselectVerifiers
+// with the replaced ids (sorted) and corresponding replacements (in stored-ring
+// walk order), the ring position after it, the registry cursor block it recorded
+// and its authority proof.
+type BlockReselection struct {
+	Replaced, Replacements []string
+	RingPosition           uint32
+	CursorBlock            uint64
+	AuthorityJWS           string
+	AuthorityEpoch         uint64
 }
 
 // BlockVerificationFromPB converts a GetBlockVerification answer. A message
 // without a header names no block and is refused; repeated fields decode empty
-// to nil and absent messages to nil pointers.
+// to nil and absent messages to nil pointers. The selection record must be as
+// the arbiter keeps it: a sorted eligible ring and member list, and a ring
+// position inside the ring (0 when there is none).
 func BlockVerificationFromPB(m *pb.BlockVerification) (BlockVerification, error) {
 	h := m.GetHeader()
 	if h == nil {
@@ -97,10 +139,28 @@ func BlockVerificationFromPB(m *pb.BlockVerification) (BlockVerification, error)
 		Quorum:           m.GetQuorum(),
 		Finality:         m.GetFinality(),
 		LastMergeable:    m.GetLastMergeable(),
+
+		EligibleRing:      mapSlice(m.GetEligibleRing(), func(s string) string { return s }),
+		RingPosition:      m.GetRingPosition(),
+		MarkedCursorBlock: m.GetMarkedCursorBlock(),
+		GroupKey:          m.GetGroupKey(),
+		GroupMembers:      mapSlice(m.GetGroupMembers(), func(s string) string { return s }),
+		GroupFill:         m.GetGroupFill(),
+		GroupDatabases: mapSlice(m.GetGroupDatabases(), func(g *pb.BlockGroupRef) BlockGroupRef {
+			return BlockGroupRef{DatabaseID: g.GetDatabaseId(), GroupGeneration: g.GetGroupGeneration()}
+		}),
+		Reselections:        mapSlice(m.GetReselections(), blockReselectionFromPB),
+		ReselectionsAtLatch: m.GetReselectionsAtLatch(),
 	}
 	if a := m.GetAnchor(); a != nil {
 		anchor := AnchorRefFromPB(a)
 		out.Anchor = &anchor
+	}
+	if !ascendingUnique(out.EligibleRing) || !ascendingUnique(out.GroupMembers) {
+		return BlockVerification{}, errors.New("block verification: eligible_ring and group_members must be sorted ascending without duplicates")
+	}
+	if n := len(out.EligibleRing); (n == 0 && out.RingPosition != 0) || (n > 0 && int(out.RingPosition) >= n) {
+		return BlockVerification{}, fmt.Errorf("block verification: ring_position %d is outside an eligible ring of %d", out.RingPosition, n)
 	}
 	return out, nil
 }
@@ -120,7 +180,7 @@ func BlockVerificationToPB(v BlockVerification) *pb.BlockVerification {
 		h.TableSetTransition = &pb.TableSetTransition{}
 	}
 	if v.Header.TrackIndexerID != nil {
-		h.Track = &pb.L3BlockTrack{IndexerId: *v.Header.TrackIndexerID}
+		h.Track = &pb.L3BlockTrack{IndexerId: *v.Header.TrackIndexerID, GroupKey: v.Header.GroupKey}
 	}
 	out := &pb.BlockVerification{
 		Header:           h,
@@ -135,6 +195,18 @@ func BlockVerificationToPB(v BlockVerification) *pb.BlockVerification {
 		Quorum:           v.Quorum,
 		Finality:         v.Finality,
 		LastMergeable:    v.LastMergeable,
+
+		EligibleRing:      mapSlice(v.EligibleRing, func(s string) string { return s }),
+		RingPosition:      v.RingPosition,
+		MarkedCursorBlock: v.MarkedCursorBlock,
+		GroupKey:          v.GroupKey,
+		GroupMembers:      mapSlice(v.GroupMembers, func(s string) string { return s }),
+		GroupFill:         v.GroupFill,
+		GroupDatabases: mapSlice(v.GroupDatabases, func(g BlockGroupRef) *pb.BlockGroupRef {
+			return &pb.BlockGroupRef{DatabaseId: g.DatabaseID, GroupGeneration: g.GroupGeneration}
+		}),
+		Reselections:        mapSlice(v.Reselections, blockReselectionToPB),
+		ReselectionsAtLatch: v.ReselectionsAtLatch,
 	}
 	if v.Anchor != nil {
 		out.Anchor = AnchorRefToPB(*v.Anchor)
@@ -154,8 +226,41 @@ func blockHeaderViewFromPB(h *pb.L3BlockHeader) BlockHeaderView {
 	if track := h.GetTrack(); track != nil {
 		id := track.GetIndexerId()
 		v.TrackIndexerID = &id
+		v.GroupKey = track.GetGroupKey()
 	}
 	return v
+}
+
+func blockReselectionFromPB(m *pb.BlockReselection) BlockReselection {
+	return BlockReselection{
+		Replaced:       mapSlice(m.GetReplaced(), func(s string) string { return s }),
+		Replacements:   mapSlice(m.GetReplacements(), func(s string) string { return s }),
+		RingPosition:   m.GetRingPosition(),
+		CursorBlock:    m.GetCursorBlock(),
+		AuthorityJWS:   m.GetAuthorityJws(),
+		AuthorityEpoch: m.GetAuthorityEpoch(),
+	}
+}
+
+func blockReselectionToPB(v BlockReselection) *pb.BlockReselection {
+	return &pb.BlockReselection{
+		Replaced:       mapSlice(v.Replaced, func(s string) string { return s }),
+		Replacements:   mapSlice(v.Replacements, func(s string) string { return s }),
+		RingPosition:   v.RingPosition,
+		CursorBlock:    v.CursorBlock,
+		AuthorityJws:   v.AuthorityJWS,
+		AuthorityEpoch: v.AuthorityEpoch,
+	}
+}
+
+// ascendingUnique reports whether ids is sorted ascending without duplicates.
+func ascendingUnique(ids []string) bool {
+	for i := 1; i < len(ids); i++ {
+		if ids[i-1] >= ids[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func statementCandidatesFromPB(m *pb.StatementCandidates) StatementCandidates {

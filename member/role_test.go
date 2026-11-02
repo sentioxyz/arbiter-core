@@ -418,10 +418,12 @@ func hasPrefix(got []string, prefixes ...string) bool {
 }
 
 func TestLocalNodeFeaturesAreUnchangedThroughP2(t *testing.T) {
-	// Contract §20.1: P2 adds no feature string; a member has no consensus
-	// identity and advertises nothing.
-	if got := arbiter.LocalNodeFeatures(); !slices.Equal(got, []string{"client_lanes_v1", "signed_claims_v1", "track_manifests_v1"}) {
-		t.Fatalf("LocalNodeFeatures = %v, want exactly [client_lanes_v1 signed_claims_v1 track_manifests_v1] through CORE_TAG_P2", got)
+	// Contract §20.1: P2 to P4 add no feature string, and a member without
+	// the consensus mode has no consensus identity and advertises nothing.
+	// CORE_TAG_P5 appends stage3_v1 (plan S3-E1 K65); a member advertises it
+	// only when its consensus mode registers it as a verifier.
+	if got := arbiter.LocalNodeFeatures(); !slices.Equal(got, []string{"client_lanes_v1", "signed_claims_v1", "track_manifests_v1", "stage3_v1"}) {
+		t.Fatalf("LocalNodeFeatures = %v, want exactly [client_lanes_v1 signed_claims_v1 track_manifests_v1 stage3_v1] from CORE_TAG_P5", got)
 	}
 }
 

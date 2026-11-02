@@ -146,6 +146,10 @@ const (
 	AdmissionCodeSourceUnavailable AdmissionCode = 10
 	// AdmissionCodeIndexerQuarantined: the target's owner SI indexer is quarantined (housegate spec 2026-10-10 §7.4); returned only after the tracks activation; nothing changed, the coordinate is unspent; not retryable until the indexer is released.
 	AdmissionCodeIndexerQuarantined AdmissionCode = 11
+	// AdmissionCodeVerifiersUnavailable: the eligible ring of the statement's group has fewer than three verifiers (housegate spec 2026-10-14 §7.3); returned only with stage3.owner_aware_selection on; nothing changed, the coordinate is unspent; retryable.
+	AdmissionCodeVerifiersUnavailable AdmissionCode = 12
+	// AdmissionCodeCopiesBackpressure: strict mode holds the table's cleanup at the copy floor above its uncleaned-parts bound (spec §9.3, plan S3-E1 K59); returned only with stage3.strict_copies on; nothing changed, the coordinate is unspent; retryable back-pressure.
+	AdmissionCodeCopiesBackpressure AdmissionCode = 13
 )
 
 // NodeRole mirrors pb.NodeRole.

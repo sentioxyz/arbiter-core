@@ -69,8 +69,11 @@ type Config struct {
 	Interval time.Duration
 	// SweepDecommissioned makes this node remove, after its own drop,
 	// every Keeper replica of a purged table that is not in the arbiter's
-	// purge node set. Only the source SNode sets it.
+	// purge node set, on both Keeper roots, and run the report-only Keeper
+	// audit (keeper_audit.go). Only the source SNode sets it.
 	SweepDecommissioned bool
+	// KeeperAuditInterval paces the Keeper audit (0 = DefaultKeeperAuditInterval).
+	KeeperAuditInterval time.Duration
 	// Owner, when set, restricts this reconciler to the incarnations owned
 	// by that SI indexer (housegate spec 2026-10-10 §8): an SNode creates,
 	// verifies, purges, reports and sweeps only its own tables. An
@@ -109,6 +112,10 @@ type Stats struct {
 	Failures      map[string]uint64
 	Unknown       []string
 	LeftoverDrops uint64
+	// KeeperFindings are the last Keeper audit's findings, sorted by path
+	// then replica; KeeperAuditRuns counts the audits that completed.
+	KeeperFindings  []KeeperFinding
+	KeeperAuditRuns uint64
 }
 
 type tableStatus struct {
@@ -133,6 +140,10 @@ type Reconciler struct {
 	failures      map[string]uint64
 	unknown       []string
 	leftoverDrops uint64
+	// The Keeper audit's last findings, completed runs and start time.
+	keeperFindings  []KeeperFinding
+	keeperAuditRuns uint64
+	lastKeeperAudit time.Time
 	// owed names the keys whose last Dropped hook call failed; their tables
 	// are not created again until the hook succeeds. In memory only: a
 	// restart forgets it.
@@ -160,6 +171,9 @@ func New(cfg Config, d Deps) (*Reconciler, error) {
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = ddl.DefaultReconcileInterval
+	}
+	if cfg.KeeperAuditInterval <= 0 {
+		cfg.KeeperAuditInterval = DefaultKeeperAuditInterval
 	}
 	if cfg.Owner != nil {
 		owner := *cfg.Owner
@@ -316,7 +330,8 @@ func (r *Reconciler) WaitReady(ctx context.Context, tableIDs []string, timeout t
 func (r *Reconciler) Stats() Stats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := Stats{States: map[State]int{}, Failures: map[string]uint64{}, Unknown: slices.Clone(r.unknown), LeftoverDrops: r.leftoverDrops}
+	out := Stats{States: map[State]int{}, Failures: map[string]uint64{}, Unknown: slices.Clone(r.unknown), LeftoverDrops: r.leftoverDrops,
+		KeeperFindings: slices.Clone(r.keeperFindings), KeeperAuditRuns: r.keeperAuditRuns}
 	for _, ts := range r.tables {
 		out.States[ts.state]++
 	}
@@ -385,11 +400,27 @@ type target struct {
 	marker uint64
 }
 
+// scope is the Keeper scope t's tables are created in: inc's path
+// (KeeperScopeOf) with t.marker as the incarnation the tables carry, 0 for a
+// genesis table, which is unmarked and never scoped.
+func (t target) scope() ddl.KeeperScope {
+	return ddl.KeeperScope{IncarnationSeq: t.marker, Scoped: t.inc.ScopedKeeperPath}
+}
+
+// KeeperScopeOf is the Keeper scope of inc's hg_unsafe and hg_member_unsafe
+// replicas: the incarnation path when the registry marks inc
+// scoped_keeper_path, else the legacy path (housegate spec 2026-10-14 §8.8).
+func KeeperScopeOf(inc wire.TableIncarnation) ddl.KeeperScope {
+	return ddl.KeeperScope{IncarnationSeq: inc.Seq, Scoped: inc.ScopedKeeperPath}
+}
+
 func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegistrySnapshot, genesisMode ddl.Mode) error {
 	present := map[string]target{}                // physical name -> table to create and verify
 	wanted := map[string]bool{}                   // physical names a Pending/Active/Retiring key desires
 	purging := map[string]wire.TableIncarnation{} // physical name -> incarnation to purge
 	history := map[string][]string{}              // physical name -> keys whose live incarnation is Purged/Refused/Legacy
+	scopedLive := map[string]string{}             // physical name -> key whose live incarnation replicates on its incarnation path
+	legacyLive := map[string]bool{}               // physical names a live incarnation replicates on the legacy path
 	seen := map[string]bool{}
 	notOwned := map[string]bool{}
 	var fatal, genesisErrs []error
@@ -408,6 +439,13 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 		}
 		seen[key] = true
 		physical := ddl.CHTableName(key)
+		if live.HasPhysicalTables() {
+			if live.ScopedKeeperPath {
+				scopedLive[physical] = key
+			} else {
+				legacyLive[physical] = true
+			}
+		}
 		switch {
 		case live.Status == wire.TableStatusPurging:
 			purging[physical] = *live
@@ -485,7 +523,8 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 	// marker is never dropped: it is reported as unknown, and not fatal,
 	// because nothing needs creating under a retired key.
 	accounted := maps.Clone(desired) // physical names that are not unknown
-	skipSweep := maps.Clone(desired) // physical names the Keeper sweep must not drop
+	skipSweep := maps.Clone(desired) // physical names the legacy Keeper sweep must not drop
+	unattributable := unattributableKeeperTables(snap, comments)
 	for _, physical := range sortedKeys(comments) {
 		keys, ok := history[physical]
 		if desired[physical] || !ok {
@@ -493,13 +532,18 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 		}
 		if !attributable(snap, keys, comments[physical]) {
 			skipSweep[physical] = true
+			unattributable[physical] = true
 			continue
 		}
 		accounted[physical] = true
-		r.dropLeftover(ctx, keys[0])
+		r.dropLeftover(ctx, snap, keys[0], comments[physical])
+	}
+	for physical := range legacyLive {
+		delete(scopedLive, physical)
 	}
 	if r.cfg.SweepDecommissioned {
-		r.sweepPurgedKeeperPaths(ctx, history, skipSweep)
+		r.sweepPurgedKeeperPaths(ctx, snap, history, skipSweep, unattributable, scopedLive)
+		r.auditKeeperIfDue(ctx, snap)
 	}
 	if err := r.reportUnknown(ctx, accounted); err != nil {
 		fatal = append(fatal, err)
@@ -522,21 +566,23 @@ func (r *Reconciler) targetFor(inc wire.TableIncarnation, genesisMode ddl.Mode) 
 	return target{inc: inc, schema: schema, mode: ddl.ModeCreateAndVerify, marker: inc.Seq}, nil
 }
 
-// ensurePresent creates and verifies one table. The expected table comment
-// is empty for a genesis table and IncarnationComment(seq) for a chain one. A
-// local table of a chain table with another comment is a leftover when the
-// registry records the incarnation it belongs to as Purged or Refused
-// (retiredLeftover); it is dropped before the create. Any other comment is
-// drift. hasUnsafe reports whether a local hg_unsafe table of that name
-// exists; before a chain incarnation's hg_unsafe is created, its Keeper path
-// must hold no decommissioned replica (clearDecommissioned).
+// ensurePresent creates and verifies one table, on its incarnation's Keeper
+// path (target.scope). The expected table comment is empty for a genesis
+// table and IncarnationComment(seq) for a chain one. A local table of a chain
+// table with another comment is a leftover when the registry records the
+// incarnation it belongs to as Purged or Refused (retiredLeftover); it is
+// dropped before the create, and this node's replica with it on every path
+// the leftovers used (leftoverScopes). Any other comment is drift. hasUnsafe
+// reports whether a local hg_unsafe table of that name exists; before a chain
+// incarnation's hg_unsafe is created, its Keeper path must hold no
+// decommissioned replica (clearDecommissioned).
 func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistrySnapshot, t target, comments []string, hasUnsafe bool) error {
 	key := t.inc.Key()
 	expected := ""
 	if t.marker != 0 {
 		expected = ddl.IncarnationComment(t.marker)
 	}
-	leftover := false
+	var leftovers []string
 	for _, comment := range comments {
 		if comment == expected {
 			continue
@@ -546,10 +592,10 @@ func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistryS
 			r.fail(key, t.inc.Seq, StateCreating, err)
 			return err
 		}
-		leftover = true
+		leftovers = append(leftovers, comment)
 	}
-	if leftover {
-		if err := ddl.DropTable(ctx, r.d.Conn, r.cfg.Pinned, key); err != nil {
+	if len(leftovers) > 0 {
+		if err := r.dropTables(ctx, key, leftoverScopes(snap, leftovers)); err != nil {
 			r.fail(key, t.inc.Seq, StateCreating, err)
 			return err
 		}
@@ -567,13 +613,14 @@ func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistryS
 			return err
 		}
 	}
+	scope := t.scope()
 	if t.marker != 0 && !hasUnsafe {
-		if err := r.clearDecommissioned(ctx, key); err != nil {
+		if err := r.clearDecommissioned(ctx, key, scope); err != nil {
 			r.fail(key, t.inc.Seq, StateCreating, err)
 			return err
 		}
 	}
-	if err := ddl.EnsureTable(ctx, r.d.Conn, r.cfg.Pinned, t.schema, t.marker, t.mode); err != nil {
+	if err := ddl.EnsureTableFor(ctx, r.d.Conn, r.cfg.Pinned, t.schema, scope, t.mode); err != nil {
 		r.fail(key, t.inc.Seq, StateCreating, err)
 		return err
 	}
@@ -666,9 +713,10 @@ func (r *Reconciler) owns(snap wire.TableRegistrySnapshot, inc wire.TableIncarna
 	return r.cfg.Owner == nil || snap.Owner(inc) == *r.cfg.Owner
 }
 
-// purge drops one Purging incarnation's tables and reports it. hasLocal is
-// false when no local table of that name exists (the drop is then a Keeper
-// check only).
+// purge drops one Purging incarnation's tables and reports it; its Keeper
+// work is on the incarnation's own path (KeeperScopeOf). hasLocal is false
+// when no local table of that name exists (the drop is then a Keeper check
+// only).
 func (r *Reconciler) purge(ctx context.Context, inc wire.TableIncarnation, hasLocal bool) {
 	key := inc.Key()
 	if slices.Contains(inc.PurgedBy, r.cfg.Pinned.NodeID) {
@@ -690,7 +738,8 @@ func (r *Reconciler) purge(ctx context.Context, inc wire.TableIncarnation, hasLo
 		}
 	}
 	r.setState(key, inc.Seq, StatePurging)
-	if err := ddl.DropTable(ctx, r.d.Conn, r.cfg.Pinned, key); err != nil {
+	scope := KeeperScopeOf(inc)
+	if err := ddl.DropTableFor(ctx, r.d.Conn, r.cfg.Pinned, key, scope); err != nil {
 		r.fail(key, inc.Seq, StatePurging, err)
 		return
 	}
@@ -702,7 +751,7 @@ func (r *Reconciler) purge(ctx context.Context, inc wire.TableIncarnation, hasLo
 		return
 	}
 	if r.cfg.SweepDecommissioned {
-		if err := r.sweep(ctx, key); err != nil {
+		if err := r.sweep(ctx, key, scope); err != nil {
 			r.fail(key, inc.Seq, StatePurging, err)
 			return
 		}
@@ -718,10 +767,10 @@ func (r *Reconciler) purge(ctx context.Context, inc wire.TableIncarnation, hasLo
 	r.d.Logger.Info("reported table purged", "table", key, "incarnation", inc.Seq, "node", r.cfg.Pinned.NodeID)
 }
 
-// sweep removes every replica under key's Keeper path that is neither this
-// node nor in the arbiter's purge node set.
-func (r *Reconciler) sweep(ctx context.Context, key string) error {
-	replicas, err := ddl.KeeperReplicas(ctx, r.d.Conn, r.cfg.Pinned, key)
+// sweep removes every replica under key's Keeper path in scope s that is
+// neither this node nor in the arbiter's purge node set.
+func (r *Reconciler) sweep(ctx context.Context, key string, s ddl.KeeperScope) error {
+	replicas, err := ddl.KeeperReplicasAt(ctx, r.d.Conn, r.cfg.Pinned.KeeperShardID, key, s)
 	if err != nil || len(replicas) == 0 {
 		return err
 	}
@@ -733,7 +782,7 @@ func (r *Reconciler) sweep(ctx context.Context, key string) error {
 		if replica == r.cfg.Pinned.NodeID || slices.Contains(nodes, replica) {
 			continue
 		}
-		if err := ddl.DropReplica(ctx, r.d.Conn, r.cfg.Pinned, key, replica); err != nil {
+		if err := ddl.DropReplicaAt(ctx, r.d.Conn, r.cfg.Pinned.KeeperShardID, key, s, replica); err != nil {
 			return err
 		}
 		r.d.Logger.Warn("dropped decommissioned replica", "table", key, "replica", replica)
@@ -742,17 +791,17 @@ func (r *Reconciler) sweep(ctx context.Context, key string) error {
 }
 
 // clearDecommissioned runs before this node creates a chain incarnation's
-// hg_unsafe table that it does not hold locally. A replica under the key's
-// Keeper path that is neither this node nor in the arbiter's purge node set
-// belongs to a decommissioned node, left behind when that node's eviction
-// completed an earlier incarnation's purge after the source's sweep. Joining
-// that path would fail with a different structure, or clone the evicted
-// replica's parts into the new incarnation. The source SNode
+// hg_unsafe table that it does not hold locally. A replica under the
+// incarnation's Keeper path (scope s) that is neither this node nor in the
+// arbiter's purge node set belongs to a decommissioned node, left behind when
+// that node's eviction completed an earlier incarnation's purge after the
+// source's sweep. Joining that path would fail with a different structure, or
+// clone the evicted replica's parts into the new incarnation. The source SNode
 // (SweepDecommissioned) removes such replicas (ClickHouse refuses an active
 // one, which fails the step); every other node refuses the create until the
 // source has removed them. An absent path lists no replica.
-func (r *Reconciler) clearDecommissioned(ctx context.Context, key string) error {
-	replicas, err := ddl.KeeperReplicas(ctx, r.d.Conn, r.cfg.Pinned, key)
+func (r *Reconciler) clearDecommissioned(ctx context.Context, key string, s ddl.KeeperScope) error {
+	replicas, err := ddl.KeeperReplicasAt(ctx, r.d.Conn, r.cfg.Pinned.KeeperShardID, key, s)
 	if err != nil {
 		return err
 	}
@@ -775,7 +824,7 @@ func (r *Reconciler) clearDecommissioned(ctx context.Context, key string) error 
 			blocking = append(blocking, replica)
 			continue
 		}
-		if err := ddl.DropReplica(ctx, r.d.Conn, r.cfg.Pinned, key, replica); err != nil {
+		if err := ddl.DropReplicaAt(ctx, r.d.Conn, r.cfg.Pinned.KeeperShardID, key, s, replica); err != nil {
 			return err
 		}
 		r.d.Logger.Warn("dropped decommissioned replica before create", "table", key, "replica", replica)
@@ -813,35 +862,152 @@ func (r *Reconciler) isOwed(key string) bool {
 }
 
 // sweepPurgedKeeperPaths catches a Keeper path that survived its purge
-// because a node was evicted after this node's sweep: for every key whose
-// live incarnation has no tables but whose path still exists, drop this
-// node's own stranded replica and sweep the rest. skip names the physical
-// tables it must leave alone: the desired ones and retired ones whose local
-// tables carry an unattributable marker.
-func (r *Reconciler) sweepPurgedKeeperPaths(ctx context.Context, history map[string][]string, skip map[string]bool) {
-	paths, err := ddl.KeeperUnsafeTables(ctx, r.d.Conn, r.cfg.Pinned)
+// because a node was evicted after this node's sweep, on both roots
+// (ddl.ListKeeperRoots; housegate spec 2026-10-14 §8.8):
+//   - a legacy path of a key whose live incarnation has no tables: drop this
+//     node's own stranded replica (with any leftover local table, as
+//     ddl.DropTable does) and sweep the rest. skip names the physical tables
+//     it must leave alone: the desired ones and retired ones whose local
+//     tables carry an unattributable marker;
+//   - a legacy path of a key whose live incarnation replicates on its
+//     incarnation path (scopedLive): only retired incarnations used that
+//     path, so its replicas are swept the same way, without touching the live
+//     incarnation's local tables (sweepRetiredPath);
+//   - the incarnation path of a Purged or Refused incarnation this node owns,
+//     whatever the key's live incarnation, because no other incarnation
+//     shares it (sweepRetiredPath), unless its physical name has local tables
+//     with an unattributable marker.
+//
+// A path that is no incarnation path of this node's is left alone; the
+// Keeper audit reports the ones that are no incarnation path at all.
+func (r *Reconciler) sweepPurgedKeeperPaths(ctx context.Context, snap wire.TableRegistrySnapshot, history map[string][]string, skip, unattributable map[string]bool, scopedLive map[string]string) {
+	roots, err := ddl.ListKeeperRoots(ctx, r.d.Conn, r.cfg.Pinned.KeeperShardID)
 	if err != nil {
 		r.d.Logger.Warn("list keeper table paths", "err", err)
 		return
 	}
-	for _, physical := range paths {
-		keys, ok := history[physical]
-		if !ok || skip[physical] {
+	for _, physical := range roots.Legacy {
+		if unattributable[physical] {
 			continue
 		}
-		key := keys[0]
-		if err := ddl.DropTable(ctx, r.d.Conn, r.cfg.Pinned, key); err != nil {
-			r.d.Logger.Warn("drop stranded replica", "table", key, "err", err)
+		if keys, ok := history[physical]; ok && !skip[physical] {
+			key := keys[0]
+			if err := ddl.DropTable(ctx, r.d.Conn, r.cfg.Pinned, key); err != nil {
+				r.d.Logger.Warn("drop stranded replica", "table", key, "err", err)
+				continue
+			}
+			if err := r.sweep(ctx, key, ddl.KeeperScope{}); err != nil {
+				r.d.Logger.Warn("sweep surviving keeper path", "table", key, "err", err)
+			}
 			continue
 		}
-		if err := r.sweep(ctx, key); err != nil {
-			r.d.Logger.Warn("sweep surviving keeper path", "table", key, "err", err)
+		if key, ok := scopedLive[physical]; ok {
+			r.sweepRetiredPath(ctx, key, ddl.KeeperScope{})
 		}
+	}
+	for _, path := range roots.Scoped {
+		inc := incarnation(snap, path.IncarnationSeq)
+		if inc == nil || !inc.ScopedKeeperPath || ddl.CHTableName(inc.Key()) != path.Table || !r.owns(snap, *inc) {
+			continue
+		}
+		if inc.Status != wire.TableStatusPurged && inc.Status != wire.TableStatusRefused {
+			continue
+		}
+		if unattributable[path.Table] {
+			continue
+		}
+		r.sweepRetiredPath(ctx, inc.Key(), KeeperScopeOf(*inc))
 	}
 }
 
-func (r *Reconciler) dropLeftover(ctx context.Context, key string) {
-	if err := ddl.DropTable(ctx, r.d.Conn, r.cfg.Pinned, key); err != nil {
+// sweepRetiredPath empties key's Keeper path in scope s, which no live
+// incarnation uses: it removes this node's own stranded replica (ClickHouse
+// refuses an active one) and sweeps every replica outside the arbiter's purge
+// node set. It never drops a local table.
+func (r *Reconciler) sweepRetiredPath(ctx context.Context, key string, s ddl.KeeperScope) {
+	shard := r.cfg.Pinned.KeeperShardID
+	replicas, err := ddl.KeeperReplicasAt(ctx, r.d.Conn, shard, key, s)
+	if err != nil {
+		r.d.Logger.Warn("sweep surviving keeper path", "table", key, "path", ddl.ZooKeeperPathFor(shard, key, s), "err", err)
+		return
+	}
+	if slices.Contains(replicas, r.cfg.Pinned.NodeID) {
+		if err := ddl.DropReplicaAt(ctx, r.d.Conn, shard, key, s, r.cfg.Pinned.NodeID); err != nil {
+			r.d.Logger.Warn("drop stranded replica", "table", key, "path", ddl.ZooKeeperPathFor(shard, key, s), "err", err)
+			return
+		}
+	}
+	if err := r.sweep(ctx, key, s); err != nil {
+		r.d.Logger.Warn("sweep surviving keeper path", "table", key, "path", ddl.ZooKeeperPathFor(shard, key, s), "err", err)
+	}
+}
+
+// dropTables drops key's local tables and this node's stranded replica on
+// the path of each scope (the first call drops the tables; each later one
+// finds none and checks its own path).
+func (r *Reconciler) dropTables(ctx context.Context, key string, scopes []ddl.KeeperScope) error {
+	for _, scope := range scopes {
+		if err := ddl.DropTableFor(ctx, r.d.Conn, r.cfg.Pinned, key, scope); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// leftoverScopes returns the Keeper scopes of the earlier incarnations whose
+// local tables carry comments, in order and without duplicates: a marker
+// names its incarnation, and an unmarked table is the genesis incarnation's,
+// which is never scoped. It is the legacy scope alone when none is scoped,
+// so an unscoped leftover is dropped exactly as before.
+func leftoverScopes(snap wire.TableRegistrySnapshot, comments []string) []ddl.KeeperScope {
+	var out []ddl.KeeperScope
+	for _, comment := range comments {
+		scope := ddl.KeeperScope{}
+		if seq, ok := ddl.ParseIncarnationComment(comment); ok {
+			if inc := incarnation(snap, seq); inc != nil && inc.ScopedKeeperPath {
+				scope = KeeperScopeOf(*inc)
+			}
+		}
+		if !slices.Contains(out, scope) {
+			out = append(out, scope)
+		}
+	}
+	if len(out) == 0 {
+		out = []ddl.KeeperScope{{}}
+	}
+	return out
+}
+
+// unattributableKeeperTables protects local Keeper metadata even for a
+// desired scoped key, including passes that skip its create during backoff.
+// A local table must have a known incarnation marker of its physical name,
+// or be unmarked with a matching genesis incarnation. Unknown markers do not
+// authorize sweeping either root, even if the registry's desired scope moved.
+func unattributableKeeperTables(snap wire.TableRegistrySnapshot, comments map[string][]string) map[string]bool {
+	markers := map[string]map[string]bool{}
+	for _, inc := range snap.Incarnations {
+		physical := ddl.CHTableName(inc.Key())
+		if markers[physical] == nil {
+			markers[physical] = map[string]bool{}
+		}
+		markers[physical][ddl.IncarnationComment(inc.Seq)] = true
+		if inc.Origin == wire.TableOriginGenesis {
+			markers[physical][""] = true
+		}
+	}
+	protected := map[string]bool{}
+	for physical, values := range comments {
+		for _, value := range values {
+			if !markers[physical][value] {
+				protected[physical] = true
+			}
+		}
+	}
+	return protected
+}
+
+func (r *Reconciler) dropLeftover(ctx context.Context, snap wire.TableRegistrySnapshot, key string, comments []string) {
+	if err := r.dropTables(ctx, key, leftoverScopes(snap, comments)); err != nil {
 		r.d.Logger.Warn("drop leftover protocol tables", "table", key, "err", err)
 		r.mu.Lock()
 		r.failures[key]++

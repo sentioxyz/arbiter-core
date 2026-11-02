@@ -44,39 +44,59 @@ func ParseIncarnationComment(comment string) (uint64, bool) {
 	return seq, true
 }
 
-// IncarnationIntents is Intents for one registry incarnation: incarnationSeq
-// 0 renders the unmarked genesis tables, any other value marks all three with
-// IncarnationComment(incarnationSeq).
+// IncarnationIntents is Intents for one registry incarnation on the legacy
+// Keeper path: incarnationSeq 0 renders the unmarked genesis tables, any other
+// value marks all three with IncarnationComment(incarnationSeq). It is
+// IncarnationIntentsFor with KeeperScope{IncarnationSeq: incarnationSeq}.
 func IncarnationIntents(p Pinned, t payloadexec.TableSchema, incarnationSeq uint64) (TableIntent, TableIntent, TableIntent, error) {
+	return IncarnationIntentsFor(p, t, KeeperScope{IncarnationSeq: incarnationSeq})
+}
+
+// IncarnationIntentsFor is Intents for one registry incarnation in Keeper
+// scope s: s.IncarnationSeq 0 renders the unmarked genesis tables, any other
+// value marks all three with IncarnationComment(s.IncarnationSeq), and
+// hg_unsafe replicates at ZooKeeperPathFor(p.KeeperShardID, t.TableID, s).
+func IncarnationIntentsFor(p Pinned, t payloadexec.TableSchema, s KeeperScope) (TableIntent, TableIntent, TableIntent, error) {
+	if err := s.validate(); err != nil {
+		return TableIntent{}, TableIntent{}, TableIntent{}, err
+	}
 	unsafe, safe, promote, err := Intents(p, t)
 	if err != nil {
 		return TableIntent{}, TableIntent{}, TableIntent{}, err
 	}
-	if incarnationSeq != 0 {
-		comment := IncarnationComment(incarnationSeq)
+	unsafe.ZooKeeperPath = ZooKeeperPathFor(p.KeeperShardID, t.TableID, s)
+	if s.IncarnationSeq != 0 {
+		comment := IncarnationComment(s.IncarnationSeq)
 		unsafe.Comment, safe.Comment, promote.Comment = comment, comment, comment
 	}
 	return unsafe, safe, promote, nil
 }
 
-// EnsureTable creates (ModeCreateAndVerify) and verifies the hg_unsafe,
-// hg_safe and hg_promote tables of one table; ModeVerifyOnly only verifies and
-// ModeOff does nothing. incarnationSeq is 0 for a genesis table and the
-// registry incarnation otherwise (IncarnationIntents). A crash between
-// ClickHouse registering this node's hg_unsafe replica in Keeper and writing
-// the local table leaves the replica behind, and the next CREATE fails with
-// REPLICA_ALREADY_EXISTS; EnsureTable then removes the stale replica (refused
-// by ClickHouse while any server holds it active) and creates once more. It
-// does so only when the table is absent locally, attached or detached: a
-// detached table's replica is its own Keeper metadata, never stale.
+// EnsureTable is EnsureTableFor on the legacy Keeper path:
+// KeeperScope{IncarnationSeq: incarnationSeq}, where incarnationSeq is 0 for
+// a genesis table and the registry incarnation otherwise.
 func EnsureTable(ctx context.Context, conn clickhouse.Conn, p Pinned, t payloadexec.TableSchema, incarnationSeq uint64, mode Mode) error {
+	return EnsureTableFor(ctx, conn, p, t, KeeperScope{IncarnationSeq: incarnationSeq}, mode)
+}
+
+// EnsureTableFor creates (ModeCreateAndVerify) and verifies the hg_unsafe,
+// hg_safe and hg_promote tables of one table in Keeper scope s
+// (IncarnationIntentsFor); ModeVerifyOnly only verifies and ModeOff does
+// nothing. A crash between ClickHouse registering this node's hg_unsafe
+// replica in Keeper and writing the local table leaves the replica behind, and
+// the next CREATE fails with REPLICA_ALREADY_EXISTS; EnsureTableFor then
+// removes the stale replica from s's own path (refused by ClickHouse while any
+// server holds it active) and creates once more. It does so only when the
+// table is absent locally, attached or detached: a detached table's replica is
+// its own Keeper metadata, never stale.
+func EnsureTableFor(ctx context.Context, conn clickhouse.Conn, p Pinned, t payloadexec.TableSchema, s KeeperScope, mode Mode) error {
 	if mode == ModeOff {
 		return nil
 	}
 	if err := validatePinned(conn, p); err != nil {
 		return err
 	}
-	unsafe, safe, promote, err := IncarnationIntents(p, t, incarnationSeq)
+	unsafe, safe, promote, err := IncarnationIntentsFor(p, t, s)
 	if err != nil {
 		return err
 	}
@@ -108,8 +128,10 @@ func EnsureTable(ctx context.Context, conn clickhouse.Conn, p Pinned, t payloade
 }
 
 // dropStaleReplica removes this node's replica of tableID's hg_unsafe table
-// after its CREATE failed with REPLICA_ALREADY_EXISTS. The replica is stale
-// only if no local table of that name exists: a detached one (DETACH, DETACH
+// after its CREATE failed with REPLICA_ALREADY_EXISTS, from the Keeper path
+// of that CREATE (intent.ZooKeeperPath, its scope's own path: a scoped create
+// never touches the legacy path, nor the reverse). The replica is stale only
+// if no local table of that name exists: a detached one (DETACH, DETACH
 // PERMANENTLY, or a table that failed to attach) still owns its Keeper
 // metadata, and SYSTEM DROP REPLICA would destroy it. Such a table fails the
 // create instead, for an operator to attach or drop.
@@ -124,17 +146,26 @@ func dropStaleReplica(ctx context.Context, conn clickhouse.Conn, p Pinned, table
 	if attached != 0 || detached != 0 {
 		return fmt.Errorf("ddl: %s.%s exists locally (attached %d, detached %d); not removing its keeper replica %s", intent.Database, intent.Table, attached, detached, p.NodeID)
 	}
-	return DropReplica(ctx, conn, p, tableID, p.NodeID)
+	return dropReplicaAtPath(ctx, conn, intent.ZooKeeperPath, p.NodeID)
 }
 
-// DropTable drops tableID's hg_promote, hg_safe and hg_unsafe tables, in that
-// order, each with DROP TABLE IF EXISTS ... SYNC. Dropping hg_unsafe removes
-// this node's replica from Keeper, and the last replica removes the table's
-// Keeper path. If a crash separated the local drop from the Keeper removal,
-// this node's replica is still listed with no local table; DropTable removes
-// it too, so a repeated call converges.
+// DropTable is DropTableFor on the legacy Keeper path (the zero KeeperScope).
 func DropTable(ctx context.Context, conn clickhouse.Conn, p Pinned, tableID string) error {
+	return DropTableFor(ctx, conn, p, tableID, KeeperScope{})
+}
+
+// DropTableFor drops tableID's hg_promote, hg_safe and hg_unsafe tables, in
+// that order, each with DROP TABLE IF EXISTS ... SYNC. Dropping hg_unsafe
+// removes this node's replica from Keeper, and the last replica removes the
+// table's Keeper path. If a crash separated the local drop from the Keeper
+// removal, this node's replica is still listed under the path of scope s with
+// no local table; DropTableFor removes it there too, so a repeated call
+// converges.
+func DropTableFor(ctx context.Context, conn clickhouse.Conn, p Pinned, tableID string, s KeeperScope) error {
 	if err := validatePinned(conn, p); err != nil {
+		return err
+	}
+	if err := s.validate(); err != nil {
 		return err
 	}
 	table := CHTableName(tableID)
@@ -143,35 +174,58 @@ func DropTable(ctx context.Context, conn clickhouse.Conn, p Pinned, tableID stri
 			return fmt.Errorf("ddl: drop %s.%s: %w", database, table, err)
 		}
 	}
-	replicas, err := KeeperReplicas(ctx, conn, p, tableID)
+	replicas, err := KeeperReplicasAt(ctx, conn, p.KeeperShardID, tableID, s)
 	if err != nil {
 		return err
 	}
 	for _, replica := range replicas {
 		if replica == p.NodeID {
-			return DropReplica(ctx, conn, p, tableID, replica)
+			return DropReplicaAt(ctx, conn, p.KeeperShardID, tableID, s, replica)
 		}
 	}
 	return nil
 }
 
 // KeeperReplicas returns the sorted replica names registered under tableID's
-// Keeper path; none when the path does not exist.
+// legacy Keeper path; none when the path does not exist.
 func KeeperReplicas(ctx context.Context, conn clickhouse.Conn, p Pinned, tableID string) ([]string, error) {
-	return keeperChildren(ctx, conn, ZooKeeperPath(p, tableID)+"/replicas")
+	return KeeperReplicasAt(ctx, conn, p.KeeperShardID, tableID, KeeperScope{})
+}
+
+// KeeperReplicasAt returns the sorted replica names registered under tableID's
+// Keeper path in scope s; none when the path does not exist.
+func KeeperReplicasAt(ctx context.Context, conn clickhouse.Conn, keeperShardID uint32, tableID string, s KeeperScope) ([]string, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	return keeperChildren(ctx, conn, ZooKeeperPathFor(keeperShardID, tableID, s)+"/replicas")
 }
 
 // KeeperUnsafeTables returns the physical table names that have a Keeper path
-// under /sentio/<keeper_shard_id>/unsafe.
+// under the legacy root /sentio/<keeper_shard_id>/unsafe (ListKeeperRoots
+// lists both roots).
 func KeeperUnsafeTables(ctx context.Context, conn clickhouse.Conn, p Pinned) ([]string, error) {
-	return keeperChildren(ctx, conn, fmt.Sprintf("/sentio/%d/unsafe", p.KeeperShardID))
+	return keeperChildren(ctx, conn, keeperRootPath(p.KeeperShardID, KeeperUnsafeRoot))
 }
 
-// DropReplica removes one replica of tableID's hg_unsafe table from Keeper
-// (SYSTEM DROP REPLICA ... FROM ZKPATH). ClickHouse refuses an active replica;
-// removing the last replica also removes the table's Keeper path.
+// DropReplica removes one replica of tableID's hg_unsafe table from its legacy
+// Keeper path (DropReplicaAt with the zero KeeperScope).
 func DropReplica(ctx context.Context, conn clickhouse.Conn, p Pinned, tableID, replica string) error {
-	path := ZooKeeperPath(p, tableID)
+	return DropReplicaAt(ctx, conn, p.KeeperShardID, tableID, KeeperScope{}, replica)
+}
+
+// DropReplicaAt removes one replica of tableID's hg_unsafe (or
+// hg_member_unsafe) table from its Keeper path in scope s (SYSTEM DROP
+// REPLICA ... FROM ZKPATH). ClickHouse refuses an active replica; removing the
+// last replica also removes that path and every child of it.
+func DropReplicaAt(ctx context.Context, conn clickhouse.Conn, keeperShardID uint32, tableID string, s KeeperScope, replica string) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	return dropReplicaAtPath(ctx, conn, ZooKeeperPathFor(keeperShardID, tableID, s), replica)
+}
+
+func dropReplicaAtPath(ctx context.Context, conn clickhouse.Conn, path, replica string) error {
 	if err := conn.Exec(ctx, fmt.Sprintf("SYSTEM DROP REPLICA %s FROM ZKPATH %s", quoteLiteral(replica), quoteLiteral(path))); err != nil {
 		return fmt.Errorf("ddl: drop replica %s from %s: %w", replica, path, err)
 	}

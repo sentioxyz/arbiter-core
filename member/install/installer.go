@@ -160,7 +160,10 @@ var outcomes = []Outcome{OutcomeKept, OutcomeRenameRace, OutcomeSplit, OutcomeDo
 // parts, and empty before its first install. Diverged is true while a
 // partition awaits a rebuild, the copy holds parts the journal does not list
 // yet, or the copy was not audited since the start or the last ClickHouse
-// restart; Foreign while the table is quarantined.
+// restart; Foreign while the table is quarantined. Installing is true from
+// the first change of the copy in a pass to the end of the owner's journal
+// write: its bytes may already differ from the manifest Entry and SnapshotID
+// still name (the member consensus mode never checkpoints it then).
 type TableState struct {
 	Owner             uint64
 	TableKey          string
@@ -169,6 +172,7 @@ type TableState struct {
 	Entry             replay.TrackFrontier
 	SnapshotID        string
 	Diverged, Foreign bool
+	Installing        bool
 }
 
 // Stats are the installer's counters and gauges. Every outcome, P2 source,
@@ -229,7 +233,8 @@ type Installer struct {
 	// mu guards everything below; it is never held across a ClickHouse call.
 	mu            sync.Mutex
 	journal       *Journal
-	pending       map[string]int // "<owner>/<table key>" -> unjournaled local parts awaiting adoption
+	pending       map[string]int  // "<owner>/<table key>" -> unjournaled local parts awaiting adoption
+	committing    map[string]bool // "<owner>/<table key>" -> a pass is changing the copy before its journal write
 	deferred      map[string]*deferral
 	counts        map[Outcome]uint64
 	installs      map[string]uint64
@@ -315,7 +320,7 @@ func New(cfg Config, d Deps) (*Installer, error) {
 	}
 	return &Installer{
 		cfg: cfg, d: d, path: path, zeroRoot: zeroRoot, journal: j,
-		pending: map[string]int{}, deferred: map[string]*deferral{},
+		pending: map[string]int{}, committing: map[string]bool{}, deferred: map[string]*deferral{},
 		counts: map[Outcome]uint64{}, installs: map[string]uint64{}, diverged: map[uint64]uint64{}, auditRuns: map[string]uint64{},
 		auditTrigger: TriggerStartup, audited: map[string]bool{}, probed: map[string]bool{},
 	}, nil
@@ -491,6 +496,8 @@ func (i *Installer) applyOwner(ctx context.Context, u manifestfeed.Update, owner
 			return err
 		}
 	}
+	i.setCommitting(owner, passes, true)
+	defer i.setCommitting(owner, passes, false)
 	for k, p := range passes {
 		if err := i.commit(ctx, gates, p); err != nil {
 			i.markUnjournaled(owner, passes[:k+1])
@@ -498,6 +505,25 @@ func (i *Installer) applyOwner(ctx context.Context, u manifestfeed.Update, owner
 		}
 	}
 	return i.journalOwner(ctx, u, owner, entry, passes)
+}
+
+// setCommitting marks (on) or clears every copy of passes that the pass
+// changes as Installing in Tables. applyOwner sets it before the first change
+// and clears it after the journal write or the failure, which leaves a copy
+// it changed Diverged through markUnjournaled.
+func (i *Installer) setCommitting(owner uint64, passes []*tablePass, on bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for _, p := range passes {
+		if len(p.jobs) == 0 {
+			continue
+		}
+		if on {
+			i.committing[pendingKey(owner, p.copy.TableKey)] = true
+		} else {
+			delete(i.committing, pendingKey(owner, p.copy.TableKey))
+		}
+	}
 }
 
 // ownerAhead reports whether owner's journaled entry is ahead of entry, the
@@ -1234,6 +1260,7 @@ func (i *Installer) Tables(owner uint64) []TableState {
 			}
 		}
 		st.Diverged = st.Diverged || i.pending[pendingKey(owner, c.TableKey)] > 0 || !i.audited[auditKey(c)]
+		st.Installing = i.committing[pendingKey(owner, c.TableKey)]
 		out = append(out, st)
 	}
 	return out

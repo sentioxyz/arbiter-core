@@ -12,14 +12,15 @@
 # peer si-peer (<image>, the owner's and the verifiers' ClickHouse) and MinIO
 # si-minio with one bucket and a key generated for this run. Runs the suite,
 # then the tests of member/sources against the same servers, and removes
-# everything it started. Every TestConfinement_ function and every test of
-# member/sources/*_ch_test.go must report PASS; a skipped test of either
-# target fails the run.
+# everything it started. Every TestConfinement_ and TestMember function of
+# the suite (the latter the member consensus mode's ClickHouse tests, Plan
+# S3-E1 Task 62) and every test of member/sources/*_ch_test.go must report
+# PASS; a skipped test of either target fails the run.
 #
 # Environment: ARBITER_CH_PLATFORM (for example linux/amd64) is passed to
 # docker pull and docker run of <image>. ARBITER_CH_MEMBER_CONFINEMENT_FILTER
-# (a Go regexp) limits the suite to the TestConfinement_ functions it matches
-# and skips the member/sources run.
+# (a Go regexp) limits the suite to the TestConfinement_ and TestMember
+# functions it matches and skips the member/sources run.
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -137,14 +138,14 @@ env_flags=(
   --test_env=S3_ENDPOINT --test_env=S3_BUCKET --test_env=S3_ACCESS_KEY_ID --test_env=S3_SECRET
 )
 
-required="$(grep -ho '^func TestConfinement_[A-Za-z0-9_]*' member/confinement/*_test.go | sed 's/^func //' | sort -u || true)"
+required="$(grep -hoE '^func Test(Confinement_|Member)[A-Za-z0-9_]*' member/confinement/*_test.go | sed 's/^func //' | sort -u || true)"
 filter_flag=""
 if [ -n "${ARBITER_CH_MEMBER_CONFINEMENT_FILTER:-}" ]; then
   required="$(printf '%s\n' "${required}" | grep -E -- "${ARBITER_CH_MEMBER_CONFINEMENT_FILTER}" || true)"
   filter_flag="--test_filter=${ARBITER_CH_MEMBER_CONFINEMENT_FILTER}"
 fi
 if [ -z "${required}" ]; then
-  echo "no TestConfinement_ function to run" >&2
+  echo "no TestConfinement_ or TestMember function to run" >&2
   exit 1
 fi
 

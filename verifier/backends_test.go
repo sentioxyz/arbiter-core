@@ -85,8 +85,8 @@ func TestNewScanner_DefaultsUnsafeDatabaseAndMapsTableName(t *testing.T) {
 
 	scanner := NewScanner(cfg, nil)
 
-	if scanner.cfg.UnsafeDatabase != "hg_unsafe" {
-		t.Fatalf("unsafe db default: %q", scanner.cfg.UnsafeDatabase)
+	if scanner.Database() != "hg_unsafe" {
+		t.Fatalf("unsafe db default: %q", scanner.Database())
 	}
 	if got := ddl.CHTableName("db.table.with.dots"); got != "db__table__with__dots" {
 		t.Fatalf("physical table name: %q", got)

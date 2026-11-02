@@ -39,10 +39,58 @@ func ValidatePhysicalTableNames(tables []payloadexec.TableSchema) error {
 	return nil
 }
 
-// ZooKeeperPath is the anchored replication path of an hg_unsafe table:
-// /sentio/<keeper_shard_id>/unsafe/<CHTableName>.
+// The two Keeper roots of the SI unsafe replicas (housegate spec 2026-10-14
+// §8.8). An incarnation recorded before the stage-3 purge switch replicates
+// under the legacy root, one recorded after it under the incarnation-scoped
+// root. The roots are siblings under /sentio/<shard>, so no incarnation path
+// is ever a descendant of a legacy table path, whose last replica's drop
+// removes every child of it.
+const (
+	KeeperUnsafeRoot       = "unsafe"     // /sentio/<shard>/unsafe/<db__table>
+	KeeperScopedUnsafeRoot = "unsafe_inc" // /sentio/<shard>/unsafe_inc/<db__table>/<incarnation_seq>
+)
+
+// KeeperScope selects one incarnation's Keeper path; the zero value is the legacy unscoped path.
+type KeeperScope struct {
+	// IncarnationSeq is the registry incarnation. It marks the tables'
+	// COMMENT (IncarnationComment; 0 for a genesis table, which carries
+	// none) and, when Scoped, names the incarnation path.
+	IncarnationSeq uint64
+	// Scoped selects /sentio/<shard>/unsafe_inc/<db__table>/<IncarnationSeq>,
+	// the path of an incarnation the registry marks scoped_keeper_path.
+	Scoped bool
+}
+
+// validate refuses a scoped path without an incarnation: seq 0 is the
+// unmarked genesis incarnation, which never uses an incarnation path.
+func (s KeeperScope) validate() error {
+	if s.Scoped && s.IncarnationSeq == 0 {
+		return errors.New("ddl: an incarnation-scoped Keeper path needs an incarnation seq of at least 1")
+	}
+	return nil
+}
+
+// ZooKeeperPathFor is the replication path of tableID's hg_unsafe (or
+// hg_member_unsafe) table in scope s: /sentio/<shard>/unsafe/<CHTableName>
+// unscoped, /sentio/<shard>/unsafe_inc/<CHTableName>/<IncarnationSeq> scoped.
+// Every function that acts on a path refuses a scoped s with seq 0.
+func ZooKeeperPathFor(keeperShardID uint32, tableID string, s KeeperScope) string {
+	if s.Scoped {
+		return fmt.Sprintf("/sentio/%d/%s/%s/%d", keeperShardID, KeeperScopedUnsafeRoot, CHTableName(tableID), s.IncarnationSeq)
+	}
+	return fmt.Sprintf("/sentio/%d/%s/%s", keeperShardID, KeeperUnsafeRoot, CHTableName(tableID))
+}
+
+// keeperRootPath is /sentio/<shard>/<root>.
+func keeperRootPath(keeperShardID uint32, root string) string {
+	return fmt.Sprintf("/sentio/%d/%s", keeperShardID, root)
+}
+
+// ZooKeeperPath is the anchored replication path of an hg_unsafe table on the
+// legacy root: /sentio/<keeper_shard_id>/unsafe/<CHTableName>
+// (ZooKeeperPathFor with the zero KeeperScope).
 func ZooKeeperPath(p Pinned, tableID string) string {
-	return fmt.Sprintf("/sentio/%d/unsafe/%s", p.KeeperShardID, CHTableName(tableID))
+	return ZooKeeperPathFor(p.KeeperShardID, tableID, KeeperScope{})
 }
 
 func quoteIdent(id string) string {
