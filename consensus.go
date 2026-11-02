@@ -32,9 +32,17 @@ const SignedClaimsFeature = "signed_claims_v1"
 // data-plane registration without it.
 const TrackManifestsFeature = "track_manifests_v1"
 
+// Stage3Feature is the capability string of a binary that decodes the stage-3
+// v21 wire contract: the stage3 parameter, the member VerifierEntry fields,
+// Raft tags 38-42 and the registry view of groups (housegate spec 2026-10-14
+// §10.3; plan S3-E1 K65). The v21 activation requires it from every voter and
+// from every registered, non-evicted data-plane node not on a quarantined
+// track; a leader that predates it keeps the string without acting on it.
+const Stage3Feature = "stage3_v1"
+
 // LocalNodeFeatures returns this binary's capability strings in a fresh slice.
 func LocalNodeFeatures() []string {
-	return []string{ClientLanesFeature, SignedClaimsFeature, TrackManifestsFeature}
+	return []string{ClientLanesFeature, SignedClaimsFeature, TrackManifestsFeature, Stage3Feature}
 }
 
 // signerAddressPattern is a normalized (lowercase) 20-byte address.
