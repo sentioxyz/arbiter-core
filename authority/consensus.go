@@ -94,6 +94,14 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if cmd.PartClaimUniqueness && !cmd.TracksEnabled {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: part_claim_uniqueness requires tracks_enabled in the same update")
 	}
+	if cmd.MembershipLeaseL2Blocks != 0 {
+		if cmd.TableRegistry == nil {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: membership_lease_l2_blocks requires table_registry in the same update")
+		}
+		if cmd.MembershipLeaseL2Blocks < arbiter.MinMembershipLeaseL2Blocks {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: membership_lease_l2_blocks %d is below the floor of %d L2 blocks; the lease must be far longer than the renewal interval in L2 blocks", cmd.MembershipLeaseL2Blocks, arbiter.MinMembershipLeaseL2Blocks)
+		}
+	}
 	voters, err := normalizeVoters(cmd.Voters, MessageContext{NetworkID: cmd.NetworkID, GenesisSnapshotID: cmd.GenesisSnapshotID})
 	if err != nil {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)

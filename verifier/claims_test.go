@@ -27,8 +27,22 @@ import (
 type membershipFakeV struct {
 	pb.UnimplementedMembershipServer
 	mu    sync.Mutex
-	regs  []*pb.NodeRegistration
-	marks []*pb.NodeRef
+	regs     []*pb.NodeRegistration
+	marks    []*pb.NodeRef
+	renewals []*pb.NodeLeaseRenewal
+}
+
+func (f *membershipFakeV) RenewNodeLease(_ context.Context, m *pb.NodeLeaseRenewal) (*pb.Ack, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renewals = append(f.renewals, m)
+	return &pb.Ack{}, nil
+}
+
+func (f *membershipFakeV) leaseRenewals() []*pb.NodeLeaseRenewal {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.renewals)
 }
 
 func (f *membershipFakeV) RegisterNode(_ context.Context, m *pb.NodeRegistration) (*pb.Ack, error) {

@@ -49,6 +49,7 @@ go_test(
         "known_keeper_replica_test.go",
         "legacy_command_golden_test.go",
         "manifest_owner_test.go",
+        "membership_lease_test.go",
         "registration_request_only_test.go",
         "safe_state_reads_test.go",
         "scan_hash_test.go",

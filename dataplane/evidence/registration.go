@@ -12,6 +12,7 @@ import (
 
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
+	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -118,7 +119,9 @@ func writeRegistrationSeq(dir string, seq uint64) error {
 // VerifierRegistrationRequests builds the signed RegisterNode and MarkActive
 // requests of one Register call of a VERIFIER-role node: both carry seq and
 // are signed with priv, the key that signs the node's evidence, in ctx; the
-// registration advertises arbiter.LocalNodeFeatures().
+// registration advertises arbiter.LocalNodeFeatures() and
+// arbiter.MembershipLeaseFeature: every verifier role renews its lease with
+// VerifierLeaseSigner.
 func VerifierRegistrationRequests(priv ed25519.PrivateKey, nodeID string, seq uint64, ctx authority.MessageContext) (*pb.NodeRegistration, *pb.NodeRef, error) {
 	reg := wire.RegisterNode{Registration: arbiter.NodeRegistration{NodeID: nodeID,
 		Roles: []arbiter.NodeRole{arbiter.NodeRoleVerifier}, Ed25519Pubkey: priv.Public().(ed25519.PublicKey), RegistrationSeq: seq}}
@@ -131,5 +134,25 @@ func VerifierRegistrationRequests(priv ed25519.PrivateKey, nodeID string, seq ui
 		authority.MarkActiveBody{NodeID: mark.NodeID, RegistrationSeq: seq}); err != nil {
 		return nil, nil, err
 	}
-	return wire.RegisterNodeToRequest(reg, arbiter.LocalNodeFeatures()), wire.MarkActiveToRequest(mark), nil
+	return wire.RegisterNodeToRequest(reg, VerifierNodeFeatures()), wire.MarkActiveToRequest(mark), nil
+}
+
+// VerifierNodeFeatures is what a VERIFIER-role registration advertises:
+// arbiter.LocalNodeFeatures and arbiter.MembershipLeaseFeature, because every
+// verifier role signs and renews its membership lease.
+func VerifierNodeFeatures() []string {
+	return append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature)
+}
+
+// VerifierLeaseSigner signs a VERIFIER-role node's membership lease renewals
+// with priv, the key that signs its registration and evidence, in ctx.
+func VerifierLeaseSigner(priv ed25519.PrivateKey, ctx authority.MessageContext) dataplane.LeaseSignFunc {
+	return func(body authority.LeaseRenewalBody) (wire.RenewNodeLease, error) {
+		sig, err := authority.SignVerifierMessage(priv, authority.VerifierMessageLeaseRenewal, ctx, body)
+		if err != nil {
+			return wire.RenewNodeLease{}, err
+		}
+		return wire.RenewNodeLease{NodeID: body.NodeID, RegistrationSeq: body.RegistrationSeq, LeaseSeq: body.LeaseSeq,
+			Ed25519Signature: sig}, nil
+	}
 }

@@ -5,6 +5,7 @@ go_test(
     srcs = [
         "anchor_finality_test.go",
         "arbiter_wire_test.go",
+        "membership_lease_test.go",
         "replay_wire_test.go",
         "signed_claims_test.go",
         "snapshot_query_wire_test.go",
@@ -17,6 +18,7 @@ go_test(
     data = glob(["testdata/**"]),
     deps = [
         "//:arbiter-core",
+        "//authority",
         "//wire",
         "@com_github_ethereum_go_ethereum//crypto",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",

@@ -48,6 +48,7 @@ go_test(
         "da_put_test.go",
         "evict_node_test.go",
         "manifest_delta_snapshot_test.go",
+        "membership_lease_test.go",
         "multisig_test.go",
         "promotion_finality_test.go",
         "quarantine_test.go",

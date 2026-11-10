@@ -46,6 +46,20 @@ type claimsFakeS struct {
 	cleanups          []*pb.CleanupAck
 	cleanupAckErr     error
 	refusedCleanups   []*pb.CleanupAck
+	renewals          []*pb.NodeLeaseRenewal
+}
+
+func (f *claimsFakeS) RenewNodeLease(_ context.Context, m *pb.NodeLeaseRenewal) (*pb.Ack, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renewals = append(f.renewals, m)
+	return &pb.Ack{}, nil
+}
+
+func (f *claimsFakeS) leaseRenewals() []*pb.NodeLeaseRenewal {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.renewals)
 }
 
 func (f *claimsFakeS) RegisterNode(_ context.Context, m *pb.NodeRegistration) (*pb.Ack, error) {

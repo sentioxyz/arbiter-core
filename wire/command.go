@@ -109,6 +109,20 @@ type MarkActive struct {
 	Ed25519Signature string
 }
 
+// RenewNodeLease mirrors pb.RenewNodeLeaseCmd (Raft tag 44) and its request,
+// pb.NodeLeaseRenewal: one node's signed membership lease renewal, bound to
+// its current registration_seq and a lease_seq that strictly increases within
+// that registration. SignerJWS signs an SNODE renewal, Ed25519Signature a
+// VERIFIER one (authority kind "lease_renewal"). Proposed only after
+// membership_lease_l2_blocks is committed.
+type RenewNodeLease struct {
+	NodeID           string
+	RegistrationSeq  uint64
+	LeaseSeq         uint64
+	SignerJWS        string
+	Ed25519Signature string
+}
+
 // EvictNode mirrors pb.EvictNodeCmd. ExpectedRegistrationSeq and AuthorityJWS
 // are set only by the authority-signed EvictNode RPC after the activation.
 type EvictNode struct {
@@ -214,6 +228,9 @@ type Command struct {
 	// Anchor finality quorum: Raft tag 43, proposed only after the
 	// anchor_finality parameter is committed.
 	RecordAnchorFinalityAttestation *RecordAnchorFinalityAttestation `json:",omitempty"`
+	// Membership lease: Raft tag 44, proposed only after the
+	// membership_lease_l2_blocks parameter is committed.
+	RenewNodeLease *RenewNodeLease `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -416,6 +433,10 @@ func Encode(c Command) ([]byte, error) {
 		out.Cmd = &pb.RaftCommand_RecordAnchorFinalityAttestation{RecordAnchorFinalityAttestation: &pb.RecordAnchorFinalityAttestationCmd{
 			Attestation: AnchorFinalityAttestationToPB(c.RecordAnchorFinalityAttestation.Attestation)}}
 	}
+	if c.RenewNodeLease != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_RenewNodeLease{RenewNodeLease: &pb.RenewNodeLeaseCmd{Renewal: RenewNodeLeaseToRequest(*c.RenewNodeLease)}}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -519,6 +540,9 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_RecordAnchorFinalityAttestation:
 		return Command{RecordAnchorFinalityAttestation: &RecordAnchorFinalityAttestation{
 			Attestation: AnchorFinalityAttestationFromPB(cmd.RecordAnchorFinalityAttestation.GetAttestation())}}, nil
+	case *pb.RaftCommand_RenewNodeLease:
+		v := RenewNodeLeaseFromRequest(cmd.RenewNodeLease.GetRenewal())
+		return Command{RenewNodeLease: &v}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{

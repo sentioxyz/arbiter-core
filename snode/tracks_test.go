@@ -670,7 +670,8 @@ func TestSNodeRegistrationAdvertisesTrackManifests(t *testing.T) {
 		t.Fatal(err)
 	}
 	regs, _ := fake.registrations()
-	if len(regs) != 1 || !slices.Equal(regs[0].GetFeatures(), arbiter.LocalNodeFeatures()) {
-		t.Fatalf("signing SNode registrations = %v, want features %v", regs, arbiter.LocalNodeFeatures())
+	want := append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature)
+	if len(regs) != 1 || !slices.Equal(regs[0].GetFeatures(), want) {
+		t.Fatalf("signing SNode registrations = %v, want features %v", regs, want)
 	}
 }

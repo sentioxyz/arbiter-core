@@ -81,6 +81,8 @@ type Role struct {
 	// withdraw.
 	membershipMu sync.Mutex
 	registerSent bool
+	// lease renews the membership lease while this Role is Active.
+	lease *dataplane.LeaseRenewer
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -109,6 +111,8 @@ func New(cfg Config, d Deps) (*Role, error) {
 	}
 	r := &Role{cfg: cfg, d: d, priv: ed25519.NewKeyFromSeed(cfg.Ed25519Seed), genesisID: genesisID,
 		seq: evidence.NewRegistrationSeq(cfg.StateDir)}
+	r.lease = dataplane.NewLeaseRenewer(d.Client, cfg.ReplicaID, cfg.LeaseRenewInterval,
+		evidence.VerifierLeaseSigner(r.priv, r.messageContext()), d.Logger)
 	r.ensureFn = r.ensureProtocolTablesMode
 	if cfg.protocolTables != ddl.ModeOff {
 		tables, err := tableset.New(tableset.Config{
@@ -170,6 +174,9 @@ func (r *Role) Register(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("mark verifier active: %w", err)
 	}
+	if r.lease != nil {
+		r.lease.Activate(mark.GetRegistrationSeq(), mark)
+	}
 	return nil
 }
 
@@ -179,10 +186,14 @@ func (r *Role) Register(ctx context.Context) error {
 // every block drawn afterwards. Evidence it already owes still counts while
 // it is not evicted. The next Register returns it through Syncing to Active.
 // A Role that never sent a RegisterNode sends nothing; repeated calls are
-// safe. Hosts call it on startup rollback and graceful shutdown.
+// safe. Hosts call it on startup rollback and graceful shutdown. It stops the
+// lease renewals first, so a renewal never re-activates a withdrawn verifier.
 func (r *Role) Deactivate(ctx context.Context) error {
 	r.membershipMu.Lock()
 	defer r.membershipMu.Unlock()
+	if r.lease != nil {
+		r.lease.Deactivate()
+	}
 	if !r.registerSent {
 		return nil
 	}
@@ -204,6 +215,11 @@ func (r *Role) Run(ctx context.Context) error {
 	defer cancel()
 	runCtx, replayRun := newReplayMemoRun(runCtx, r.cfg)
 	defer replayRun.close()
+	if r.lease != nil {
+		leaseDone := make(chan struct{})
+		go func() { defer close(leaseDone); r.lease.Run(runCtx) }()
+		defer func() { cancel(); <-leaseDone }()
+	}
 	// Ensure before any subscription starts so Run is safe even when a host did
 	// not call Register first. The periodic worker remains verify-only below.
 	registryChanged, err := r.startupEnsure(runCtx)

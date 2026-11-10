@@ -55,6 +55,12 @@ type Config struct {
 	// GenesisSnapshotID is bound into every signed message. Empty derives it
 	// from Tables, the network's genesis table set every verifier holds.
 	GenesisSnapshotID string
+	// LeaseRenewInterval paces the membership lease renewals (Raft tag 44)
+	// while the role is Active; 0 = dataplane.DefaultLeaseRenewInterval. The
+	// committed lease (membership_lease_l2_blocks) must be far longer than
+	// this interval expressed in L2 blocks of the registry chain. Renewals
+	// are refused as a no-op until the lease is committed.
+	LeaseRenewInterval time.Duration
 }
 
 func (c *Config) validate() error {

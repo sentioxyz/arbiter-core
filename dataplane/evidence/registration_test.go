@@ -71,7 +71,8 @@ func TestVerifierRegistrationRequestsAreSignedWithTheEvidenceKey(t *testing.T) {
 		mark.GetEd25519Signature() != authoritytest.VerifierMarkActiveSignature {
 		t.Fatalf("registration %v / activation %v differ from the authoritytest vectors", reg, mark)
 	}
-	if !slices.Equal(reg.GetFeatures(), arbiter.LocalNodeFeatures()) || reg.GetSignerJws() != "" {
-		t.Fatalf("registration %v must advertise %v and carry no signer JWS", reg, arbiter.LocalNodeFeatures())
+	want := append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature)
+	if !slices.Equal(reg.GetFeatures(), want) || !slices.Equal(VerifierNodeFeatures(), want) || reg.GetSignerJws() != "" {
+		t.Fatalf("registration %v must advertise %v and carry no signer JWS", reg, want)
 	}
 }

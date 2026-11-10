@@ -56,6 +56,12 @@ type Config struct {
 	ReadinessInterval   time.Duration
 	CheckpointInterval  time.Duration
 	ResolveInterval     time.Duration
+	// LeaseRenewInterval paces the membership lease renewals (Raft tag 44)
+	// while the role is Active; 0 = dataplane.DefaultLeaseRenewInterval. The
+	// committed lease (membership_lease_l2_blocks) must be far longer than
+	// this interval expressed in L2 blocks of the registry chain. Renewals
+	// are refused as a no-op until the lease is committed.
+	LeaseRenewInterval time.Duration
 }
 
 // ReconcilerConfig is the hg_member_unsafe reconciler's, the process that

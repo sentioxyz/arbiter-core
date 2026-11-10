@@ -21,6 +21,7 @@ import (
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/authority/authoritytest"
+	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 	"github.com/sentioxyz/arbiter-core/dataplane/evidence"
 	"github.com/sentioxyz/arbiter-core/wire"
@@ -83,7 +84,7 @@ func TestMemberVerifyRoleRegistersAsAVerifierWithARegistrationSeq(t *testing.T) 
 		reg, mark := regs[i], marks[i]
 		if reg.GetNodeId() != testNodeID || !slices.Equal(reg.GetRoles(), []pb.NodeRole{pb.NodeRole_NODE_ROLE_VERIFIER}) ||
 			!slices.Equal(reg.GetEd25519Pubkey(), pub) || reg.GetRegistrationSeq() != want || reg.GetSignerJws() != "" ||
-			!slices.Equal(reg.GetFeatures(), arbiter.LocalNodeFeatures()) {
+			!slices.Equal(reg.GetFeatures(), append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature)) {
 			t.Fatalf("registration %d = %v", i, reg)
 		}
 		body := arbiter.NodeRegistration{NodeID: testNodeID, Roles: []arbiter.NodeRole{arbiter.NodeRoleVerifier}, Ed25519Pubkey: pub, RegistrationSeq: want}
@@ -351,5 +352,39 @@ func TestMemberVerifyRoleDeactivateWithdrawsTheRegistration(t *testing.T) {
 		if err := authority.VerifyVerifierMessage(pub, authority.VerifierMessageRegistration, ctx, body, regs[i].GetEd25519Signature()); err != nil {
 			t.Fatalf("registration %d signature: %v", i, err)
 		}
+	}
+}
+
+// TestMemberVerifyRoleRenewsItsLeaseOnlyWhileRegistered (arbiter-core#66): a
+// member with Register off has no lease renewer; a registering member renews
+// after Register (the fake arbiter predates RenewNodeLease, so the attempt is
+// the quiet "lease off" outcome, not idle) and stops at Deactivate.
+func TestMemberVerifyRoleRenewsItsLeaseOnlyWhileRegistered(t *testing.T) {
+	gw := newGatewayFake()
+	client := startGatewayFake(t, gw)
+	off := newTestRole(t, testConfig(t), VerifyDeps{Client: client, Registry: newViewFake(groupSnapshot(true, nil, nil)), Conn: newCHFake()}, nil)
+	if off.lease != nil {
+		t.Fatal("a member with Register off has a lease renewer")
+	}
+	cfg := testConfig(t)
+	cfg.Register = true
+	now := time.UnixMilli(int64(authoritytest.RegistrationSeq))
+	v := newTestRole(t, cfg, VerifyDeps{Client: client, Registry: newViewFake(groupSnapshot(true, nil, nil)), Conn: newCHFake(),
+		Now: func() time.Time { return now }}, nil)
+	ctx := context.Background()
+	if got := v.lease.RenewOnce(ctx); got != dataplane.LeaseIdle {
+		t.Fatalf("renewal before Register = %v, want idle", got)
+	}
+	if err := v.Register(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.lease.RenewOnce(ctx); got != dataplane.LeaseOff {
+		t.Fatalf("renewal against an arbiter without the RPC = %v, want off", got)
+	}
+	if err := v.Deactivate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.lease.RenewOnce(ctx); got != dataplane.LeaseIdle {
+		t.Fatalf("renewal after Deactivate = %v, want idle", got)
 	}
 }
