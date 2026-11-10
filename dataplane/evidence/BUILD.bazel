@@ -15,6 +15,7 @@ go_library(
         "//authority",
         "//dataplane",
         "//dataplane/ddl",
+        "//tableadmission",
         "//wire",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",

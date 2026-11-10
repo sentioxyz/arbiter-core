@@ -13,6 +13,7 @@ import (
 	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
+	"github.com/sentioxyz/arbiter-core/tableadmission"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -119,9 +120,8 @@ func writeRegistrationSeq(dir string, seq uint64) error {
 // VerifierRegistrationRequests builds the signed RegisterNode and MarkActive
 // requests of one Register call of a VERIFIER-role node: both carry seq and
 // are signed with priv, the key that signs the node's evidence, in ctx; the
-// registration advertises arbiter.LocalNodeFeatures() and
-// arbiter.MembershipLeaseFeature: every verifier role renews its lease with
-// VerifierLeaseSigner.
+// registration advertises VerifierNodeFeatures: every verifier role renews
+// its lease with VerifierLeaseSigner.
 func VerifierRegistrationRequests(priv ed25519.PrivateKey, nodeID string, seq uint64, ctx authority.MessageContext) (*pb.NodeRegistration, *pb.NodeRef, error) {
 	reg := wire.RegisterNode{Registration: arbiter.NodeRegistration{NodeID: nodeID,
 		Roles: []arbiter.NodeRole{arbiter.NodeRoleVerifier}, Ed25519Pubkey: priv.Public().(ed25519.PublicKey), RegistrationSeq: seq}}
@@ -139,9 +139,11 @@ func VerifierRegistrationRequests(priv ed25519.PrivateKey, nodeID string, seq ui
 
 // VerifierNodeFeatures is what a VERIFIER-role registration advertises:
 // arbiter.LocalNodeFeatures and arbiter.MembershipLeaseFeature, because every
-// verifier role signs and renews its membership lease.
+// verifier role signs and renews its membership lease, then the table
+// admission rules versions the compiled column profile replays
+// (tableadmission.DataPlaneFeatures).
 func VerifierNodeFeatures() []string {
-	return append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature)
+	return append(append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature), tableadmission.DataPlaneFeatures()...)
 }
 
 // VerifierLeaseSigner signs a VERIFIER-role node's membership lease renewals
