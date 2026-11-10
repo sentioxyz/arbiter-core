@@ -15,6 +15,7 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -33,6 +34,18 @@ type Call struct {
 	Key        string
 	Refs       []string
 	ChunkSizes []int
+	// PutAuth is the put token a put carried in the
+	// "sentio-da-put-auth" metadata key, empty when none.
+	PutAuth string
+}
+
+func putAuth(ctx context.Context) string {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if values := md.Get("sentio-da-put-auth"); len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
 }
 
 // Store serves both da.proto services on one loopback listener.
@@ -230,6 +243,7 @@ func (s *Store) Calls() []Call {
 			Key:        call.Key,
 			Refs:       append([]string(nil), call.Refs...),
 			ChunkSizes: append([]int(nil), call.ChunkSizes...),
+			PutAuth:    call.PutAuth,
 		}
 	}
 	return out
@@ -276,10 +290,10 @@ func (s *Store) GetStoreLimits(context.Context, *pb.GetStoreLimitsRequest) (*pb.
 	return cloneMessage(s.limits), nil
 }
 
-func (s *Store) PutPayloadInline(_ context.Context, req *pb.PutPayloadInlineRequest) (*pb.PutPayloadResult, error) {
+func (s *Store) PutPayloadInline(ctx context.Context, req *pb.PutPayloadInlineRequest) (*pb.PutPayloadResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.record(Call{Method: "PutPayloadInline"})
+	s.record(Call{Method: "PutPayloadInline", PutAuth: putAuth(ctx)})
 	if s.limits != nil && uint64(len(req.GetPayload())) > s.limits.GetMaxInlineBytes() {
 		return &pb.PutPayloadResult{
 			Code:    pb.PutCode_PUT_CODE_INLINE_LIMIT_EXCEEDED,
@@ -342,7 +356,7 @@ func (s *Store) PutPayload(stream grpc.ClientStreamingServer[pb.PutPayloadFrame,
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.record(Call{Method: "PutPayload", ChunkSizes: chunkSizes})
+	s.record(Call{Method: "PutPayload", ChunkSizes: chunkSizes, PutAuth: putAuth(stream.Context())})
 	if malformed != "" {
 		return stream.SendAndClose(&pb.PutPayloadResult{
 			Code:    pb.PutCode_PUT_CODE_MALFORMED,

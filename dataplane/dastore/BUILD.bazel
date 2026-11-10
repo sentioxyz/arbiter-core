@@ -7,6 +7,7 @@ go_library(
         "fetch.go",
         "lifecycle.go",
         "put.go",
+        "putauth.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/dataplane/dastore",
     visibility = ["//visibility:public"],
@@ -15,6 +16,7 @@ go_library(
         "@housegate//pkg/replay",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//metadata",
     ],
 )
 
@@ -26,9 +28,11 @@ go_test(
         "hash_silent_test.go",
         "lifecycle_test.go",
         "put_test.go",
+        "putauth_test.go",
     ],
     embed = [":dastore"],
     deps = [
+        "//authority",
         "//dataplane/dastore/dastoretest",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/replay",
