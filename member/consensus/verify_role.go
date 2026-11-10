@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"sync"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -74,6 +75,11 @@ type VerifyRole struct {
 	seq     *evidence.RegistrationSeq
 	quiet   *Quiescence
 	handler *evidence.Handler
+	// membershipMu serializes Register and Deactivate; registerSent records
+	// that this role sent a RegisterNode, so Deactivate has something to
+	// withdraw.
+	membershipMu sync.Mutex
+	registerSent bool
 }
 
 // NewVerifyRole validates cfg and d and assembles the role: the evidence
@@ -164,15 +170,13 @@ func (v *VerifyRole) Register(ctx context.Context) error {
 	if !v.cfg.Register {
 		return errRegisterOff
 	}
-	seq, err := v.seq.Next(v.nowMillis())
+	v.membershipMu.Lock()
+	defer v.membershipMu.Unlock()
+	reg, mark, err := v.registrationRequests()
 	if err != nil {
 		return fmt.Errorf("member consensus: register: %w", err)
 	}
-	reg, mark, err := evidence.VerifierRegistrationRequests(v.priv, v.cfg.NodeID, seq,
-		authority.MessageContext{NetworkID: v.cfg.NetworkID, GenesisSnapshotID: v.cfg.GenesisSnapshotID})
-	if err != nil {
-		return fmt.Errorf("member consensus: register: %w", err)
-	}
+	v.registerSent = true
 	if err := v.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, reg)
 		return err
@@ -184,6 +188,42 @@ func (v *VerifyRole) Register(ctx context.Context) error {
 		return err
 	}); err != nil {
 		return fmt.Errorf("member consensus: mark active: %w", err)
+	}
+	return nil
+}
+
+// registrationRequests builds the signed RegisterNode and MarkActive requests
+// at one fresh registration_seq.
+func (v *VerifyRole) registrationRequests() (*pb.NodeRegistration, *pb.NodeRef, error) {
+	seq, err := v.seq.Next(v.nowMillis())
+	if err != nil {
+		return nil, nil, err
+	}
+	return evidence.VerifierRegistrationRequests(v.priv, v.cfg.NodeID, seq,
+		authority.MessageContext{NetworkID: v.cfg.NetworkID, GenesisSnapshotID: v.cfg.GenesisSnapshotID})
+}
+
+// Deactivate withdraws the member's verifier from selection: a fresh signed
+// RegisterNode at a new registration_seq and no MarkActive, which the arbiter
+// FSM applies as Active → Syncing. The next Register returns it through
+// Syncing to Active. A role that never sent a RegisterNode (including every
+// role with cfg.Register off) sends nothing; repeated calls are safe. Hosts
+// call it on startup rollback and graceful shutdown.
+func (v *VerifyRole) Deactivate(ctx context.Context) error {
+	v.membershipMu.Lock()
+	defer v.membershipMu.Unlock()
+	if !v.registerSent {
+		return nil
+	}
+	reg, _, err := v.registrationRequests()
+	if err != nil {
+		return fmt.Errorf("member consensus: deactivate: %w", err)
+	}
+	if err := v.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
+		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, reg)
+		return err
+	}); err != nil {
+		return fmt.Errorf("member consensus: deactivate: %w", err)
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -75,6 +76,11 @@ type Role struct {
 	seq *evidence.RegistrationSeq
 	// evidence answers replay jobs and scan requests.
 	evidence *evidence.Handler
+	// membershipMu serializes Register and Deactivate; registerSent records
+	// that this Role sent a RegisterNode, so Deactivate has something to
+	// withdraw.
+	membershipMu sync.Mutex
+	registerSent bool
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -142,6 +148,8 @@ func (r *Role) pinned() ddl.Pinned {
 }
 
 func (r *Role) Register(ctx context.Context) error {
+	r.membershipMu.Lock()
+	defer r.membershipMu.Unlock()
 	if err := r.ensureProtocolTables(ctx); err != nil {
 		return err
 	}
@@ -149,6 +157,7 @@ func (r *Role) Register(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("register verifier: %w", err)
 	}
+	r.registerSent = true
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, reg)
 		return err
@@ -160,6 +169,32 @@ func (r *Role) Register(ctx context.Context) error {
 		return err
 	}); err != nil {
 		return fmt.Errorf("mark verifier active: %w", err)
+	}
+	return nil
+}
+
+// Deactivate withdraws this verifier from selection: it sends a fresh signed
+// RegisterNode at a new registration_seq and no MarkActive, which the arbiter
+// FSM applies as Active → Syncing, so the verifier leaves the eligible ring of
+// every block drawn afterwards. Evidence it already owes still counts while
+// it is not evicted. The next Register returns it through Syncing to Active.
+// A Role that never sent a RegisterNode sends nothing; repeated calls are
+// safe. Hosts call it on startup rollback and graceful shutdown.
+func (r *Role) Deactivate(ctx context.Context) error {
+	r.membershipMu.Lock()
+	defer r.membershipMu.Unlock()
+	if !r.registerSent {
+		return nil
+	}
+	reg, _, err := r.registrationRequests()
+	if err != nil {
+		return fmt.Errorf("deactivate verifier: %w", err)
+	}
+	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
+		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, reg)
+		return err
+	}); err != nil {
+		return fmt.Errorf("deactivate verifier: %w", err)
 	}
 	return nil
 }
