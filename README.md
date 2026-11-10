@@ -35,6 +35,7 @@ named `arbiter` so domain types retain concise names such as
 | `member/confinement` | Test-only ClickHouse proof that the member users are confined (§ Member role (stage 3 P2)). |
 | `member/consensus` | The member consensus mode: verify role, readiness, checkpoints and their `checkpoint_seq` journal, purge reports, the quiescence ledger and the `hg_member_unsafe` reconciler (§ Member consensus mode (stage 3 P5)). |
 | `conformance` | Field and enum compatibility gates against `arbiter-proto` and Housegate replay types. |
+| `tableadmission` | The frozen table admission rules v1 (refused codes, column-type allowlist, partition freeze, declared-hash check) that the Arbiter's table registry applies to every `AddTable`, exported so a host can refuse an inadmissible `CREATE TABLE` before registering it. |
 
 The private `github.com/sentioxyz/arbiter` repository owns the Raft FSM,
 orchestrator, servers, anchoring backend, and operator binaries. It consumes

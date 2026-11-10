@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "tableadmission",
+    srcs = ["rules_v1.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/tableadmission",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
+
+go_test(
+    name = "tableadmission_test",
+    srcs = ["rules_v1_test.go"],
+    embed = [":tableadmission"],
+    deps = [
+        "//dataplane/ddl",
+        "@housegate//pkg/lthash",
+        "@housegate//pkg/replay/payloadexec",
+    ],
+)
