@@ -40,6 +40,7 @@ go_test(
         "manifests_tracks_test.go",
         "member_commands_test.go",
         "member_reads_test.go",
+        "registry_follower_delta_test.go",
         "registry_follower_size_test.go",
         "registry_follower_test.go",
         "registry_schema_test.go",

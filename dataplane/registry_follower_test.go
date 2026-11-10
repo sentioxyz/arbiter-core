@@ -35,6 +35,7 @@ type fakeRegistry struct {
 	getErr    error
 	watchErr  error
 	watchReqs []uint64
+	watchDelt []bool
 	sends     chan *pb.TableRegistrySnapshot
 	end       chan error
 	purgeErr  error
@@ -55,6 +56,7 @@ func (r *fakeRegistry) GetTableRegistry(context.Context, *emptypb.Empty) (*pb.Ta
 func (r *fakeRegistry) WatchTableRegistry(req *pb.WatchTableRegistryRequest, stream grpc.ServerStreamingServer[pb.TableRegistrySnapshot]) error {
 	r.mu.Lock()
 	r.watchReqs = append(r.watchReqs, req.GetSinceVersion())
+	r.watchDelt = append(r.watchDelt, req.GetAcceptDelta())
 	err := r.watchErr
 	r.mu.Unlock()
 	if err != nil {

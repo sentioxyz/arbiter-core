@@ -55,8 +55,10 @@ type RegistryView interface {
 // RegistryFollower follows the arbiter's dynamic SI table registry: one
 // GetTableRegistry through WithLeaderRetry, then a resumable
 // WatchTableRegistry stream built on the subscription loop (leader hints,
-// reconnect, backoff, no per-call timeout). Each accepted message is the
-// whole registry; only a strictly greater version is accepted.
+// reconnect, backoff, no per-call timeout). The stream asks for deltas, which
+// it merges into whole snapshots before they are decoded (deltaStream); each
+// accepted message is the whole registry, and only a strictly greater version
+// is accepted.
 type RegistryFollower struct {
 	c      *Client
 	logger *slog.Logger
@@ -206,12 +208,88 @@ func (f *RegistryFollower) openWatch(ctx context.Context, conn *grpc.ClientConn)
 	f.mu.Lock()
 	since := f.snap.Version
 	f.mu.Unlock()
-	stream, err := pb.NewTableRegistryClient(conn).WatchTableRegistry(ctx, &pb.WatchTableRegistryRequest{SinceVersion: since})
+	// The stream gets its own context: a delta that cannot be applied ends
+	// it from this side (deltaStream), and the call must not outlive that.
+	streamCtx, cancel := context.WithCancel(ctx)
+	stream, err := pb.NewTableRegistryClient(conn).WatchTableRegistry(streamCtx, &pb.WatchTableRegistryRequest{SinceVersion: since, AcceptDelta: true})
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	f.connected.Store(true)
-	return connectedStream{inner: stream, connected: &f.connected}, nil
+	return connectedStream{inner: &deltaStream{inner: stream, cancel: cancel}, connected: &f.connected}, nil
+}
+
+// errRegistryResync ends a watch whose delta does not apply to the previous
+// message on the stream. Unavailable is retryable, so the subscription loop
+// reopens the watch from the accepted version, and a stream's first message
+// is always a full snapshot.
+var errRegistryResync = status.Error(codes.Unavailable, "table registry delta does not apply to the previous message on the stream; resyncing")
+
+// deltaStream turns the deltas of a WatchTableRegistry stream opened with
+// accept_delta into full snapshots (arbiter#123). A delta updates the
+// previous message received on the same stream, which the stream keeps
+// whether or not deliver accepted it, so every delta the arbiter sends
+// applies. A full snapshot (delta_base_version zero) is passed through and
+// becomes the new base: an arbiter that predates deltas only ever sends
+// those.
+type deltaStream struct {
+	inner  recvStream[*pb.TableRegistrySnapshot]
+	cancel context.CancelFunc
+	last   *pb.TableRegistrySnapshot
+}
+
+func (s *deltaStream) Recv() (*pb.TableRegistrySnapshot, error) {
+	m, err := s.inner.Recv()
+	if err != nil {
+		s.cancel()
+		return nil, err
+	}
+	if m.GetDeltaBaseVersion() != 0 {
+		merged, err := applyRegistryDelta(s.last, m)
+		if err != nil {
+			s.cancel()
+			return nil, fmt.Errorf("%w: %v", errRegistryResync, err)
+		}
+		m = merged
+	}
+	s.last = m
+	return m, nil
+}
+
+// applyRegistryDelta returns the full snapshot delta describes over base:
+// every field of delta, and base's incarnations with delta's replacing or
+// appending by seq. delta is reused for the result and base is left as it
+// is; unchanged incarnations are shared with base, which is read-only like
+// every received message.
+func applyRegistryDelta(base, delta *pb.TableRegistrySnapshot) (*pb.TableRegistrySnapshot, error) {
+	switch {
+	case base == nil:
+		return nil, fmt.Errorf("delta over version %d is the first message on the stream", delta.GetDeltaBaseVersion())
+	case delta.GetDeltaBaseVersion() != base.GetVersion():
+		return nil, fmt.Errorf("delta over version %d follows version %d", delta.GetDeltaBaseVersion(), base.GetVersion())
+	}
+	count := delta.GetIncarnationCount()
+	if count < uint64(len(base.GetIncarnations())) {
+		return nil, fmt.Errorf("delta has %d incarnations, the previous message %d", count, len(base.GetIncarnations()))
+	}
+	out := make([]*pb.TableIncarnation, count)
+	copy(out, base.GetIncarnations())
+	var prev uint64
+	for _, inc := range delta.GetIncarnations() {
+		seq := inc.GetSeq()
+		if seq <= prev || seq > count {
+			return nil, fmt.Errorf("delta lists incarnation seq %d after %d of %d", seq, prev, count)
+		}
+		out[seq-1], prev = inc, seq
+	}
+	for i, inc := range out {
+		if inc == nil {
+			return nil, fmt.Errorf("delta leaves incarnation %d of %d unset", i+1, count)
+		}
+	}
+	delta.Incarnations, delta.DeltaBaseVersion, delta.IncarnationCount = out, 0, 0
+	return delta, nil
 }
 
 // deliver accepts m when it decodes and its version is strictly greater than
