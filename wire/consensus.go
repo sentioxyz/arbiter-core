@@ -26,6 +26,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		TracksEnabled:                 m.GetTracksEnabled(),
 		Stage3:                        Stage3ParamsFromPB(m.GetStage3()),
 		PromotionFinalityGate:         m.GetPromotionFinalityGate(),
+		ManifestDeltaSnapshot:         m.GetManifestDeltaSnapshot(),
 	}
 }
 
@@ -48,6 +49,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		TracksEnabled:                 v.TracksEnabled,
 		Stage3:                        Stage3ParamsToPB(v.Stage3),
 		PromotionFinalityGate:         v.PromotionFinalityGate,
+		ManifestDeltaSnapshot:         v.ManifestDeltaSnapshot,
 	}
 }
 

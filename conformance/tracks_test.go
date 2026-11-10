@@ -38,6 +38,8 @@ func TestTracksFieldNumbers(t *testing.T) {
 		{&pb.ConsensusMutableParams{}, "tracks_enabled", 8, kBool, false, ""},
 		{&pb.ConsensusParamsUpdate{}, "promotion_finality_gate", 15, kBool, false, ""},
 		{&pb.ConsensusMutableParams{}, "promotion_finality_gate", 10, kBool, false, ""},
+		{&pb.ConsensusParamsUpdate{}, "manifest_delta_snapshot", 16, kBool, false, ""},
+		{&pb.ConsensusMutableParams{}, "manifest_delta_snapshot", 11, kBool, false, ""},
 		{&pb.QuarantineIndexerCmd{}, "indexer_id", 1, kU64, false, ""},
 		{&pb.QuarantineIndexerCmd{}, "expected_generation", 2, kU64, false, ""},
 		{&pb.QuarantineIndexerCmd{}, "reason", 3, kStr, false, ""},
