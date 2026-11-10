@@ -192,7 +192,7 @@ func TestConfigValidationOrdersPartitionBeforeColumnTypes(t *testing.T) {
 	cfg := testConfigV()
 	schema := scanTableSchema()
 	schema.PartitionBy = "toYYYYMM(d)"
-	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Nullable(String)"})
+	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Array(String)"})
 	cfg.Tables = []payloadexec.TableSchema{schema}
 	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
 	err := cfg.validate()

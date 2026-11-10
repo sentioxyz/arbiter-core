@@ -13,6 +13,7 @@ import (
 	"github.com/housegate/housegate/pkg/replay"
 
 	"github.com/sentioxyz/arbiter-core"
+	"github.com/sentioxyz/arbiter-core/tableadmission"
 )
 
 // ConsensusParamsUpdatePurpose is a separate, versioned token family. A
@@ -80,6 +81,12 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	}
 	if cmd.ManifestDeltaSnapshot && cmd.Stage3 == nil {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: manifest_delta_snapshot requires stage3 in the same update")
+	}
+	if !tableadmission.ValidRulesVersionParam(cmd.TableAdmissionRulesVersion) {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: table_admission_rules_version %d is not 0 (rules v1) or a known version above 1 (at most %d)", cmd.TableAdmissionRulesVersion, tableadmission.LatestRulesVersion)
+	}
+	if cmd.TableAdmissionRulesVersion != 0 && cmd.TableRegistry == nil {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: table_admission_rules_version requires table_registry in the same update")
 	}
 	stage3, err := normalizeStage3(cmd.Stage3, cmd.TracksEnabled, siIndexers)
 	if err != nil {

@@ -24,6 +24,8 @@ func TestTracksCanonicalForms(t *testing.T) {
 			update + `,"tracks_enabled":true,"promotion_finality_gate":true}`},
 		"manifest delta snapshot update": {ConsensusParamsUpdate{NetworkID: "n", TracksEnabled: true, PromotionFinalityGate: true, ManifestDeltaSnapshot: true},
 			update + `,"tracks_enabled":true,"promotion_finality_gate":true,"manifest_delta_snapshot":true}`},
+		"table admission rules version update": {ConsensusParamsUpdate{NetworkID: "n", ManifestDeltaSnapshot: true, TableAdmissionRulesVersion: 2},
+			update + `,"manifest_delta_snapshot":true,"table_admission_rules_version":2}`},
 		"promotion cleanup": {UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 7},
 			`{"table_id":"db.t","partition_id":"all","promotion_seq":7,"parts":null}`},
 		"rejected-part cleanup": {UnsafeCleanup{TableID: "db.t", PartitionID: "all", RejectedBlockSeq: 12},

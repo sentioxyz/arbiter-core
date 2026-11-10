@@ -12,7 +12,7 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/ethereum/go-ethereum v1.17.2
 	github.com/prometheus/client_golang v1.23.2
-	github.com/sentioxyz/arbiter-proto v0.16.2
+	github.com/sentioxyz/arbiter-proto v0.16.3
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
 )
@@ -47,9 +47,9 @@ require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.1.0 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/holiman/uint256 v1.3.2 // indirect
-	github.com/housegate/housegate v0.24.0
+	github.com/housegate/housegate v0.26.6
 	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect

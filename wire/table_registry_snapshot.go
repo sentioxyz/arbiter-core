@@ -146,6 +146,12 @@ type TableRegistrySnapshot struct {
 	// switches through the registry follower (plan S3-E1 K64); nil before the
 	// v21 activation. Every committed change bumps Version.
 	Stage3 *arbiter.Stage3Params
+	// AdmissionRulesVersion is the committed table admission rules version
+	// (consensus TableAdmissionRulesVersion; 0 = rules v1), so a host judges a
+	// CREATE TABLE by the rules the arbiter will apply to its AddTable. An
+	// arbiter that predates the field reports 0, which is v1 and therefore
+	// at least as strict as anything it applies.
+	AdmissionRulesVersion uint32
 }
 
 // Live mirrors arbiter's TableRegistryView.Live: the newest incarnation of key
@@ -429,6 +435,7 @@ func TableRegistrySnapshotFromPB(m *pb.TableRegistrySnapshot) (TableRegistrySnap
 		}
 		out.Stage3 = p
 	}
+	out.AdmissionRulesVersion = m.GetAdmissionRulesVersion()
 	return out, nil
 }
 
@@ -440,13 +447,14 @@ func TableRegistrySnapshotToPB(s TableRegistrySnapshot) *pb.TableRegistrySnapsho
 		Params: TableRegistryParamsToPB(&params), Version: s.Version, Seeded: s.Seeded,
 		Cursor: &pb.TableRegistryCursor{BlockNumber: s.Cursor.BlockNumber, BlockHash: s.Cursor.BlockHash,
 			LogIndex: s.Cursor.LogIndex, BlockComplete: s.Cursor.BlockComplete},
-		ClientLanes:          ClientLaneParamsToPB(s.ClientLanes),
-		SiIndexers:           SIIndexerEntriesToPB(s.SIIndexers),
-		SeededIndexers:       mapSlice(s.SeededIndexers, func(id uint64) uint64 { return id }),
-		QuarantinedIndexers:  mapSlice(s.QuarantinedIndexers, func(id uint64) uint64 { return id }),
-		Groups:               groupsToPB(s.Groups),
-		MemberCheckpointSeqs: memberCheckpointSeqsToPB(s.MemberCheckpointSeqs),
-		Stage3:               Stage3ParamsToPB(s.Stage3),
+		ClientLanes:           ClientLaneParamsToPB(s.ClientLanes),
+		SiIndexers:            SIIndexerEntriesToPB(s.SIIndexers),
+		SeededIndexers:        mapSlice(s.SeededIndexers, func(id uint64) uint64 { return id }),
+		QuarantinedIndexers:   mapSlice(s.QuarantinedIndexers, func(id uint64) uint64 { return id }),
+		Groups:                groupsToPB(s.Groups),
+		MemberCheckpointSeqs:  memberCheckpointSeqsToPB(s.MemberCheckpointSeqs),
+		Stage3:                Stage3ParamsToPB(s.Stage3),
+		AdmissionRulesVersion: s.AdmissionRulesVersion,
 	}
 	for _, inc := range s.Incarnations {
 		out.Incarnations = append(out.Incarnations, &pb.TableIncarnation{

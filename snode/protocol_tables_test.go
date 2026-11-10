@@ -246,7 +246,7 @@ func TestConfigZeroHardPartsStillDefaultsWhenNotDisabled(t *testing.T) {
 func TestConfigRejectsColumnTypeOutsideWhitelist(t *testing.T) {
 	cfg := testConfigS(t)
 	schema := intakeSchema()
-	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Nullable(String)"})
+	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Array(String)"})
 	cfg.Tables = []payloadexec.TableSchema{schema}
 	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
 	err := cfg.validate()
@@ -302,7 +302,7 @@ func TestConfigValidationOrdersPartitionBeforeColumnTypes(t *testing.T) {
 	cfg := testConfigS(t)
 	schema := intakeSchema()
 	schema.PartitionBy = "toYYYYMM(d)"
-	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Nullable(String)"})
+	schema.Columns = append(schema.Columns, lthash.Column{Name: "bad", Type: "Array(String)"})
 	cfg.Tables = []payloadexec.TableSchema{schema}
 	cfg.SchemaRoot = payloadexec.SchemaRoot(cfg.NetworkID, cfg.Tables)
 	err := cfg.validate()
