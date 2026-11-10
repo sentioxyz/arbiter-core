@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "dataplane",
     srcs = [
+        "authority_follower.go",
         "client.go",
         "genesis.go",
         "manifests.go",
@@ -19,6 +20,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//:arbiter-core",
+        "//authority",
         "//wire",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/replay",
@@ -35,6 +37,7 @@ go_library(
 go_test(
     name = "dataplane_test",
     srcs = [
+        "authority_follower_test.go",
         "client_test.go",
         "manifests_test.go",
         "manifests_tracks_test.go",
@@ -52,7 +55,9 @@ go_test(
     embed = [":dataplane"],
     deps = [
         "//:arbiter-core",
+        "//authority",
         "//wire",
+        "@com_github_ethereum_go_ethereum//crypto",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/auth",
         "@housegate//pkg/lthash",
