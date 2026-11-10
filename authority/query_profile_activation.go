@@ -137,6 +137,16 @@ func (v *Validator) AuthorizeQueryProfileActivation(p replay.ActiveQueryPolicy, 
 }
 
 func (v *Validator) verifyQueryProfileActivation(p replay.ActiveQueryPolicy, token string, enforceAge bool) (string, error) {
+	signers, err := v.verifyThreshold(token, func(component string) (string, error) {
+		return v.verifyQueryProfileActivationOne(p, component, enforceAge)
+	})
+	if err != nil {
+		return "", err
+	}
+	return signers[0], nil
+}
+
+func (v *Validator) verifyQueryProfileActivationOne(p replay.ActiveQueryPolicy, token string, enforceAge bool) (string, error) {
 	if len(v.AllowedAddresses) == 0 {
 		return "", fmt.Errorf("authority allowlist is empty: refusing to authorize any command")
 	}

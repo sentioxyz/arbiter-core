@@ -31,6 +31,10 @@ type AuthorityAnchor struct {
 	GenesisSnapshotID string
 	Epoch             uint64
 	Addresses         []string
+	// Threshold is the committed authority_threshold in force at Epoch (0
+	// when never set, which means one signer). An anchor at epoch 0, or at
+	// any epoch before the threshold was first set, leaves it 0.
+	Threshold uint32
 }
 
 // SignedConsensusUpdate is one committed consensus update exactly as it was
@@ -46,10 +50,15 @@ type SignedConsensusUpdate struct {
 // Every set it holds is endorsed by an unbroken chain of signatures from the
 // anchor. The zero value is not usable; build one with NewAuthorityChain.
 type AuthorityChain struct {
-	Anchor       AuthorityAnchor `json:"anchor"`
-	Epoch        uint64          `json:"epoch"`
-	Addresses    []string        `json:"addresses"`
-	UpdateHashes []string        `json:"update_hashes,omitempty"`
+	Anchor    AuthorityAnchor `json:"anchor"`
+	Epoch     uint64          `json:"epoch"`
+	Addresses []string        `json:"addresses"`
+	// Threshold is the committed authority_threshold in force at Epoch: the
+	// number of signers the next consensus update needs (0 means one). A
+	// chain persisted before thresholds existed reads as 0, which was the
+	// only value then.
+	Threshold    uint32   `json:"threshold,omitempty"`
+	UpdateHashes []string `json:"update_hashes,omitempty"`
 }
 
 // NewAuthorityChain starts a chain at anchor. The anchor's addresses are
@@ -64,7 +73,10 @@ func NewAuthorityChain(anchor AuthorityAnchor) (AuthorityChain, error) {
 		return AuthorityChain{}, fmt.Errorf("authority anchor: %w", err)
 	}
 	anchor.Addresses = addrs
-	return AuthorityChain{Anchor: anchor, Epoch: anchor.Epoch, Addresses: slices.Clone(addrs)}, nil
+	if int(anchor.Threshold) > len(addrs) {
+		return AuthorityChain{}, fmt.Errorf("authority anchor: threshold %d exceeds the %d authority addresses", anchor.Threshold, len(addrs))
+	}
+	return AuthorityChain{Anchor: anchor, Epoch: anchor.Epoch, Addresses: slices.Clone(addrs), Threshold: anchor.Threshold}, nil
 }
 
 // SameAnchor reports whether c starts at anchor (addresses compared as a set).
@@ -74,7 +86,7 @@ func (c AuthorityChain) SameAnchor(anchor AuthorityAnchor) bool {
 		return false
 	}
 	return c.Anchor.NetworkID == anchor.NetworkID && c.Anchor.GenesisSnapshotID == anchor.GenesisSnapshotID &&
-		c.Anchor.Epoch == anchor.Epoch && slices.Equal(c.Anchor.Addresses, addrs)
+		c.Anchor.Epoch == anchor.Epoch && slices.Equal(c.Anchor.Addresses, addrs) && c.Anchor.Threshold == anchor.Threshold
 }
 
 // Validate checks a chain read back from storage: a well-formed anchor and an
@@ -87,8 +99,12 @@ func (c AuthorityChain) Validate() error {
 	if c.Epoch != c.Anchor.Epoch+uint64(len(c.UpdateHashes)) {
 		return fmt.Errorf("authority chain: epoch %d does not match anchor epoch %d plus %d verified updates", c.Epoch, c.Anchor.Epoch, len(c.UpdateHashes))
 	}
-	if _, err := normalizeAuthorityAddresses(c.Addresses); err != nil {
+	addrs, err := normalizeAuthorityAddresses(c.Addresses)
+	if err != nil {
 		return fmt.Errorf("authority chain: %w", err)
+	}
+	if int(c.Threshold) > len(addrs) {
+		return fmt.Errorf("authority chain: threshold %d exceeds the %d authority addresses", c.Threshold, len(addrs))
 	}
 	return nil
 }
@@ -100,8 +116,10 @@ func (c AuthorityChain) Validate() error {
 // Updates for epochs the chain already verified are compared by hash; a
 // different update is ErrAuthorityFork. Each new update must name the chain's
 // network and genesis and verify (deterministically, without a token-age
-// bound) against the set in force before it; the chain then adopts its
-// normalized authority set. A history that starts above the chain's epoch is a
+// bound) against the set and threshold in force before it (arbiter#173: the
+// old k authorizes every change of k); the chain then adopts its normalized
+// authority set and threshold. Once the chain's threshold is non-zero an
+// update that omits it is refused, as the Arbiter refuses it. A history that starts above the chain's epoch is a
 // gap and an error. On any error the returned chain is c, unchanged.
 //
 // The previous_params_digest of an update is not recomputed: that needs the
@@ -114,7 +132,7 @@ func (c AuthorityChain) Extend(from uint64, updates []SignedConsensusUpdate) (Au
 	if from > c.Epoch && len(updates) > 0 {
 		return c, fmt.Errorf("authority history gap: it starts at epoch %d, the chain is at epoch %d", from, c.Epoch)
 	}
-	next := AuthorityChain{Anchor: c.Anchor, Epoch: c.Epoch, Addresses: slices.Clone(c.Addresses), UpdateHashes: slices.Clone(c.UpdateHashes)}
+	next := AuthorityChain{Anchor: c.Anchor, Epoch: c.Epoch, Addresses: slices.Clone(c.Addresses), Threshold: c.Threshold, UpdateHashes: slices.Clone(c.UpdateHashes)}
 	for i, su := range updates {
 		epoch := from + uint64(i)
 		if su.Update.ExpectedEpoch != epoch {
@@ -134,7 +152,7 @@ func (c AuthorityChain) Extend(from uint64, updates []SignedConsensusUpdate) (Au
 			return c, fmt.Errorf("authority history: epoch %d update names network %q genesis %q, want %q %q",
 				epoch, su.Update.NetworkID, su.Update.GenesisSnapshotID, next.Anchor.NetworkID, next.Anchor.GenesisSnapshotID)
 		}
-		v := Validator{AllowedAddresses: addressSet(next.Addresses)}
+		v := Validator{AllowedAddresses: addressSet(next.Addresses), Threshold: next.Threshold}
 		if _, err := v.VerifyConsensusParamsUpdate(su.Update, su.AuthorityJWS); err != nil {
 			return c, fmt.Errorf("authority history: epoch %d: %w", epoch, err)
 		}
@@ -142,16 +160,25 @@ func (c AuthorityChain) Extend(from uint64, updates []SignedConsensusUpdate) (Au
 		if err != nil {
 			return c, fmt.Errorf("authority history: epoch %d: %w", epoch, err)
 		}
+		if next.Threshold != 0 && normalized.AuthorityThreshold == 0 {
+			return c, fmt.Errorf("authority history: epoch %d: update omits authority_threshold after it was set", epoch)
+		}
 		next.Addresses = slices.Clone(normalized.AuthorityAddresses)
+		if normalized.AuthorityThreshold != 0 {
+			next.Threshold = normalized.AuthorityThreshold
+		}
 		next.UpdateHashes = append(next.UpdateHashes, hash)
 		next.Epoch++
 	}
 	return next, nil
 }
 
-// Validator returns a validator over the chain's current set.
+// Validator returns a validator over the chain's current set for the
+// operational commands an SNode receives (promotion, cleanup): they are
+// signed by the leader's one online key and stay single-signature whatever
+// the chain's governance threshold (arbiter#173 Slice 1).
 func (c AuthorityChain) Validator(maxTokenAge time.Duration) *Validator {
-	return &Validator{AllowedAddresses: addressSet(c.Addresses), MaxTokenAge: maxTokenAge}
+	return &Validator{AllowedAddresses: addressSet(c.Addresses), MaxTokenAge: maxTokenAge, Threshold: 1}
 }
 
 // Context is the consensus context a token issued under the chain's current
@@ -184,6 +211,8 @@ func (v *Validator) AuthorizeCleanupInContext(cmd arbiter.UnsafeCleanup, token s
 // verifying it. It only tells a follower whether to refresh its history before
 // verifying; the verification itself never trusts it.
 func TokenAuthorityEpoch(token string) (uint64, bool) {
+	// Every component of a multi-signature token carries the same context.
+	token, _, _ = strings.Cut(token, TokenSetSeparator)
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return 0, false

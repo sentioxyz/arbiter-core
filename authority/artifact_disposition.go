@@ -75,9 +75,16 @@ func (s *Signer) signArtifactDispositionPayload(payload ArtifactDispositionAdmin
 // VerifyArtifactDispositionCommand is a timeless, deterministic verifier for
 // replicated apply and historical proof paths. Freshness belongs to a live
 // admission boundary, so MaxTokenAge is intentionally ignored here.
+//
+// An artifact disposition token is signed by exactly one role principal and
+// binds that principal as actor_id, so it has no multi-signature form: a
+// validator with Threshold above 1 refuses every command (fail closed).
 func (v *Validator) VerifyArtifactDispositionCommand(command wire.ArtifactDispositionCommandV1, token string) (string, error) {
 	if len(v.AllowedAddresses) == 0 {
 		return "", fmt.Errorf("authority allowlist is empty: refusing to authorize any command")
+	}
+	if v.Threshold > 1 {
+		return "", fmt.Errorf("artifact disposition commands are single-actor: refusing a validator with authority threshold %d", v.Threshold)
 	}
 	if _, err := wire.ArtifactDispositionCommandRoot(command); err != nil {
 		return "", err

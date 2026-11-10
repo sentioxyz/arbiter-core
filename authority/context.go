@@ -78,22 +78,29 @@ func (v *Validator) verifyExactContext(label, hash, purpose, token string, ctx C
 	if strings.TrimSpace(ctx.NetworkID) == "" || strings.TrimSpace(ctx.GenesisSnapshotID) == "" {
 		return "", fmt.Errorf("%s: network ID and genesis snapshot ID must be non-empty", label)
 	}
-	addr, err := v.verify(hash, purpose, token, enforceAge)
+	// Every component of a multi-signature token must carry exactly ctx.
+	signers, err := v.verifyThreshold(token, func(component string) (string, error) {
+		addr, err := v.verifyOne(hash, purpose, component, enforceAge)
+		if err != nil {
+			return "", err
+		}
+		// verifyOne authenticated these payload bytes; read the context they carry.
+		data, err := base64.RawURLEncoding.DecodeString(strings.Split(component, ".")[1])
+		if err != nil {
+			return "", fmt.Errorf("%s token payload: %w", label, err)
+		}
+		var payload JWSCommandPayload
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return "", fmt.Errorf("%s token payload: %w", label, err)
+		}
+		if payload.NetworkID != ctx.NetworkID || payload.GenesisSnapshotID != ctx.GenesisSnapshotID ||
+			payload.AuthorityEpoch == nil || *payload.AuthorityEpoch != ctx.AuthorityEpoch {
+			return "", fmt.Errorf("%s token: consensus context mismatch", label)
+		}
+		return addr, nil
+	})
 	if err != nil {
 		return "", err
 	}
-	// verify authenticated these payload bytes; read the context they carry.
-	data, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
-	if err != nil {
-		return "", fmt.Errorf("%s token payload: %w", label, err)
-	}
-	var payload JWSCommandPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return "", fmt.Errorf("%s token payload: %w", label, err)
-	}
-	if payload.NetworkID != ctx.NetworkID || payload.GenesisSnapshotID != ctx.GenesisSnapshotID ||
-		payload.AuthorityEpoch == nil || *payload.AuthorityEpoch != ctx.AuthorityEpoch {
-		return "", fmt.Errorf("%s token: consensus context mismatch", label)
-	}
-	return addr, nil
+	return signers[0], nil
 }

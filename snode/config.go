@@ -57,6 +57,13 @@ type Config struct {
 	// non-zero only with FollowConsensusAuthority. Moving it forward
 	// re-anchors the follower (for example after a key compromise).
 	AuthorityTrustEpoch uint64
+	// AuthorityTrustThreshold is the committed authority_threshold in force at
+	// AuthorityTrustEpoch (arbiter#173): 0 when the anchor epoch is before the
+	// threshold was first set, which is always the case at epoch 0. A follower
+	// verifies the next consensus update with it, so an anchor moved past the
+	// threshold's activation must name it. It may be non-zero only with
+	// FollowConsensusAuthority and must not exceed len(AuthorityAddresses).
+	AuthorityTrustThreshold uint32
 	// FollowConsensusAuthority makes the SNode follow the committed authority
 	// set as a light client instead of a static allowlist: it verifies the
 	// arbiter's signed consensus history (GetConsensusHistory) from the
@@ -163,6 +170,12 @@ func (c *Config) validate() error {
 	}
 	if c.AuthorityTrustEpoch != 0 && !c.FollowConsensusAuthority {
 		errs = append(errs, errors.New("authority trust epoch requires follow_consensus_authority: a static allowlist has no epoch"))
+	}
+	if c.AuthorityTrustThreshold != 0 && !c.FollowConsensusAuthority {
+		errs = append(errs, errors.New("authority trust threshold requires follow_consensus_authority: a static allowlist has no threshold"))
+	}
+	if int(c.AuthorityTrustThreshold) > len(c.AuthorityAddresses) {
+		errs = append(errs, fmt.Errorf("authority trust threshold %d exceeds the %d authority addresses", c.AuthorityTrustThreshold, len(c.AuthorityAddresses)))
 	}
 	if c.AuthorityPollInterval < 0 {
 		errs = append(errs, errors.New("authority poll interval must not be negative"))

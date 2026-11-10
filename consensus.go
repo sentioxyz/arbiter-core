@@ -249,6 +249,16 @@ type ConsensusParamsUpdate struct {
 	// afterwards every update carries it, Quorum stays a majority of Voters,
 	// and every other field is immutable (the FSM's rules).
 	AnchorFinality *AnchorFinalityParams `json:"anchor_finality,omitempty"`
+	// AuthorityThreshold is the governance authority threshold k (k-of-n):
+	// once committed non-zero, every governance command needs authority
+	// tokens from at least k distinct members of the current authority set
+	// (authority.Validator.Threshold); operational commands stay
+	// single-signature. Zero means never set (effective k = 1) and is omitted
+	// from the canonical form, so every earlier digest is unchanged.
+	// authority.NormalizeConsensusParamsUpdate refuses a value above the
+	// number of AuthorityAddresses; the old-k authorization, carry and
+	// shrink rules are the FSM's (and the SNode follower's).
+	AuthorityThreshold uint32 `json:"authority_threshold,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed
