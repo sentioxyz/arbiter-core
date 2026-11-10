@@ -301,6 +301,17 @@ type ConsensusParamsUpdate struct {
 	// (authority.NormalizeConsensusParamsUpdate); the carry and one-way rules
 	// are the FSM's.
 	MembershipLeaseL2Blocks uint64 `json:"membership_lease_l2_blocks,omitempty"`
+	// PromotionAckDeltaSnapshot is the promotion acknowledgement delta
+	// snapshot switch: once committed, the arbiter writes snapshot v23, which
+	// stores the complete safe-partition inventory of every acknowledged
+	// promotion (PromotionAck.SafePartitionParts) as a delta against the
+	// previous acknowledgement of its partition. It changes no Apply rule.
+	// False, and omitted from the canonical form so every earlier digest is
+	// unchanged, until one authority-signed update sets it; it needs
+	// ManifestDeltaSnapshot in the same update, and afterwards every update
+	// carries it and it is never lowered. The raise-only and carry rules are
+	// the FSM's.
+	PromotionAckDeltaSnapshot bool `json:"promotion_ack_delta_snapshot,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed

@@ -76,6 +76,9 @@ func TestConsensusUpdateBindsEveryField(t *testing.T) {
 			c.TracksEnabled, c.PromotionFinalityGate = true, true
 		},
 		"manifest delta snapshot": func(c *arbiter.ConsensusParamsUpdate) { c.ManifestDeltaSnapshot = true },
+		"promotion ack delta snapshot": func(c *arbiter.ConsensusParamsUpdate) {
+			c.ManifestDeltaSnapshot, c.PromotionAckDeltaSnapshot = true, true
+		},
 		"part-claim uniqueness": func(c *arbiter.ConsensusParamsUpdate) {
 			c.TracksEnabled, c.PartClaimUniqueness = true, true
 		},
