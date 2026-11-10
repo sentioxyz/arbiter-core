@@ -14,6 +14,7 @@ import (
 	"github.com/housegate/housegate/pkg/lthash"
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 
+	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
@@ -282,6 +283,29 @@ func TestClearDecommissionedCoversTheScopedRoot(t *testing.T) {
 }
 
 func TestSweepPurgedKeeperPathsCoversBothRoots(t *testing.T) {
+	testSweepPurgedKeeperPaths(t, func(inc wire.TableIncarnation) wire.TableIncarnation { return inc })
+}
+
+// TestSweepPurgedKeeperPathsOnACompactedRegistry: arbiter#123. The arbiter
+// serves Purged incarnations without schema_json, schema_ref, created,
+// deleted and purged_by; the same sweep runs on that registry, since it
+// needs only key, seq, status, owner and scoped_keeper_path.
+func TestSweepPurgedKeeperPathsOnACompactedRegistry(t *testing.T) {
+	testSweepPurgedKeeperPaths(t, compactedAsServed)
+}
+
+// compactedAsServed is inc as the arbiter's read API serves it.
+func compactedAsServed(inc wire.TableIncarnation) wire.TableIncarnation {
+	switch inc.Status {
+	case wire.TableStatusPurged:
+		inc.SchemaJSON, inc.SchemaRef, inc.Created, inc.Deleted, inc.PurgedBy = "", nil, nil, nil, nil
+	case wire.TableStatusRefused:
+		inc.SchemaJSON = ""
+	}
+	return inc
+}
+
+func testSweepPurgedKeeperPaths(t *testing.T, served func(wire.TableIncarnation) wire.TableIncarnation) {
 	conn := requireCH(t)
 	replicaConn := requireReplicaCH(t)
 	p := isolatedPinned(t, conn, replicaConn)
@@ -295,8 +319,14 @@ func TestSweepPurgedKeeperPathsCoversBothRoots(t *testing.T) {
 	replicaOf(t, replicaConn, gone, recreated, ddl.KeeperScope{IncarnationSeq: 3, Scoped: true}, true)
 	v := peer(t, replicaConn, p, "verifier-"+suffix(t))
 	view, arb := newFakeView(), &fakeArbiter{nodeSet: []string{p.NodeID, v.NodeID}}
-	view.set(chainInc(t, 1, legacy, wire.TableStatusPurged), scopedInc(t, 2, scoped, wire.TableStatusPurged),
-		scopedInc(t, 3, recreated, wire.TableStatusPurged), scopedInc(t, 4, recreated, wire.TableStatusActive))
+	purged := func(inc wire.TableIncarnation) wire.TableIncarnation {
+		inc.Created = &arbiter.L2EventRef{BlockNumber: inc.Seq, BlockHash: "0xcreated", TxHash: "0xtx"}
+		inc.Deleted = &arbiter.L2EventRef{BlockNumber: inc.Seq + 1, BlockHash: "0xdeleted", TxHash: "0xtx"}
+		inc.PurgedBy = []string{p.NodeID}
+		return served(inc)
+	}
+	view.set(purged(chainInc(t, 1, legacy, wire.TableStatusPurged)), purged(scopedInc(t, 2, scoped, wire.TableStatusPurged)),
+		purged(scopedInc(t, 3, recreated, wire.TableStatusPurged)), served(scopedInc(t, 4, recreated, wire.TableStatusActive)))
 	source := newReconciler(t, conn, p, view, arb, func(c *Config, _ *Deps) { c.SweepDecommissioned = true })
 	verifier := newReconciler(t, replicaConn, v, view, arb, nil)
 
