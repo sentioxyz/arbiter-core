@@ -18,7 +18,7 @@ import (
 
 func (r *Role) handleCleanup(ctx context.Context, m *pb.UnsafeCleanup, jws string) error {
 	cmd := wire.CleanupFromPB(m)
-	if _, err := r.authority.AuthorizeCleanup(cmd, jws); err != nil {
+	if err := r.authorizeCleanup(ctx, cmd, jws); err != nil {
 		return fmt.Errorf("cleanup authority: %w", err)
 	}
 	if err := r.requireOwned(cmd.TableID); err != nil {

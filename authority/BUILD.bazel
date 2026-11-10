@@ -4,6 +4,7 @@ go_library(
     name = "authority",
     srcs = [
         "artifact_disposition.go",
+        "chain.go",
         "consensus.go",
         "context.go",
         "da_put.go",
@@ -25,6 +26,7 @@ go_library(
         "//:arbiter-core",
         "//tableadmission",
         "//wire",
+        "@com_github_ethereum_go_ethereum//common",
         "@com_github_ethereum_go_ethereum//crypto",
         "@housegate//pkg/replay",
     ],
@@ -36,6 +38,7 @@ go_test(
         "anchor_finality_test.go",
         "artifact_disposition_test.go",
         "authority_test.go",
+        "chain_test.go",
         "consensus_golden_test.go",
         "consensus_signed_claims_test.go",
         "consensus_test.go",

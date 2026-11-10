@@ -13,6 +13,7 @@ import (
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
 
+	"github.com/sentioxyz/arbiter-core"
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
@@ -85,11 +86,14 @@ func (m *contextMutex) Unlock() {
 }
 
 type Role struct {
-	cfg              Config
-	d                Deps
-	state            *stateStore
-	journal          *intakeJournal
-	authority        *authority.Validator
+	cfg       Config
+	d         Deps
+	state     *stateStore
+	journal   *intakeJournal
+	authority *authority.Validator
+	// follower, set with Config.FollowConsensusAuthority, replaces the static
+	// authority validator.
+	follower         *dataplane.AuthorityFollower
 	intakeMu         contextMutex
 	promotionLocksMu sync.Mutex
 	promotionLocks   map[string]*sync.Mutex
@@ -147,6 +151,26 @@ func New(cfg Config, d Deps) (*Role, error) {
 		authority: authorityValidator(cfg.AuthorityAddresses),
 		genesisID: genesisID,
 		audit:     newOwnerAuditState(d.Conn != nil),
+	}
+	if cfg.FollowConsensusAuthority {
+		anchorGenesis, err := claimGenesisSnapshotID(cfg, true)
+		if err != nil {
+			return nil, fmt.Errorf("snode config: follow_consensus_authority: %w", err)
+		}
+		follower, err := dataplane.NewAuthorityFollower(d.Client, dataplane.AuthorityFollowerConfig{
+			Anchor: authority.AuthorityAnchor{
+				NetworkID: cfg.NetworkID, GenesisSnapshotID: anchorGenesis,
+				Epoch: cfg.AuthorityTrustEpoch, Addresses: cfg.AuthorityAddresses,
+			},
+			StateDir: cfg.StateDir, PollInterval: cfg.AuthorityPollInterval, MaxTokenAge: authorityMaxTokenAge,
+		}, d.Logger)
+		if err != nil {
+			return nil, fmt.Errorf("snode: %w", err)
+		}
+		r.follower = follower
+		epoch, addrs, fork := follower.Current()
+		d.Logger.Info("snode follows the committed authority set",
+			"anchor_epoch", cfg.AuthorityTrustEpoch, "verified_epoch", epoch, "authority_addresses", addrs, "fork", fork)
 	}
 	r.ensureFn = r.ensureProtocolTablesMode
 	if cfg.protocolTables != ddl.ModeOff && d.Conn != nil {
@@ -287,6 +311,11 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	defer cancel()
 	stopResender := r.startCleanupAckResender(runCtx)
 	defer stopResender()
+	stopFollower, err := r.startAuthorityFollower(runCtx)
+	if err != nil {
+		return err
+	}
+	defer stopFollower()
 	// The periodic verifier first fires after an interval. Ensure before
 	// Prepare so startup convergence never touches ClickHouse in an unverified
 	// protocol-table state, including when Run is called without Register.
@@ -647,7 +676,52 @@ func authorityValidator(addresses []string) *authority.Validator {
 	for _, addr := range addresses {
 		allow[strings.ToLower(addr)] = true
 	}
-	return &authority.Validator{AllowedAddresses: allow, MaxTokenAge: time.Minute}
+	return &authority.Validator{AllowedAddresses: allow, MaxTokenAge: authorityMaxTokenAge}
+}
+
+// authorityMaxTokenAge bounds promotion and cleanup token age; re-sends
+// re-sign, so a short age is safe.
+const authorityMaxTokenAge = time.Minute
+
+func (r *Role) authorizePromotion(ctx context.Context, cmd arbiter.PromoteSafePartition, jws string) error {
+	if r.follower != nil {
+		_, err := r.follower.AuthorizePromotion(ctx, cmd, jws)
+		return err
+	}
+	_, err := r.authority.AuthorizePromotion(cmd, jws)
+	return err
+}
+
+func (r *Role) authorizeCleanup(ctx context.Context, cmd arbiter.UnsafeCleanup, jws string) error {
+	if r.follower != nil {
+		_, err := r.follower.AuthorizeCleanup(ctx, cmd, jws)
+		return err
+	}
+	_, err := r.authority.AuthorizeCleanup(cmd, jws)
+	return err
+}
+
+// startAuthorityFollower refreshes the followed authority history once and
+// then keeps it fresh until ctx ends. An arbiter without GetConsensusHistory
+// fails startup: following is explicitly configured and must not degrade to
+// the static allowlist. Any other refresh failure keeps the persisted set.
+func (r *Role) startAuthorityFollower(ctx context.Context) (func(), error) {
+	if r.follower == nil {
+		return func() {}, nil
+	}
+	if err := r.follower.Refresh(ctx); err != nil {
+		if errors.Is(err, dataplane.ErrAuthorityHistoryUnimplemented) {
+			return nil, fmt.Errorf("snode: %w", err)
+		}
+		r.d.Logger.Warn("initial authority history refresh failed; using the persisted authority set", "err", err)
+	}
+	fctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = r.follower.Run(fctx)
+	}()
+	return func() { cancel(); <-done }, nil
 }
 
 func (r *Role) promotionLock(k partitionKey) *sync.Mutex {

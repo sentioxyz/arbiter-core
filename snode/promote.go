@@ -18,7 +18,7 @@ import (
 // this SNode's journal only (answerSettle) and never applied.
 func (r *Role) handlePromote(ctx context.Context, m *pb.PromoteSafePartition, jws string, settle bool) error {
 	cmd := wire.PromoteFromPB(m)
-	if _, err := r.authority.AuthorizePromotion(cmd, jws); err != nil {
+	if err := r.authorizePromotion(ctx, cmd, jws); err != nil {
 		return fmt.Errorf("promote authority: %w", err)
 	}
 	if err := r.requireOwned(cmd.TableID); err != nil {

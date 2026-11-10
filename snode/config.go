@@ -43,12 +43,31 @@ type Config struct {
 	// Tables is the genesis table set. It is the whole table set while the
 	// table registry is disabled (or not followed); afterwards the registry
 	// takes over and Tables only supplies genesis-origin schemas.
-	Tables             []payloadexec.TableSchema
-	StateDir           string
-	UnsafeDatabase     string
-	SafeDatabase       string
-	PromoteDatabase    string
+	Tables          []payloadexec.TableSchema
+	StateDir        string
+	UnsafeDatabase  string
+	SafeDatabase    string
+	PromoteDatabase string
+	// AuthorityAddresses is the authority trust anchor: the authority set in
+	// force at AuthorityTrustEpoch. Without FollowConsensusAuthority it is the
+	// static allowlist every promotion and cleanup token is checked against.
 	AuthorityAddresses []string
+	// AuthorityTrustEpoch is the consensus epoch at which AuthorityAddresses
+	// was the committed authority set; 0 is the bootstrap set. It may be
+	// non-zero only with FollowConsensusAuthority. Moving it forward
+	// re-anchors the follower (for example after a key compromise).
+	AuthorityTrustEpoch uint64
+	// FollowConsensusAuthority makes the SNode follow the committed authority
+	// set as a light client instead of a static allowlist: it verifies the
+	// arbiter's signed consensus history (GetConsensusHistory) from the
+	// anchor, persists the verified chain in StateDir, and requires every
+	// promotion and cleanup token to carry the followed authority epoch. It
+	// requires every arbiter voter to serve GetConsensusHistory.
+	FollowConsensusAuthority bool
+	// AuthorityPollInterval paces the follower's background refresh; 0 =
+	// dataplane.DefaultAuthorityPollInterval. A token of a newer epoch
+	// refreshes on demand regardless.
+	AuthorityPollInterval time.Duration
 	// SchemaSource names where Tables came from. It derives the protocol-table
 	// mode (Spec L D2); there is no configurable mode and no fail-open zero.
 	SchemaSource ddl.SchemaSource
@@ -141,6 +160,12 @@ func (c *Config) validate() error {
 	}
 	if len(c.AuthorityAddresses) == 0 {
 		errs = append(errs, errors.New("at least one authority address is required"))
+	}
+	if c.AuthorityTrustEpoch != 0 && !c.FollowConsensusAuthority {
+		errs = append(errs, errors.New("authority trust epoch requires follow_consensus_authority: a static allowlist has no epoch"))
+	}
+	if c.AuthorityPollInterval < 0 {
+		errs = append(errs, errors.New("authority poll interval must not be negative"))
 	}
 	if c.UnsafeDatabase == "" {
 		c.UnsafeDatabase = defaultUnsafeDatabase
