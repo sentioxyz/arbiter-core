@@ -656,7 +656,7 @@ func TestSNodeRegistrationAdvertisesTrackManifests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{arbiter.ClientLanesFeature, arbiter.TrackManifestsFeature, arbiter.Stage3Feature}; !slices.Equal(legacy.GetFeatures(), want) {
+	if want := []string{arbiter.ClientLanesFeature, arbiter.TrackManifestsFeature, arbiter.Stage3Feature, "table_admission_rules_v2"}; !slices.Equal(legacy.GetFeatures(), want) {
 		t.Fatalf("unsigned SNode features = %v, want %v", legacy.GetFeatures(), want)
 	}
 	fake := &claimsFakeS{}
@@ -670,7 +670,7 @@ func TestSNodeRegistrationAdvertisesTrackManifests(t *testing.T) {
 		t.Fatal(err)
 	}
 	regs, _ := fake.registrations()
-	want := append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature)
+	want := append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature, "table_admission_rules_v2")
 	if len(regs) != 1 || !slices.Equal(regs[0].GetFeatures(), want) {
 		t.Fatalf("signing SNode registrations = %v, want features %v", regs, want)
 	}

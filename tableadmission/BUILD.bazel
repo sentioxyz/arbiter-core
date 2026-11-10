@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "tableadmission",
     srcs = [
+        "features.go",
         "rules_v1.go",
         "rules_v2.go",
     ],
@@ -17,6 +18,7 @@ go_library(
 go_test(
     name = "tableadmission_test",
     srcs = [
+        "features_test.go",
         "rules_v1_test.go",
         "rules_v2_test.go",
     ],

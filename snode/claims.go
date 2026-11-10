@@ -12,6 +12,7 @@ import (
 	"github.com/sentioxyz/arbiter-core/authority"
 	"github.com/sentioxyz/arbiter-core/dataplane"
 	"github.com/sentioxyz/arbiter-core/dataplane/tableset"
+	"github.com/sentioxyz/arbiter-core/tableadmission"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -50,13 +51,17 @@ func (r *Role) sign(kind authority.SNodeMessageKind, body any) (string, error) {
 
 // nodeFeatures is what RegisterNode advertises: signed_claims_v1 and
 // membership_lease_v1 only with a claim signer, so no activation gate counts
-// an SNode that cannot sign its messages or renew its lease.
+// an SNode that cannot sign its messages or renew its lease, and the table
+// admission rules versions the compiled column profile replays
+// (tableadmission.DataPlaneFeatures).
 func (r *Role) nodeFeatures() []string {
 	features := arbiter.LocalNodeFeatures()
 	if r.d.ClaimSigner != nil {
-		return append(features, arbiter.MembershipLeaseFeature)
+		features = append(features, arbiter.MembershipLeaseFeature)
+	} else {
+		features = slices.DeleteFunc(features, func(f string) bool { return f == arbiter.SignedClaimsFeature })
 	}
-	return slices.DeleteFunc(features, func(f string) bool { return f == arbiter.SignedClaimsFeature })
+	return append(features, tableadmission.DataPlaneFeatures()...)
 }
 
 // signLeaseRenewal is the lease renewer's signer: the indexer key, kind

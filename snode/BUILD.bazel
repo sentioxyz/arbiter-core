@@ -35,6 +35,7 @@ go_library(
         "//dataplane/chrestart",
         "//dataplane/ddl",
         "//dataplane/tableset",
+        "//tableadmission",
         "//wire",
         "@com_github_clickhouse_ch_go//proto",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
