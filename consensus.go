@@ -216,6 +216,16 @@ type ConsensusParamsUpdate struct {
 	// afterwards every update carries it and it is never lowered. The
 	// raise-only and carry rules are the FSM's.
 	ManifestDeltaSnapshot bool `json:"manifest_delta_snapshot,omitempty"`
+	// TableAdmissionRulesVersion is the table admission rules version every
+	// later AddTable is judged by (tableadmission.AdmitDeclaredSchema): 0
+	// means rules v1, the only rules before the field existed; 2 selects
+	// rules v2. Zero, and omitted from the canonical form so every earlier
+	// digest is unchanged, until one authority-signed update raises it; it
+	// needs TableRegistry in the same update, and afterwards every update
+	// carries it and it is never lowered. authority.NormalizeConsensusParamsUpdate
+	// checks the value (tableadmission.ValidRulesVersionParam); the raise-only
+	// and carry rules are the FSM's.
+	TableAdmissionRulesVersion uint32 `json:"table_admission_rules_version,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed

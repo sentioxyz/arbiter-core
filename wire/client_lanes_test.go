@@ -80,3 +80,15 @@ func TestTableRegistrySnapshotCarriesClientLanes(t *testing.T) {
 		t.Fatal("a snapshot carrying client_lanes with max_lanes_per_account 0 must be refused")
 	}
 }
+
+func TestTableRegistrySnapshotCarriesAdmissionRulesVersion(t *testing.T) {
+	s := TableRegistrySnapshot{Params: arbiter.TableRegistryParams{ChainID: 1, DatabasesContract: "0x00000000000000000000000000000000000000d1", ActivationBlock: 1, Confirmation: arbiter.TableRegistryConfirmationSafe}, Version: 3}
+	if m := TableRegistrySnapshotToPB(s); m.GetAdmissionRulesVersion() != 0 {
+		t.Fatal("an unset version reached the wire")
+	}
+	s.AdmissionRulesVersion = 2
+	got, err := TableRegistrySnapshotFromPB(TableRegistrySnapshotToPB(s))
+	if err != nil || got.AdmissionRulesVersion != 2 {
+		t.Fatalf("round trip: %d, %v", got.AdmissionRulesVersion, err)
+	}
+}

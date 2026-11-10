@@ -175,12 +175,12 @@ func TestIntents_MatchRenderedDDLShape(t *testing.T) {
 
 func TestIntents_RejectsColumnTypeOutsideTheSIWhitelist(t *testing.T) {
 	for name, schema := range map[string]payloadexec.TableSchema{
-		// Nullable and Array stay out: Spec Q defers them to Phase 2, which also
-		// bumps ExecutorProfileID. Date32 is deferred with them — the Native
-		// decoder has no *proto.ColDate32 case, measured in Spec Q M-Date32.
-		"nullable": {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Nullable(UInt64)"}}},
-		"array":    {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Array(String)"}}},
-		"date32":   {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Date32"}}},
+		// Array, Decimal and nested Nullable stay out of the profile, which
+		// admission rules v2 widened only to Date32, UUID, the wide integers,
+		// LowCardinality(String) and Nullable over a plain scalar.
+		"nested_nullable": {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Nullable(Nullable(UInt64))"}}},
+		"array":           {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Array(String)"}}},
+		"decimal":         {TableID: "db.t", Columns: []lthash.Column{{Name: "v", Type: "Decimal(18, 4)"}}},
 		// Spec Q Q-D7 narrowed FixedString to the one width the Native lane
 		// actually decodes. Widths ClickHouse and ch-go both accept are still
 		// refused here, deliberately.
@@ -286,7 +286,7 @@ func TestIntents_CanonicalizesAcceptedFixedStringSpellings(t *testing.T) {
 func TestEnsureProtocolTables_ValidatesAllSchemasBeforeAnyDDL(t *testing.T) {
 	bad := payloadexec.TableSchema{
 		TableID: "db.bad",
-		Columns: []lthash.Column{{Name: "v", Type: "Nullable(UInt64)"}},
+		Columns: []lthash.Column{{Name: "v", Type: "Decimal(18, 4)"}},
 	}
 	good := goldenSchema()
 	good.TableID = "db.good"

@@ -27,6 +27,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		Stage3:                        Stage3ParamsFromPB(m.GetStage3()),
 		PromotionFinalityGate:         m.GetPromotionFinalityGate(),
 		ManifestDeltaSnapshot:         m.GetManifestDeltaSnapshot(),
+		TableAdmissionRulesVersion:    m.GetTableAdmissionRulesVersion(),
 	}
 }
 
@@ -50,6 +51,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		Stage3:                        Stage3ParamsToPB(v.Stage3),
 		PromotionFinalityGate:         v.PromotionFinalityGate,
 		ManifestDeltaSnapshot:         v.ManifestDeltaSnapshot,
+		TableAdmissionRulesVersion:    v.TableAdmissionRulesVersion,
 	}
 }
 

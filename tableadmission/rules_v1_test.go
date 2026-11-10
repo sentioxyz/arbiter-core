@@ -143,28 +143,58 @@ func isASCII(s string) bool {
 
 // housegateAdmittedVectorsAtPin is housegate's AdmittedColumnTypeVectors at
 // the version this module pins. A housegate bump that widens or narrows its
-// profile changes that list and fails here, so the widening is a deliberate
-// admission-rules decision (a v2), never a silent change of replay.
-var housegateAdmittedVectorsAtPin = []string{
-	"String", "FixedString(32)", "Bool", "Float32", "Float64",
-	"UInt8", "UInt16", "UInt32", "UInt64", "Int8", "Int16", "Int32", "Int64",
-	"Date", "DateTime", "DateTime('UTC')", "DateTime64(3)", "DateTime64(3, 'UTC')",
+// profile changes that list and fails here, so the change is a deliberate
+// admission-rules decision (a new rules version), never a silent change of
+// replay. At this pin it is admission rules v2's set (Spec Q Phase 2
+// revision): v1's types, the plain additions, LowCardinality(String) and
+// Nullable over every plain vector.
+var housegateAdmittedVectorsAtPin = func() []string {
+	plain := []string{
+		"String", "FixedString(32)", "Bool", "Float32", "Float64",
+		"UInt8", "UInt16", "UInt32", "UInt64", "Int8", "Int16", "Int32", "Int64",
+		"Date", "DateTime", "Date32", "UUID", "Int128", "Int256", "UInt128", "UInt256",
+		"LowCardinality(String)",
+		"DateTime('UTC')", "DateTime64(3)", "DateTime64(3, 'UTC')",
+	}
+	out := append([]string(nil), plain...)
+	for _, p := range plain {
+		if p != "LowCardinality(String)" {
+			out = append(out, "Nullable("+p+")")
+		}
+	}
+	return out
+}()
+
+// rulesProbes is the fixed probe list the rules are classified against the
+// housegate profile on. narrowedProbes are the ones the rules refuse on
+// purpose although housegate may admit them: non-UTC timezones, whose
+// housegate verdict depends on the host tz database.
+var rulesProbes = []string{
+	"String", "string", "String ", "FixedString(32)", "FixedString( +032 )", "FixedString(16)", "FixedString(-32)",
+	"Bool", "Float32", "UInt64", "Int8", "Date", "Date32", "DateTime", "DateTime( 'UTC' )", "DateTime('UTC')",
+	"DateTime64(0)", "DateTime64(09)", "DateTime64(10)", "DateTime64(3,'UTC')", "DateTime64( 6 , 'UTC' )",
+	"Nullable(Int64)", "LowCardinality(String)", "Decimal(18, 4)", "UUID", "Array(String)", "",
+	"Int128", "Int256", "UInt128", "UInt256", "Int512", "uuid",
+	"Nullable(String)", "Nullable( UInt64 )", "Nullable(FixedString(032))", "Nullable(DateTime64(3,'UTC'))",
+	"Nullable(Nullable(String))", "Nullable(LowCardinality(String))", "LowCardinality(Nullable(String))",
+	"LowCardinality(UInt64)", "Nullable(Decimal(18, 4))", "Nullable(Array(String))", "Nullable()",
+	"DateTime('Asia/Tokyo')", "DateTime('Etc/UTC')", "DateTime64(3, 'Europe/Berlin')", "Nullable(DateTime('Asia/Tokyo'))",
+}
+
+var narrowedProbes = map[string]bool{
+	"DateTime('Asia/Tokyo')": true, "DateTime('Etc/UTC')": true, "DateTime64(3, 'Europe/Berlin')": true,
+	"Nullable(DateTime('Asia/Tokyo'))": true,
 }
 
 // TestAdmissionRulesV1MatchHousegateProfile pins the frozen v1 type rules
 // against the housegate profile compiled into this binary. Every v1-admitted
 // spelling must be one housegate resolves to itself (so every role can create
-// and replay the table), and on a fixed probe list the two must classify
-// identically, except the probes v1 narrows on purpose (non-UTC timezones,
-// whose housegate verdict depends on the host tz database).
+// and replay the table). On the probe list, v1 agrees with housegate wherever
+// it admits; where v1 refuses and housegate admits, the probe is one v2 adds
+// (or a narrowed timezone), never a type no rules version admits.
 func TestAdmissionRulesV1MatchHousegateProfile(t *testing.T) {
 	if got := payloadexec.AdmittedColumnTypeVectors(); !slices.Equal(got, housegateAdmittedVectorsAtPin) {
-		t.Fatalf("housegate profile changed: AdmittedColumnTypeVectors() = %q; decide admission rules v2 before bumping", got)
-	}
-	for _, v := range housegateAdmittedVectorsAtPin {
-		if !columnTypeAdmittedV1(v) {
-			t.Fatalf("housegate vector %q is not admitted by v1", v)
-		}
+		t.Fatalf("housegate profile changed: AdmittedColumnTypeVectors() = %q; decide a new admission rules version before bumping", got)
 	}
 	for _, typ := range admittedColumnTypesV1 {
 		profile, err := payloadexec.ResolveColumnProfile(typ)
@@ -172,28 +202,23 @@ func TestAdmissionRulesV1MatchHousegateProfile(t *testing.T) {
 			t.Fatalf("v1 admits %q but housegate resolves it to %+v (%v)", typ, profile, err)
 		}
 	}
-	narrowed := map[string]bool{"DateTime('Asia/Tokyo')": true, "DateTime('Etc/UTC')": true, "DateTime64(3, 'Europe/Berlin')": true}
-	probes := []string{
-		"String", "string", "String ", "FixedString(32)", "FixedString( +032 )", "FixedString(16)", "FixedString(-32)",
-		"Bool", "Float32", "UInt64", "Int8", "Date", "Date32", "DateTime", "DateTime( 'UTC' )", "DateTime('UTC')",
-		"DateTime64(0)", "DateTime64(09)", "DateTime64(10)", "DateTime64(3,'UTC')", "DateTime64( 6 , 'UTC' )",
-		"Nullable(Int64)", "LowCardinality(String)", "Decimal(18, 4)", "UUID", "Array(String)", "",
-		"DateTime('Asia/Tokyo')", "DateTime('Etc/UTC')", "DateTime64(3, 'Europe/Berlin')",
-	}
-	for _, probe := range probes {
+	for _, probe := range rulesProbes {
 		canonical, v1ok := canonicalColumnTypeV1(probe)
 		profile, err := payloadexec.ResolveColumnProfile(probe)
 		hgok := err == nil
-		if narrowed[probe] {
-			// housegate's verdict here depends on the host tz database, which
-			// is exactly why v1 refuses these; only v1's side is asserted.
+		if narrowedProbes[probe] {
 			if v1ok {
 				t.Fatalf("%q: v1 must refuse non-UTC timezones", probe)
 			}
 			continue
 		}
-		if v1ok != hgok || (v1ok && canonical != profile.Canonical) {
-			t.Fatalf("%q: v1 (%q, %v) and housegate (%q, %v) disagree", probe, canonical, v1ok, profile.Canonical, err)
+		if v1ok && (!hgok || canonical != profile.Canonical) {
+			t.Fatalf("%q: v1 (%q) admits what housegate resolves to %q (%v)", probe, canonical, profile.Canonical, err)
+		}
+		if !v1ok && hgok {
+			if _, v2ok := canonicalColumnTypeV2(probe); !v2ok {
+				t.Fatalf("%q: housegate admits it, but neither v1 nor v2 does", probe)
+			}
 		}
 	}
 	if admissionRowIDColumnV1 != ddl.RowIDColumn {

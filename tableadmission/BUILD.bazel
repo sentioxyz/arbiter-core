@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "tableadmission",
-    srcs = ["rules_v1.go"],
+    srcs = [
+        "rules_v1.go",
+        "rules_v2.go",
+    ],
     importpath = "github.com/sentioxyz/arbiter-core/tableadmission",
     visibility = ["//visibility:public"],
     deps = [
@@ -13,7 +16,10 @@ go_library(
 
 go_test(
     name = "tableadmission_test",
-    srcs = ["rules_v1_test.go"],
+    srcs = [
+        "rules_v1_test.go",
+        "rules_v2_test.go",
+    ],
     embed = [":tableadmission"],
     deps = [
         "//dataplane/ddl",

@@ -143,3 +143,22 @@ func TestConsensusParamsUpdateCarriesManifestDeltaSnapshot(t *testing.T) {
 	}
 	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
 }
+
+// TestConsensusParamsUpdateCarriesTableAdmissionRulesVersion: the converters
+// copy the rules version both ways, and an update without it encodes exactly
+// as before the field existed.
+func TestConsensusParamsUpdateCarriesTableAdmissionRulesVersion(t *testing.T) {
+	u := legacyGoldenUpdate()
+	if ConsensusParamsUpdateToPB(u).GetTableAdmissionRulesVersion() != 0 {
+		t.Fatal("an update without the version set table_admission_rules_version")
+	}
+	u.TableAdmissionRulesVersion = 2
+	m := ConsensusParamsUpdateToPB(u)
+	if m.GetTableAdmissionRulesVersion() != 2 {
+		t.Fatal("ConsensusParamsUpdateToPB dropped table_admission_rules_version")
+	}
+	if got := ConsensusParamsUpdateFromPB(m); !reflect.DeepEqual(got, u) {
+		t.Fatalf("update round trip\n got %+v\nwant %+v", got, u)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}
