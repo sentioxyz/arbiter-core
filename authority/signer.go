@@ -76,6 +76,11 @@ func (s *Signer) signWithPurpose(cmd arbiter.PromoteSafePartition, purpose strin
 // base64url(header) + "." + base64url(payload), signed with the Ethereum
 // V+27 recovery convention — byte-compatible with housegate pkg/auth.
 func (s *Signer) signPayload(payload JWSCommandPayload) (string, error) {
+	return s.signJSON(payload)
+}
+
+// signJSON is signPayload for any JSON payload.
+func (s *Signer) signJSON(payload any) (string, error) {
 	headerJSON, err := json.Marshal(jwsHeader{Alg: "ES256K", Typ: "JWT"})
 	if err != nil {
 		return "", fmt.Errorf("marshal header: %w", err)

@@ -31,6 +31,9 @@ type Config struct {
 	ControlAddr string
 	DialTimeout time.Duration
 	CallTimeout time.Duration
+	// PutAuthorizer, when set, attaches a put token to every Put. Nil sends
+	// puts without one.
+	PutAuthorizer PutAuthorizer
 }
 
 func (cfg Config) withDefaults() Config {

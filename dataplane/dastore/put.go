@@ -41,6 +41,12 @@ func (c *Client) Put(ctx context.Context, expectedRef string, payload []byte) er
 		PayloadHash:   replay.DigestBytes(payload),
 		PayloadLength: uint64(len(payload)),
 	}
+	if c.cfg.PutAuthorizer != nil {
+		ctx, err = c.cfg.PutAuthorizer(ctx, header.GetPayloadHash(), header.GetPayloadLength())
+		if err != nil {
+			return fmt.Errorf("dastore: put %s: %w", expectedRef, err)
+		}
+	}
 	var result *pb.PutPayloadResult
 	if uint64(len(payload)) <= limits.GetMaxInlineBytes() {
 		result, err = c.putInline(ctx, header, payload)
