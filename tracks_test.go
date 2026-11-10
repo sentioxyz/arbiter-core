@@ -30,6 +30,8 @@ func TestTracksCanonicalForms(t *testing.T) {
 			update + `,"tracks_enabled":true,"part_claim_uniqueness":true}`},
 		"membership lease update": {ConsensusParamsUpdate{NetworkID: "n", MembershipLeaseL2Blocks: 600},
 			update + `,"membership_lease_l2_blocks":600}`},
+		"promotion ack delta snapshot update": {ConsensusParamsUpdate{NetworkID: "n", ManifestDeltaSnapshot: true, PromotionAckDeltaSnapshot: true},
+			update + `,"manifest_delta_snapshot":true,"promotion_ack_delta_snapshot":true}`},
 		"anchor finality quorum update": {ConsensusParamsUpdate{NetworkID: "n", PromotionFinalityGate: true,
 			Voters:         []VoterEntry{{VoterID: "v0", Ed25519Pubkey: []byte{1}, ConsentSig: "aa"}},
 			AnchorFinality: &AnchorFinalityParams{Quorum: 1, FinalityMode: "safe", L2ChainID: 8453, RegistryContract: "0x01"}},

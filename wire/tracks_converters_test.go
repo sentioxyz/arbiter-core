@@ -144,6 +144,25 @@ func TestConsensusParamsUpdateCarriesManifestDeltaSnapshot(t *testing.T) {
 	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
 }
 
+// TestConsensusParamsUpdateCarriesPromotionAckDeltaSnapshot: the converters
+// copy the promotion acknowledgement delta snapshot switch both ways, and an
+// update without it encodes exactly as before the field existed.
+func TestConsensusParamsUpdateCarriesPromotionAckDeltaSnapshot(t *testing.T) {
+	u := legacyGoldenUpdate()
+	if ConsensusParamsUpdateToPB(u).GetPromotionAckDeltaSnapshot() {
+		t.Fatal("an update without the switch set promotion_ack_delta_snapshot")
+	}
+	u.ManifestDeltaSnapshot, u.PromotionAckDeltaSnapshot = true, true
+	m := ConsensusParamsUpdateToPB(u)
+	if !m.GetPromotionAckDeltaSnapshot() {
+		t.Fatal("ConsensusParamsUpdateToPB dropped promotion_ack_delta_snapshot")
+	}
+	if got := ConsensusParamsUpdateFromPB(m); !reflect.DeepEqual(got, u) {
+		t.Fatalf("update round trip\n got %+v\nwant %+v", got, u)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}
+
 // TestConsensusParamsUpdateCarriesTableAdmissionRulesVersion: the converters
 // copy the rules version both ways, and an update without it encodes exactly
 // as before the field existed.
