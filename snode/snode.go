@@ -107,6 +107,11 @@ type Role struct {
 	auditPassMu sync.Mutex
 	// settle counts the settle answers (settle.go); its zero value is ready.
 	settle settleCounters
+	// membershipMu serializes Register and Deactivate; registerSent records
+	// that this Role sent a RegisterNode, so Deactivate has something to
+	// withdraw.
+	membershipMu sync.Mutex
+	registerSent bool
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -175,6 +180,8 @@ func New(cfg Config, d Deps) (*Role, error) {
 // signatures; WithLeaderRetry resends the identical requests, so a retry
 // after an uncertain commit repeats the same seq.
 func (r *Role) Register(ctx context.Context) error {
+	r.membershipMu.Lock()
+	defer r.membershipMu.Unlock()
 	if err := r.ensureProtocolTables(ctx); err != nil {
 		return err
 	}
@@ -182,6 +189,7 @@ func (r *Role) Register(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("register snode: %w", err)
 	}
+	r.registerSent = true
 	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
 		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, reg)
 		return err
@@ -193,6 +201,36 @@ func (r *Role) Register(ctx context.Context) error {
 		return err
 	}); err != nil {
 		return fmt.Errorf("mark snode active: %w", err)
+	}
+	return nil
+}
+
+// Deactivate withdraws this SNode from source selection: it sends a fresh
+// RegisterNode at a new registration_seq and no MarkActive, which the arbiter
+// FSM applies as Active → Syncing (the re-registration rule). New statements
+// of the indexer's tables then answer the retryable SOURCE_UNAVAILABLE;
+// statements already bound to this SNode keep their source, and its result
+// claims still bind when it returns. The next Register returns it through
+// Syncing to Active. A Role that never sent a RegisterNode has nothing to
+// withdraw and sends nothing. Repeated calls are safe: each moves the
+// registration forward and leaves the node Syncing. Hosts call it on startup
+// rollback and graceful shutdown, under a short deadline; a crash leaves the
+// node Active until it restarts or an operator evicts it.
+func (r *Role) Deactivate(ctx context.Context) error {
+	r.membershipMu.Lock()
+	defer r.membershipMu.Unlock()
+	if !r.registerSent {
+		return nil
+	}
+	reg, _, err := r.registrationRequests()
+	if err != nil {
+		return fmt.Errorf("deactivate snode: %w", err)
+	}
+	if err := r.d.Client.WithLeaderRetry(ctx, func(ctx context.Context, conn *grpc.ClientConn) error {
+		_, err := pb.NewMembershipClient(conn).RegisterNode(ctx, reg)
+		return err
+	}); err != nil {
+		return fmt.Errorf("deactivate snode: %w", err)
 	}
 	return nil
 }

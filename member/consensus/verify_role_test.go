@@ -310,3 +310,46 @@ func TestReplayMaterializerKeepsExplicitPolicyAndDoesNotFallBack(t *testing.T) {
 		t.Fatalf("CREATE statements = %q, want exactly one with the requested policy and no fallback", conn.creates)
 	}
 }
+
+// TestMemberVerifyRoleDeactivateWithdrawsTheRegistration: Deactivate sends a
+// fresh signed registration and no activation (arbiter-core#15); with
+// Register off, or before any Register, it sends nothing.
+func TestMemberVerifyRoleDeactivateWithdrawsTheRegistration(t *testing.T) {
+	gw := newGatewayFake()
+	client := startGatewayFake(t, gw)
+	off := newTestRole(t, testConfig(t), VerifyDeps{Client: client, Registry: newViewFake(groupSnapshot(true, nil, nil)), Conn: newCHFake()}, nil)
+	if err := off.Deactivate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.Register = true
+	now := time.UnixMilli(int64(authoritytest.RegistrationSeq))
+	v := newTestRole(t, cfg, VerifyDeps{Client: client, Registry: newViewFake(groupSnapshot(true, nil, nil)), Conn: newCHFake(),
+		Now: func() time.Time { return now }}, nil)
+	if err := v.Deactivate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if regs, marks, _, _, _ := gw.snapshot(); len(regs) != 0 || len(marks) != 0 {
+		t.Fatalf("an unregistered role sent %d registrations, %d activations", len(regs), len(marks))
+	}
+	for _, step := range []func(context.Context) error{v.Register, v.Deactivate, v.Deactivate} {
+		if err := step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	regs, marks, _, _, _ := gw.snapshot()
+	if len(regs) != 3 || len(marks) != 1 {
+		t.Fatalf("%d registrations and %d activations, want 3 and 1", len(regs), len(marks))
+	}
+	ctx := authority.MessageContext{NetworkID: testNetworkID, GenesisSnapshotID: testGenesisID}
+	pub := authoritytest.MemberKeyB().Public().(ed25519.PublicKey)
+	for i, want := range []uint64{authoritytest.RegistrationSeq, authoritytest.RegistrationSeq + 1, authoritytest.RegistrationSeq + 2} {
+		body := arbiter.NodeRegistration{NodeID: testNodeID, Roles: []arbiter.NodeRole{arbiter.NodeRoleVerifier}, Ed25519Pubkey: pub, RegistrationSeq: want}
+		if regs[i].GetRegistrationSeq() != want {
+			t.Fatalf("registration %d seq = %d, want %d", i, regs[i].GetRegistrationSeq(), want)
+		}
+		if err := authority.VerifyVerifierMessage(pub, authority.VerifierMessageRegistration, ctx, body, regs[i].GetEd25519Signature()); err != nil {
+			t.Fatalf("registration %d signature: %v", i, err)
+		}
+	}
+}

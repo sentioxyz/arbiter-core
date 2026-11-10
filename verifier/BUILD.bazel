@@ -40,6 +40,7 @@ go_test(
         "backends_test.go",
         "claims_test.go",
         "config_external_test.go",
+        "deactivate_test.go",
         "empty_scan_test.go",
         "evidence_delegation_test.go",
         "historical_snapshot_query_adapter_test.go",
