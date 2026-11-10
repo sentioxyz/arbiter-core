@@ -31,6 +31,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		PartClaimUniqueness:           m.GetPartClaimUniqueness(),
 		Voters:                        VoterEntriesFromPB(m.GetVoters()),
 		AnchorFinality:                AnchorFinalityParamsFromPB(m.GetAnchorFinality()),
+		AuthorityThreshold:            m.GetAuthorityThreshold(),
 	}
 }
 
@@ -58,6 +59,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		PartClaimUniqueness:           v.PartClaimUniqueness,
 		Voters:                        VoterEntriesToPB(v.Voters),
 		AnchorFinality:                AnchorFinalityParamsToPB(v.AnchorFinality),
+		AuthorityThreshold:            v.AuthorityThreshold,
 	}
 }
 

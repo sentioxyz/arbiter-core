@@ -160,7 +160,7 @@ func New(cfg Config, d Deps) (*Role, error) {
 		follower, err := dataplane.NewAuthorityFollower(d.Client, dataplane.AuthorityFollowerConfig{
 			Anchor: authority.AuthorityAnchor{
 				NetworkID: cfg.NetworkID, GenesisSnapshotID: anchorGenesis,
-				Epoch: cfg.AuthorityTrustEpoch, Addresses: cfg.AuthorityAddresses,
+				Epoch: cfg.AuthorityTrustEpoch, Addresses: cfg.AuthorityAddresses, Threshold: cfg.AuthorityTrustThreshold,
 			},
 			StateDir: cfg.StateDir, PollInterval: cfg.AuthorityPollInterval, MaxTokenAge: authorityMaxTokenAge,
 		}, d.Logger)
@@ -676,7 +676,9 @@ func authorityValidator(addresses []string) *authority.Validator {
 	for _, addr := range addresses {
 		allow[strings.ToLower(addr)] = true
 	}
-	return &authority.Validator{AllowedAddresses: allow, MaxTokenAge: authorityMaxTokenAge}
+	// Promotion and cleanup are operational commands, signed by the leader's
+	// one online key: single-signature whatever the governance threshold.
+	return &authority.Validator{AllowedAddresses: allow, MaxTokenAge: authorityMaxTokenAge, Threshold: 1}
 }
 
 // authorityMaxTokenAge bounds promotion and cleanup token age; re-sends

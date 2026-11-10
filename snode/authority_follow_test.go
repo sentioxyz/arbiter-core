@@ -197,6 +197,22 @@ func TestConfigAuthorityTrustEpochRequiresFollow(t *testing.T) {
 	}
 }
 
+func TestConfigAuthorityTrustThreshold(t *testing.T) {
+	cfg := testConfigS(t)
+	cfg.AuthorityTrustThreshold = 1
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "authority trust threshold requires") {
+		t.Fatalf("err = %v", err)
+	}
+	cfg.FollowConsensusAuthority = true
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.AuthorityTrustThreshold = uint32(len(cfg.AuthorityAddresses)) + 1
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func mustTestSigner(t *testing.T, seed string) *authority.Signer {
 	t.Helper()
 	hexKey := strings.Repeat("0", 62) + map[string]string{"a": "a1", "b": "b2"}[seed]

@@ -28,6 +28,14 @@ type Validator struct {
 	// Promotion re-sends after failover re-sign, so short ages are safe
 	// (§10.2). Deterministic Verify methods deliberately ignore this value.
 	MaxTokenAge time.Duration
+	// Threshold is the number of distinct allowlisted signers a token must
+	// carry (k of k-of-n). 0 and 1 both mean one signer, and then only a
+	// single compact JWS is accepted, exactly as before thresholds existed.
+	// Above 1 the token is the multi-signature form (multisig.go). Callers
+	// pass the committed authority_threshold for governance commands and 1
+	// for operational ones (promotion, cleanup, member lagging, verifier
+	// reselection), which the leader signs with one online key.
+	Threshold uint32
 }
 
 // AuthorizePromotion checks token against the received command and returns
@@ -53,7 +61,21 @@ func (v *Validator) authorize(wantCmdHash, token string) (string, error) {
 	return v.verify(wantCmdHash, PromotionPurpose, token, true)
 }
 
+// verify applies the validator's threshold to verifyOne and returns the first
+// (lowest) signer.
 func (v *Validator) verify(wantCmdHash, wantPurpose, token string, enforceAge bool) (string, error) {
+	signers, err := v.verifyThreshold(token, func(component string) (string, error) {
+		return v.verifyOne(wantCmdHash, wantPurpose, component, enforceAge)
+	})
+	if err != nil {
+		return "", err
+	}
+	return signers[0], nil
+}
+
+// verifyOne checks one compact JWS: alg, purpose, command hash, token age
+// when enforceAge, and that the recovered signer is allowlisted.
+func (v *Validator) verifyOne(wantCmdHash, wantPurpose, token string, enforceAge bool) (string, error) {
 	if len(v.AllowedAddresses) == 0 {
 		return "", fmt.Errorf("authority allowlist is empty: refusing to authorize any command")
 	}
