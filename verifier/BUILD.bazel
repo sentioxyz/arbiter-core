@@ -55,6 +55,7 @@ go_test(
         "unsupported_type_refusal_test.go",
         "verifier_fakes_test.go",
         "verifier_test.go",
+        "written_table_gate_test.go",
     ],
     data = ["//conformance:snapshot_query_testdata"],
     embed = [":verifier"],
