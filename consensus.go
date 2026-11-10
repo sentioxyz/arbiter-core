@@ -226,6 +226,29 @@ type ConsensusParamsUpdate struct {
 	// checks the value (tableadmission.ValidRulesVersionParam); the raise-only
 	// and carry rules are the FSM's.
 	TableAdmissionRulesVersion uint32 `json:"table_admission_rules_version,omitempty"`
+	// PartClaimUniqueness is the part-claim uniqueness gate: once committed,
+	// Apply refuses a result claim that names a (table, partition, part hash)
+	// twice or one another statement's bound or parked claim names, and the
+	// acknowledged cleanup of a rejected partition drops the Rejected
+	// statements' parts in it from promotion coverage. False, and omitted from
+	// the canonical form so every earlier digest is unchanged, until one
+	// authority-signed update sets it; it needs TracksEnabled in the same
+	// update, and afterwards every update carries it and it is never lowered.
+	// The raise-only and carry rules are the FSM's.
+	PartClaimUniqueness bool `json:"part_claim_uniqueness,omitempty"`
+	// Voters are the enrolled Raft voters, sorted by voter id, ids and keys
+	// unique, each consent signature verifying. Absent, and omitted from the
+	// canonical form, until an update sets it. The set may change between
+	// updates; once AnchorFinality is committed every update carries a
+	// non-empty set (the FSM's rule).
+	Voters []VoterEntry `json:"voters,omitempty"`
+	// AnchorFinality is the anchor finality quorum: once committed, a block's
+	// finality flags latch only from signed attestations of Quorum distinct
+	// enrolled voters. Absent, and omitted from the canonical form, until one
+	// update sets it with Voters and PromotionFinalityGate in the same update;
+	// afterwards every update carries it, Quorum stays a majority of Voters,
+	// and every other field is immutable (the FSM's rules).
+	AnchorFinality *AnchorFinalityParams `json:"anchor_finality,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed

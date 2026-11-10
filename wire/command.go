@@ -54,6 +54,12 @@ type RecordAnchorFinality struct {
 	FinalityReached      bool
 	LastMergeableReached bool
 }
+// RecordAnchorFinalityAttestation mirrors pb.RecordAnchorFinalityAttestationCmd
+// (tag 43): one voter's signed anchor finality attestation.
+type RecordAnchorFinalityAttestation struct {
+	Attestation arbiter.AnchorFinalityAttestation
+}
+
 type RecordPromotionIssued struct {
 	Promote      arbiter.PromoteSafePartition
 	AuthorityJWS string
@@ -205,6 +211,9 @@ type Command struct {
 	MemberReady       *MemberReady       `json:",omitempty"`
 	MemberCheckpoint  *MemberCheckpoint  `json:",omitempty"`
 	MarkMemberLagging *MarkMemberLagging `json:",omitempty"`
+	// Anchor finality quorum: Raft tag 43, proposed only after the
+	// anchor_finality parameter is committed.
+	RecordAnchorFinalityAttestation *RecordAnchorFinalityAttestation `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -402,6 +411,11 @@ func Encode(c Command) ([]byte, error) {
 		set++
 		out.Cmd = &pb.RaftCommand_MarkMemberLagging{MarkMemberLagging: MarkMemberLaggingToRequest(*c.MarkMemberLagging)}
 	}
+	if c.RecordAnchorFinalityAttestation != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_RecordAnchorFinalityAttestation{RecordAnchorFinalityAttestation: &pb.RecordAnchorFinalityAttestationCmd{
+			Attestation: AnchorFinalityAttestationToPB(c.RecordAnchorFinalityAttestation.Attestation)}}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -502,6 +516,9 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_MarkMemberLagging:
 		v := MarkMemberLaggingFromRequest(cmd.MarkMemberLagging)
 		return Command{MarkMemberLagging: &v}, nil
+	case *pb.RaftCommand_RecordAnchorFinalityAttestation:
+		return Command{RecordAnchorFinalityAttestation: &RecordAnchorFinalityAttestation{
+			Attestation: AnchorFinalityAttestationFromPB(cmd.RecordAnchorFinalityAttestation.GetAttestation())}}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{

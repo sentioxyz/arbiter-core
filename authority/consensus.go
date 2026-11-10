@@ -88,6 +88,18 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if cmd.TableAdmissionRulesVersion != 0 && cmd.TableRegistry == nil {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: table_admission_rules_version requires table_registry in the same update")
 	}
+	if cmd.PartClaimUniqueness && !cmd.TracksEnabled {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: part_claim_uniqueness requires tracks_enabled in the same update")
+	}
+	voters, err := normalizeVoters(cmd.Voters, MessageContext{NetworkID: cmd.NetworkID, GenesisSnapshotID: cmd.GenesisSnapshotID})
+	if err != nil {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
+	}
+	anchorFinality, err := normalizeAnchorFinality(cmd.AnchorFinality, len(voters), cmd.PromotionFinalityGate)
+	if err != nil {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
+	}
+	cmd.Voters, cmd.AnchorFinality = voters, anchorFinality
 	stage3, err := normalizeStage3(cmd.Stage3, cmd.TracksEnabled, siIndexers)
 	if err != nil {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)

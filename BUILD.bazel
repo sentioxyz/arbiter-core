@@ -16,6 +16,7 @@ gazelle(name = "gazelle")
 go_library(
     name = "arbiter-core",
     srcs = [
+        "anchor_finality.go",
         "consensus.go",
         "domains.go",
         "stage3.go",

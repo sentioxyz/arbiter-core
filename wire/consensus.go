@@ -28,6 +28,9 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		PromotionFinalityGate:         m.GetPromotionFinalityGate(),
 		ManifestDeltaSnapshot:         m.GetManifestDeltaSnapshot(),
 		TableAdmissionRulesVersion:    m.GetTableAdmissionRulesVersion(),
+		PartClaimUniqueness:           m.GetPartClaimUniqueness(),
+		Voters:                        VoterEntriesFromPB(m.GetVoters()),
+		AnchorFinality:                AnchorFinalityParamsFromPB(m.GetAnchorFinality()),
 	}
 }
 
@@ -52,6 +55,9 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		PromotionFinalityGate:         v.PromotionFinalityGate,
 		ManifestDeltaSnapshot:         v.ManifestDeltaSnapshot,
 		TableAdmissionRulesVersion:    v.TableAdmissionRulesVersion,
+		PartClaimUniqueness:           v.PartClaimUniqueness,
+		Voters:                        VoterEntriesToPB(v.Voters),
+		AnchorFinality:                AnchorFinalityParamsToPB(v.AnchorFinality),
 	}
 }
 

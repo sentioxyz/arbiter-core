@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "conformance_test",
     srcs = [
+        "anchor_finality_test.go",
         "arbiter_wire_test.go",
         "replay_wire_test.go",
         "signed_claims_test.go",

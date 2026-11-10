@@ -95,6 +95,10 @@ type BlockVerification struct {
 	GroupDatabases      []BlockGroupRef
 	Reselections        []BlockReselection
 	ReselectionsAtLatch uint32
+	// FinalityAttestations are the latest anchor finality attestation each
+	// voter recorded, sorted by voter id; nil before the anchor finality
+	// quorum is active.
+	FinalityAttestations []arbiter.AnchorFinalityAttestation
 }
 
 // BlockGroupRef mirrors pb.BlockGroupRef: one database whose group carried the
@@ -149,8 +153,9 @@ func BlockVerificationFromPB(m *pb.BlockVerification) (BlockVerification, error)
 		GroupDatabases: mapSlice(m.GetGroupDatabases(), func(g *pb.BlockGroupRef) BlockGroupRef {
 			return BlockGroupRef{DatabaseID: g.GetDatabaseId(), GroupGeneration: g.GetGroupGeneration()}
 		}),
-		Reselections:        mapSlice(m.GetReselections(), blockReselectionFromPB),
-		ReselectionsAtLatch: m.GetReselectionsAtLatch(),
+		Reselections:         mapSlice(m.GetReselections(), blockReselectionFromPB),
+		ReselectionsAtLatch:  m.GetReselectionsAtLatch(),
+		FinalityAttestations: mapSlice(m.GetFinalityAttestations(), AnchorFinalityAttestationFromPB),
 	}
 	if a := m.GetAnchor(); a != nil {
 		anchor := AnchorRefFromPB(a)
@@ -205,8 +210,9 @@ func BlockVerificationToPB(v BlockVerification) *pb.BlockVerification {
 		GroupDatabases: mapSlice(v.GroupDatabases, func(g BlockGroupRef) *pb.BlockGroupRef {
 			return &pb.BlockGroupRef{DatabaseId: g.DatabaseID, GroupGeneration: g.GroupGeneration}
 		}),
-		Reselections:        mapSlice(v.Reselections, blockReselectionToPB),
-		ReselectionsAtLatch: v.ReselectionsAtLatch,
+		Reselections:         mapSlice(v.Reselections, blockReselectionToPB),
+		ReselectionsAtLatch:  v.ReselectionsAtLatch,
+		FinalityAttestations: mapSlice(v.FinalityAttestations, AnchorFinalityAttestationToPB),
 	}
 	if v.Anchor != nil {
 		out.Anchor = AnchorRefToPB(*v.Anchor)

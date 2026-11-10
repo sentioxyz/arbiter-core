@@ -91,6 +91,10 @@ func blockVerificationFixture() BlockVerification {
 		Reselections: []BlockReselection{{Replaced: []string{"verifier-2"}, Replacements: []string{"verifier-4"}, RingPosition: 3,
 			CursorBlock: 9030, AuthorityJWS: "h.p.s", AuthorityEpoch: 5}},
 		ReselectionsAtLatch: 1,
+		FinalityAttestations: []arbiter.AnchorFinalityAttestation{
+			{VoterID: "arbiter-0", L3BlockSeq: 12, L3BlockHash: "0xchain", StateRoot: "0xroot", L2BlockNumber: 900, Final: true, Signature: "aa"},
+			{VoterID: "arbiter-1", L3BlockSeq: 12, L3BlockHash: "0xchain", StateRoot: "0xroot", L2BlockNumber: 900, Final: true, LastMergeable: true, Signature: "bb"},
+		},
 	}
 }
 
@@ -310,6 +314,11 @@ func blockVerificationThroughReflection(t *testing.T, v BlockVerification) *pb.B
 			}
 		case "reselections_at_latch":
 			r.Set(fd, protoreflect.ValueOfUint32(v.ReselectionsAtLatch))
+		case "finality_attestations":
+			list := r.Mutable(fd).List()
+			for _, a := range v.FinalityAttestations {
+				list.Append(protoreflect.ValueOfMessage(attestationThroughReflection(t, a).ProtoReflect()))
+			}
 		default:
 			t.Fatalf("%s has no case: BlockVerification and this test must carry it", fd.FullName())
 		}
@@ -511,4 +520,37 @@ func TestBlockVerificationCarriesTheSelectionRecord(t *testing.T) {
 			}
 		})
 	}
+}
+
+// attestationThroughReflection builds a's message field by field through
+// protoreflect; every field of pb.AnchorFinalityAttestation needs a case.
+func attestationThroughReflection(t *testing.T, a arbiter.AnchorFinalityAttestation) *pb.AnchorFinalityAttestation {
+	t.Helper()
+	m := &pb.AnchorFinalityAttestation{}
+	r := m.ProtoReflect()
+	fields := r.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		switch fd.Name() {
+		case "voter_id":
+			r.Set(fd, protoreflect.ValueOfString(a.VoterID))
+		case "l3_block_seq":
+			r.Set(fd, protoreflect.ValueOfUint64(a.L3BlockSeq))
+		case "l3_block_hash":
+			r.Set(fd, protoreflect.ValueOfString(a.L3BlockHash))
+		case "state_root":
+			r.Set(fd, protoreflect.ValueOfString(a.StateRoot))
+		case "l2_block_number":
+			r.Set(fd, protoreflect.ValueOfUint64(a.L2BlockNumber))
+		case "final":
+			r.Set(fd, protoreflect.ValueOfBool(a.Final))
+		case "last_mergeable":
+			r.Set(fd, protoreflect.ValueOfBool(a.LastMergeable))
+		case "signature":
+			r.Set(fd, protoreflect.ValueOfString(a.Signature))
+		default:
+			t.Fatalf("%s has no case: AnchorFinalityAttestation and this test must carry it", fd.FullName())
+		}
+	}
+	return m
 }
