@@ -75,6 +75,9 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if err != nil {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
 	}
+	if cmd.PromotionFinalityGate && !cmd.TracksEnabled {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: promotion_finality_gate requires tracks_enabled in the same update")
+	}
 	stage3, err := normalizeStage3(cmd.Stage3, cmd.TracksEnabled, siIndexers)
 	if err != nil {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)

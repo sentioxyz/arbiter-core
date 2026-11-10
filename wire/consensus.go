@@ -25,6 +25,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		Verifiers:                     VerifierEntriesFromPB(m.GetVerifiers()),
 		TracksEnabled:                 m.GetTracksEnabled(),
 		Stage3:                        Stage3ParamsFromPB(m.GetStage3()),
+		PromotionFinalityGate:         m.GetPromotionFinalityGate(),
 	}
 }
 
@@ -46,6 +47,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		Verifiers:                     VerifierEntriesToPB(v.Verifiers),
 		TracksEnabled:                 v.TracksEnabled,
 		Stage3:                        Stage3ParamsToPB(v.Stage3),
+		PromotionFinalityGate:         v.PromotionFinalityGate,
 	}
 }
 

@@ -198,6 +198,15 @@ type ConsensusParamsUpdate struct {
 	// checks its static rules; the activation, carry and one-way rules are the
 	// FSM's.
 	Stage3 *Stage3Params `json:"stage3,omitempty"`
+	// PromotionFinalityGate is the promotion finality gate: once committed,
+	// Apply refuses a promotion that covers a statement which is not
+	// Promotable (quorum-verified with its block's anchor final and
+	// last-mergeable). False, and omitted from the canonical form so every
+	// earlier digest is unchanged, until one authority-signed update sets it;
+	// it needs TracksEnabled in the same update, and afterwards every update
+	// carries it and it is never lowered. The raise-only and carry rules are
+	// the FSM's.
+	PromotionFinalityGate bool `json:"promotion_finality_gate,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed
