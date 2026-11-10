@@ -80,6 +80,8 @@ type VerifyRole struct {
 	// withdraw.
 	membershipMu sync.Mutex
 	registerSent bool
+	// lease renews the membership lease while the member is Active.
+	lease *dataplane.LeaseRenewer
 }
 
 // NewVerifyRole validates cfg and d and assembles the role: the evidence
@@ -124,6 +126,10 @@ func newVerifyRole(cfg Config, d VerifyDeps, core evidence.ReplayCore, scanner e
 		pinned: pinned,
 		seq:    evidence.NewRegistrationSeq(cfg.StateDir), quiet: quiet,
 	}
+	if cfg.Register {
+		v.lease = dataplane.NewLeaseRenewer(d.Client, cfg.NodeID, cfg.LeaseRenewInterval,
+			evidence.VerifierLeaseSigner(v.priv, authority.MessageContext{NetworkID: cfg.NetworkID, GenesisSnapshotID: cfg.GenesisSnapshotID}), log)
+	}
 	v.handler, err = evidence.NewHandler(evidence.Config{ReplicaID: cfg.NodeID, Ed25519Seed: cfg.Ed25519Seed}, evidence.Deps{
 		Client: d.Client, Replay: core, Scanner: scanner,
 		TablesReady: v.tablesReady, NotReady: ErrMemberTableNotReady, NotReadyLog: memberNotReadyLog,
@@ -164,7 +170,7 @@ func NewReplayMaterializer(networkID string, conn clickhouse.Conn, nodeID, bootN
 
 // Register registers the member and marks it active as a VERIFIER-role node
 // with one fresh registration_seq (registration.json in the state dir),
-// signed with its ed25519 key and advertising arbiter.LocalNodeFeatures. It
+// signed with its ed25519 key and advertising evidence.VerifierNodeFeatures. It
 // is refused until cfg.Register (S3-F step 4).
 func (v *VerifyRole) Register(ctx context.Context) error {
 	if !v.cfg.Register {
@@ -189,6 +195,9 @@ func (v *VerifyRole) Register(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("member consensus: mark active: %w", err)
 	}
+	if v.lease != nil {
+		v.lease.Activate(mark.GetRegistrationSeq(), mark)
+	}
 	return nil
 }
 
@@ -208,10 +217,14 @@ func (v *VerifyRole) registrationRequests() (*pb.NodeRegistration, *pb.NodeRef, 
 // FSM applies as Active → Syncing. The next Register returns it through
 // Syncing to Active. A role that never sent a RegisterNode (including every
 // role with cfg.Register off) sends nothing; repeated calls are safe. Hosts
-// call it on startup rollback and graceful shutdown.
+// call it on startup rollback and graceful shutdown. It stops the lease
+// renewals first, so a renewal never re-activates a withdrawn member.
 func (v *VerifyRole) Deactivate(ctx context.Context) error {
 	v.membershipMu.Lock()
 	defer v.membershipMu.Unlock()
+	if v.lease != nil {
+		v.lease.Deactivate()
+	}
 	if !v.registerSent {
 		return nil
 	}
@@ -240,6 +253,14 @@ func (v *VerifyRole) Run(ctx context.Context) error {
 		defer close(resolved)
 		v.resolveLoop(ctx)
 	}()
+	leaseDone := make(chan struct{})
+	go func() {
+		defer close(leaseDone)
+		if v.lease != nil {
+			v.lease.Run(ctx)
+		}
+	}()
+	defer func() { cancel(); <-leaseDone }()
 	var err error
 	if v.cfg.Register {
 		err = v.d.Client.RunVerifierSubscription(ctx, v.cfg.NodeID, v.onDispatch(ctx))

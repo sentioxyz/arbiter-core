@@ -48,14 +48,25 @@ func (r *Role) sign(kind authority.SNodeMessageKind, body any) (string, error) {
 	return jws, nil
 }
 
-// nodeFeatures is what RegisterNode advertises: signed_claims_v1 only with a
-// claim signer, so the activation gate never counts an SNode that cannot sign.
+// nodeFeatures is what RegisterNode advertises: signed_claims_v1 and
+// membership_lease_v1 only with a claim signer, so no activation gate counts
+// an SNode that cannot sign its messages or renew its lease.
 func (r *Role) nodeFeatures() []string {
 	features := arbiter.LocalNodeFeatures()
 	if r.d.ClaimSigner != nil {
-		return features
+		return append(features, arbiter.MembershipLeaseFeature)
 	}
 	return slices.DeleteFunc(features, func(f string) bool { return f == arbiter.SignedClaimsFeature })
+}
+
+// signLeaseRenewal is the lease renewer's signer: the indexer key, kind
+// lease_renewal.
+func (r *Role) signLeaseRenewal(body authority.LeaseRenewalBody) (wire.RenewNodeLease, error) {
+	jws, err := r.sign(authority.SNodeMessageLeaseRenewal, body)
+	if err != nil {
+		return wire.RenewNodeLease{}, err
+	}
+	return wire.RenewNodeLease{NodeID: body.NodeID, RegistrationSeq: body.RegistrationSeq, LeaseSeq: body.LeaseSeq, SignerJWS: jws}, nil
 }
 
 // registrationRequests builds the RegisterNode and MarkActive requests of one

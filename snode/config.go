@@ -108,6 +108,12 @@ type Config struct {
 	// dataplane.GenesisSnapshotID, which only the founding indexer's SNode
 	// can; a signing SNode without genesis tables must set it.
 	GenesisSnapshotID string
+	// LeaseRenewInterval paces the membership lease renewals (Raft tag 44)
+	// while the role is Active; 0 = dataplane.DefaultLeaseRenewInterval. The
+	// committed lease (membership_lease_l2_blocks) must be far longer than
+	// this interval expressed in L2 blocks of the registry chain. Renewals
+	// are refused as a no-op until the lease is committed.
+	LeaseRenewInterval time.Duration
 	// CleanupAckResendInterval paces the background re-send of the cleanup
 	// acknowledgements the SNode owes the arbiter (a cleanup ran, but
 	// AckCleanup has not yet succeeded): one pass at startup, then one pass

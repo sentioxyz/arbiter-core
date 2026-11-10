@@ -74,6 +74,19 @@ func MarkActiveToRequest(c MarkActive) *pb.NodeRef {
 	return &pb.NodeRef{NodeId: c.NodeID, RegistrationSeq: c.RegistrationSeq, SignerJws: c.SignerJWS, Ed25519Signature: c.Ed25519Signature}
 }
 
+// RenewNodeLeaseFromRequest decodes a Membership.RenewNodeLease request (also
+// the body of RenewNodeLeaseCmd).
+func RenewNodeLeaseFromRequest(m *pb.NodeLeaseRenewal) RenewNodeLease {
+	return RenewNodeLease{NodeID: m.GetNodeId(), RegistrationSeq: m.GetRegistrationSeq(), LeaseSeq: m.GetLeaseSeq(),
+		SignerJWS: m.GetSignerJws(), Ed25519Signature: m.GetEd25519Signature()}
+}
+
+// RenewNodeLeaseToRequest builds a RenewNodeLease request.
+func RenewNodeLeaseToRequest(c RenewNodeLease) *pb.NodeLeaseRenewal {
+	return &pb.NodeLeaseRenewal{NodeId: c.NodeID, RegistrationSeq: c.RegistrationSeq, LeaseSeq: c.LeaseSeq,
+		SignerJws: c.SignerJWS, Ed25519Signature: c.Ed25519Signature}
+}
+
 // RecordTablePurgedFromRequest decodes a SubmitTablePurged request, which is
 // the RecordTablePurgedCmd itself.
 func RecordTablePurgedFromRequest(m *pb.RecordTablePurgedCmd) RecordTablePurged {

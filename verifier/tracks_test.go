@@ -21,8 +21,9 @@ func TestVerifierRegistrationAdvertisesTrackManifests(t *testing.T) {
 		t.Fatal(err)
 	}
 	regs, _ := fake.snapshot()
-	if len(regs) != 1 || !slices.Equal(regs[0].GetFeatures(), arbiter.LocalNodeFeatures()) ||
+	want := append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature)
+	if len(regs) != 1 || !slices.Equal(regs[0].GetFeatures(), want) ||
 		!slices.Contains(regs[0].GetFeatures(), arbiter.TrackManifestsFeature) {
-		t.Fatalf("verifier registrations = %v, want features %v", regs, arbiter.LocalNodeFeatures())
+		t.Fatalf("verifier registrations = %v, want features %v", regs, want)
 	}
 }

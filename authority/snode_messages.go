@@ -86,6 +86,8 @@ const (
 	SNodeMessagePromotionAck SNodeMessageKind = "promotion_ack"
 	SNodeMessageCleanupAck   SNodeMessageKind = "cleanup_ack"
 	SNodeMessageTablePurged  SNodeMessageKind = "table_purged"
+	// SNodeMessageLeaseRenewal signs a membership lease renewal (Raft tag 44).
+	SNodeMessageLeaseRenewal SNodeMessageKind = "lease_renewal"
 )
 
 // VerifierMessageKind names one signed verifier message.
@@ -95,6 +97,8 @@ const (
 	VerifierMessageRegistration VerifierMessageKind = "registration"
 	VerifierMessageMarkActive   VerifierMessageKind = "mark_active"
 	VerifierMessageTablePurged  VerifierMessageKind = "table_purged"
+	// VerifierMessageLeaseRenewal signs a membership lease renewal (Raft tag 44).
+	VerifierMessageLeaseRenewal VerifierMessageKind = "lease_renewal"
 )
 
 // MessageContext binds a signed data-plane message to one network
@@ -115,6 +119,15 @@ func (c MessageContext) validate() error {
 type MarkActiveBody struct {
 	NodeID          string `json:"node_id"`
 	RegistrationSeq uint64 `json:"registration_seq"`
+}
+
+// LeaseRenewalBody is the signed body of a membership lease renewal. LeaseSeq
+// strictly increases within one registration, so a recorded renewal cannot be
+// replayed to keep a crashed node Active.
+type LeaseRenewalBody struct {
+	NodeID          string `json:"node_id"`
+	RegistrationSeq uint64 `json:"registration_seq"`
+	LeaseSeq        uint64 `json:"lease_seq"`
 }
 
 // TablePurgedBody is the signed body of a SubmitTablePurged report.
@@ -248,6 +261,10 @@ func canonicalSNodeBody(kind SNodeMessageKind, body any) (any, error) {
 		if v, ok := body.(TablePurgedBody); ok {
 			return v, nil
 		}
+	case SNodeMessageLeaseRenewal:
+		if v, ok := body.(LeaseRenewalBody); ok {
+			return v, nil
+		}
 	default:
 		return nil, fmt.Errorf("snode message: unknown kind %q", kind)
 	}
@@ -266,6 +283,10 @@ func canonicalVerifierBody(kind VerifierMessageKind, body any) (any, error) {
 		}
 	case VerifierMessageTablePurged:
 		if v, ok := body.(TablePurgedBody); ok {
+			return v, nil
+		}
+	case VerifierMessageLeaseRenewal:
+		if v, ok := body.(LeaseRenewalBody); ok {
 			return v, nil
 		}
 	default:

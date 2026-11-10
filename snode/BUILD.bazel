@@ -66,6 +66,7 @@ go_test(
         "intake_lock_test.go",
         "intake_test.go",
         "journal_test.go",
+        "lease_test.go",
         "native_fixture_test.go",
         "owed_cleanup_ack_test.go",
         "owner_audit_ch_test.go",

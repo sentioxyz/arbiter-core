@@ -32,6 +32,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		Voters:                        VoterEntriesFromPB(m.GetVoters()),
 		AnchorFinality:                AnchorFinalityParamsFromPB(m.GetAnchorFinality()),
 		AuthorityThreshold:            m.GetAuthorityThreshold(),
+		MembershipLeaseL2Blocks:       m.GetMembershipLeaseL2Blocks(),
 	}
 }
 
@@ -60,6 +61,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		Voters:                        VoterEntriesToPB(v.Voters),
 		AnchorFinality:                AnchorFinalityParamsToPB(v.AnchorFinality),
 		AuthorityThreshold:            v.AuthorityThreshold,
+		MembershipLeaseL2Blocks:       v.MembershipLeaseL2Blocks,
 	}
 }
 

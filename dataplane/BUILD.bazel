@@ -6,6 +6,7 @@ go_library(
         "authority_follower.go",
         "client.go",
         "genesis.go",
+        "lease_renewer.go",
         "manifests.go",
         "member_commands.go",
         "member_reads.go",
@@ -39,6 +40,7 @@ go_test(
     srcs = [
         "authority_follower_test.go",
         "client_test.go",
+        "lease_renewer_test.go",
         "manifests_test.go",
         "manifests_tracks_test.go",
         "member_commands_test.go",

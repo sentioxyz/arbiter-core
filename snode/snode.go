@@ -116,6 +116,9 @@ type Role struct {
 	// withdraw.
 	membershipMu sync.Mutex
 	registerSent bool
+	// lease renews the membership lease while this Role is Active; nil
+	// without a claim signer, which cannot sign renewals.
+	lease *dataplane.LeaseRenewer
 }
 
 func New(cfg Config, d Deps) (*Role, error) {
@@ -192,6 +195,7 @@ func New(cfg Config, d Deps) (*Role, error) {
 		return nil, errors.New("snode: following the table registry requires a clickhouse connection")
 	}
 	if d.ClaimSigner != nil {
+		r.lease = dataplane.NewLeaseRenewer(d.Client, cfg.NodeID, cfg.LeaseRenewInterval, r.signLeaseRenewal, d.Logger)
 		d.Logger.Info("snode signs its arbiter messages with the indexer key",
 			"node_id", cfg.NodeID, "indexer_id", cfg.IndexerID, "signer", d.ClaimSigner.Address(),
 			"network_id", cfg.NetworkID, "genesis_snapshot_id", genesisID)
@@ -226,6 +230,9 @@ func (r *Role) Register(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("mark snode active: %w", err)
 	}
+	if r.lease != nil {
+		r.lease.Activate(mark.GetRegistrationSeq(), mark)
+	}
 	return nil
 }
 
@@ -238,11 +245,16 @@ func (r *Role) Register(ctx context.Context) error {
 // Syncing to Active. A Role that never sent a RegisterNode has nothing to
 // withdraw and sends nothing. Repeated calls are safe: each moves the
 // registration forward and leaves the node Syncing. Hosts call it on startup
-// rollback and graceful shutdown, under a short deadline; a crash leaves the
-// node Active until it restarts or an operator evicts it.
+// rollback and graceful shutdown, under a short deadline. Deactivate stops
+// the lease renewals first, so a renewal never re-activates a withdrawn node.
+// A crash leaves the node Active until it restarts, an operator evicts it,
+// or, once membership_lease_l2_blocks is committed, its lease expires.
 func (r *Role) Deactivate(ctx context.Context) error {
 	r.membershipMu.Lock()
 	defer r.membershipMu.Unlock()
+	if r.lease != nil {
+		r.lease.Deactivate()
+	}
 	if !r.registerSent {
 		return nil
 	}
@@ -311,6 +323,8 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 	defer cancel()
 	stopResender := r.startCleanupAckResender(runCtx)
 	defer stopResender()
+	stopLease := r.startLeaseRenewer(runCtx)
+	defer stopLease()
 	stopFollower, err := r.startAuthorityFollower(runCtx)
 	if err != nil {
 		return err
@@ -340,6 +354,19 @@ func (r *Role) RunWithReady(ctx context.Context, ready func()) error {
 		}
 	}
 	return r.resolveWorkerErrors(newRoleWorkerCoordinator(runCtx, cancel, ready, workers).run())
+}
+
+// startLeaseRenewer renews the membership lease in the background while the
+// Role is Active (after Register, until Deactivate) for as long as ctx lives;
+// the returned stop waits for it. Without a claim signer it does nothing.
+func (r *Role) startLeaseRenewer(ctx context.Context) func() {
+	if r.lease == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); r.lease.Run(ctx) }()
+	return func() { cancel(); <-done }
 }
 
 func (r *Role) pinned() ddl.Pinned {

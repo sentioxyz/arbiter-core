@@ -40,6 +40,34 @@ const TrackManifestsFeature = "track_manifests_v1"
 // track; a leader that predates it keeps the string without acting on it.
 const Stage3Feature = "stage3_v1"
 
+// MembershipLeaseFeature is the capability string of a data-plane binary that
+// renews its membership lease (Membership.RenewNodeLease, Raft tag 44) while
+// it is Active, and of a voter that decodes tag 44 and applies the lease. The
+// lease activation requires it from every voter and every registered,
+// non-evicted data-plane node: a node that does not renew would expire one
+// lease after the activation. It is not in LocalNodeFeatures: a data-plane
+// role appends it only while it renews, which needs a signer.
+const MembershipLeaseFeature = "membership_lease_v1"
+
+// MembershipLeaseOffReason is the refusal of a lease renewal before
+// membership_lease_l2_blocks is committed: the leader proposes no Raft tag 44
+// until then. A renewing role treats it as "nothing to do yet".
+const MembershipLeaseOffReason = "membership lease: refused until membership_lease_l2_blocks is committed"
+
+// MembershipLeaseNotActiveReason is the refusal of a lease renewal for a node
+// whose committed status is not Active (its lease expired, it re-registered
+// or it was evicted). A running role that registered and was not deactivated
+// answers it with MarkActive at its current registration_seq.
+const MembershipLeaseNotActiveReason = "membership lease: node is not active; re-activate with MarkActive at the current registration_seq"
+
+// MinMembershipLeaseL2Blocks is the smallest non-zero membership lease
+// authority.NormalizeConsensusParamsUpdate accepts. It is a floor against a
+// typo, not a recommendation: the lease must be far longer than the nodes'
+// renewal interval expressed in L2 blocks of the registry chain (at least
+// ten intervals is a sane choice), and longer than several registry cursor
+// advances, because expiry is evaluated only when the committed cursor moves.
+const MinMembershipLeaseL2Blocks uint64 = 300
+
 // LocalNodeFeatures returns this binary's capability strings in a fresh slice.
 func LocalNodeFeatures() []string {
 	return []string{ClientLanesFeature, SignedClaimsFeature, TrackManifestsFeature, Stage3Feature}
@@ -259,6 +287,20 @@ type ConsensusParamsUpdate struct {
 	// number of AuthorityAddresses; the old-k authorization, carry and
 	// shrink rules are the FSM's (and the SNode follower's).
 	AuthorityThreshold uint32 `json:"authority_threshold,omitempty"`
+	// MembershipLeaseL2Blocks is the membership lease, in L2 blocks of the
+	// committed table-registry cursor. Zero, and omitted from the canonical
+	// form so every earlier digest is unchanged, means no lease: an Active node
+	// stays Active until it re-registers or is evicted. Once committed, every
+	// Active node renews its lease (Raft tag 44), and an Active node whose last
+	// renewal or MarkActive is at least this many L2 blocks behind the cursor
+	// becomes Syncing in the Apply that advances the cursor (the transition a
+	// re-registration without MarkActive makes, not eviction). Expiry moves
+	// only with the cursor, so it stops while the registry watcher stops: a
+	// stalled watcher expires nothing. It needs TableRegistry in the same
+	// update and at least MinMembershipLeaseL2Blocks
+	// (authority.NormalizeConsensusParamsUpdate); the carry and one-way rules
+	// are the FSM's.
+	MembershipLeaseL2Blocks uint64 `json:"membership_lease_l2_blocks,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed
