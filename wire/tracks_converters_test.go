@@ -104,3 +104,23 @@ func TestTableRegistrySnapshotCarriesQuarantinedIndexers(t *testing.T) {
 		})
 	}
 }
+
+// TestConsensusParamsUpdateCarriesPromotionFinalityGate: the converters copy
+// the promotion finality gate both ways, and an update without it encodes
+// exactly as before the field existed.
+func TestConsensusParamsUpdateCarriesPromotionFinalityGate(t *testing.T) {
+	u := legacyGoldenUpdate()
+	u.TracksEnabled = true
+	if ConsensusParamsUpdateToPB(u).GetPromotionFinalityGate() {
+		t.Fatal("an update without the gate set promotion_finality_gate")
+	}
+	u.PromotionFinalityGate = true
+	m := ConsensusParamsUpdateToPB(u)
+	if !m.GetPromotionFinalityGate() {
+		t.Fatal("ConsensusParamsUpdateToPB dropped promotion_finality_gate")
+	}
+	if got := ConsensusParamsUpdateFromPB(m); !reflect.DeepEqual(got, u) {
+		t.Fatalf("update round trip\n got %+v\nwant %+v", got, u)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}

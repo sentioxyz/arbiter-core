@@ -20,6 +20,8 @@ func TestTracksCanonicalForms(t *testing.T) {
 	}{
 		"update before the activation": {ConsensusParamsUpdate{NetworkID: "n"}, update + `}`},
 		"tracks activation update":     {ConsensusParamsUpdate{NetworkID: "n", TracksEnabled: true}, update + `,"tracks_enabled":true}`},
+		"promotion finality gate update": {ConsensusParamsUpdate{NetworkID: "n", TracksEnabled: true, PromotionFinalityGate: true},
+			update + `,"tracks_enabled":true,"promotion_finality_gate":true}`},
 		"promotion cleanup": {UnsafeCleanup{TableID: "db.t", PartitionID: "all", PromotionSeq: 7},
 			`{"table_id":"db.t","partition_id":"all","promotion_seq":7,"parts":null}`},
 		"rejected-part cleanup": {UnsafeCleanup{TableID: "db.t", PartitionID: "all", RejectedBlockSeq: 12},

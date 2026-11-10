@@ -72,6 +72,9 @@ func TestConsensusUpdateBindsEveryField(t *testing.T) {
 		"promotion seq":                   func(c *arbiter.ConsensusParamsUpdate) { c.ExpectedPromotionSeq++ },
 		"artifact disposition capability": func(c *arbiter.ConsensusParamsUpdate) { c.ArtifactDispositionCapability = 1 },
 		"tracks enabled":                  func(c *arbiter.ConsensusParamsUpdate) { c.TracksEnabled = true },
+		"promotion finality gate": func(c *arbiter.ConsensusParamsUpdate) {
+			c.TracksEnabled, c.PromotionFinalityGate = true, true
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mutated := cmd
