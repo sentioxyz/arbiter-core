@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/housegate/housegate/pkg/replay"
@@ -20,9 +21,28 @@ import (
 // only delays this verifier's vote to a later redelivery.
 const DefaultAddTransitionReadyWait = 10 * time.Second
 
+// ErrTableNotReady is the attestation gate's refusal: the job names a table
+// whose hg_* tables this verifier has not created and verified (it is not
+// Ready here). ErrAddedTableNotReady and ErrWrittenTableNotReady are its two
+// cases; errors.Is matches either against it.
+var ErrTableNotReady = errors.New("verifier: table is not ready")
+
 // ErrAddedTableNotReady refuses to attest a transition that adds a table
 // whose hg_* tables this verifier has not created and verified.
-var ErrAddedTableNotReady = errors.New("verifier: added table is not ready")
+var ErrAddedTableNotReady error = tableNotReadyError("verifier: added table is not ready")
+
+// ErrWrittenTableNotReady refuses to attest a statement block that writes a
+// table which is not Ready here (arbiter-core#74): a verifier never signs a
+// replay of a table it could not create, even after the transition that
+// added it reached quorum through other verifiers.
+var ErrWrittenTableNotReady error = tableNotReadyError("verifier: written table is not ready")
+
+// tableNotReadyError is one case of ErrTableNotReady.
+type tableNotReadyError string
+
+func (e tableNotReadyError) Error() string { return string(e) }
+
+func (e tableNotReadyError) Is(target error) bool { return target == ErrTableNotReady }
 
 // requireAddedTablesReady is the attestation gate: a transition that adds
 // tables is attested only once every added table is Ready here, so an add
@@ -55,6 +75,62 @@ func (r *Role) requireAddedTablesReady(ctx context.Context, job replay.ReplayJob
 		return err
 	}
 	return fmt.Errorf("%w: block %d adds %v", ErrAddedTableNotReady, job.BlockSeq, ids)
+}
+
+// requireJobTablesReady is the attestation gate the evidence handler runs
+// before every replay: the add gate, then the write gate.
+func (r *Role) requireJobTablesReady(ctx context.Context, job replay.ReplayJob) error {
+	if err := r.requireAddedTablesReady(ctx, job); err != nil {
+		return err
+	}
+	return r.requireWrittenTablesReady(job)
+}
+
+// requireWrittenTablesReady refuses a job whose statements write, or whose
+// table_schemas name, a table that is not Ready here (arbiter-core#74). The
+// add gate alone let a verifier that refused a table's add, because it could
+// not create the table, still replay and sign writes to it once the add
+// reached quorum through other verifiers: manifests come from the network,
+// not from this verifier's own attestations.
+//
+// It refuses at once rather than waiting like the add gate: a verifier that
+// attested the add already holds the table, and a wait on every redelivered
+// write to a table that never becomes Ready would hold the subscription. A
+// refusal is a withheld vote, as for any lagging verifier; the subscription
+// moves on and the arbiter re-dispatches the job.
+//
+// It applies while this verifier follows an enabled registry, the only mode
+// with tables beyond the configured ones, all of which the startup pass made
+// Ready before the subscription started.
+func (r *Role) requireWrittenTablesReady(job replay.ReplayJob) error {
+	if len(job.Statements) == 0 && len(job.TableSchemas) == 0 {
+		return nil
+	}
+	if !r.followsEnabledRegistry() {
+		return nil
+	}
+	var missing []string
+	seen := make(map[string]bool, len(job.Statements)+len(job.TableSchemas))
+	check := func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		if !r.tables.Ready(id) {
+			missing = append(missing, id)
+		}
+	}
+	for _, st := range job.Statements {
+		check(st.TargetTableID)
+	}
+	for _, ts := range job.TableSchemas {
+		check(ts.TableID)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	return fmt.Errorf("%w: block %d writes %v", ErrWrittenTableNotReady, job.BlockSeq, missing)
 }
 
 // followsEnabledRegistry reports whether this verifier reconciles the table

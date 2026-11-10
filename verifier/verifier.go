@@ -134,13 +134,16 @@ func New(cfg Config, d Deps) (*Role, error) {
 	return r, nil
 }
 
+// tableNotReadyLog is the warn line of an ErrTableNotReady refusal.
+const tableNotReadyLog = "a job table is not ready on this verifier; refusing to attest"
+
 // newEvidenceHandler builds the role's evidence handler: its replay core and
-// scanner, and the add gate (requireAddedTablesReady) with its sentinel and
-// log line.
+// scanner, and the attestation gate (requireJobTablesReady: the add gate and
+// the write gate) with its sentinel and log line.
 func (r *Role) newEvidenceHandler() (*evidence.Handler, error) {
 	return evidence.NewHandler(evidence.Config{ReplicaID: r.cfg.ReplicaID, Ed25519Seed: r.cfg.Ed25519Seed}, evidence.Deps{
 		Client: r.d.Client, Replay: r.d.Replay, Scanner: r.d.Scanner,
-		TablesReady: r.requireAddedTablesReady, NotReady: ErrAddedTableNotReady, Logger: r.d.Logger,
+		TablesReady: r.requireJobTablesReady, NotReady: ErrTableNotReady, NotReadyLog: tableNotReadyLog, Logger: r.d.Logger,
 	})
 }
 
@@ -398,7 +401,7 @@ func (r *Role) handleReplayJob(ctx context.Context, m *pb.ReplayJob) error {
 	bound := &memoEvidenceCore{core: r.d.Replay, original: m}
 	handler, err := evidence.NewHandler(evidence.Config{ReplicaID: r.cfg.ReplicaID, Ed25519Seed: r.cfg.Ed25519Seed}, evidence.Deps{
 		Client: r.d.Client, Replay: bound, Scanner: r.d.Scanner,
-		TablesReady: r.requireAddedTablesReady, NotReady: ErrAddedTableNotReady, Logger: r.d.Logger,
+		TablesReady: r.requireJobTablesReady, NotReady: ErrTableNotReady, NotReadyLog: tableNotReadyLog, Logger: r.d.Logger,
 	})
 	if err != nil {
 		return err
