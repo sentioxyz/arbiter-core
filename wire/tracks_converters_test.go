@@ -124,3 +124,22 @@ func TestConsensusParamsUpdateCarriesPromotionFinalityGate(t *testing.T) {
 	}
 	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
 }
+
+// TestConsensusParamsUpdateCarriesManifestDeltaSnapshot: the converters copy
+// the manifest delta snapshot switch both ways, and an update without it
+// encodes exactly as before the field existed.
+func TestConsensusParamsUpdateCarriesManifestDeltaSnapshot(t *testing.T) {
+	u := legacyGoldenUpdate()
+	if ConsensusParamsUpdateToPB(u).GetManifestDeltaSnapshot() {
+		t.Fatal("an update without the switch set manifest_delta_snapshot")
+	}
+	u.ManifestDeltaSnapshot = true
+	m := ConsensusParamsUpdateToPB(u)
+	if !m.GetManifestDeltaSnapshot() {
+		t.Fatal("ConsensusParamsUpdateToPB dropped manifest_delta_snapshot")
+	}
+	if got := ConsensusParamsUpdateFromPB(m); !reflect.DeepEqual(got, u) {
+		t.Fatalf("update round trip\n got %+v\nwant %+v", got, u)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}

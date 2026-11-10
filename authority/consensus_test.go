@@ -75,6 +75,7 @@ func TestConsensusUpdateBindsEveryField(t *testing.T) {
 		"promotion finality gate": func(c *arbiter.ConsensusParamsUpdate) {
 			c.TracksEnabled, c.PromotionFinalityGate = true, true
 		},
+		"manifest delta snapshot": func(c *arbiter.ConsensusParamsUpdate) { c.ManifestDeltaSnapshot = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			mutated := cmd

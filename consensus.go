@@ -207,6 +207,15 @@ type ConsensusParamsUpdate struct {
 	// carries it and it is never lowered. The raise-only and carry rules are
 	// the FSM's.
 	PromotionFinalityGate bool `json:"promotion_finality_gate,omitempty"`
+	// ManifestDeltaSnapshot is the manifest delta snapshot switch: once
+	// committed, the arbiter writes snapshot v22, which stores every published
+	// manifest other than the genesis and the safe watermark's as a delta
+	// against its parent. It changes no Apply rule. False, and omitted from
+	// the canonical form so every earlier digest is unchanged, until one
+	// authority-signed update sets it; it needs Stage3 in the same update, and
+	// afterwards every update carries it and it is never lowered. The
+	// raise-only and carry rules are the FSM's.
+	ManifestDeltaSnapshot bool `json:"manifest_delta_snapshot,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed

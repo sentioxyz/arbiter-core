@@ -78,6 +78,9 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if cmd.PromotionFinalityGate && !cmd.TracksEnabled {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: promotion_finality_gate requires tracks_enabled in the same update")
 	}
+	if cmd.ManifestDeltaSnapshot && cmd.Stage3 == nil {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: manifest_delta_snapshot requires stage3 in the same update")
+	}
 	stage3, err := normalizeStage3(cmd.Stage3, cmd.TracksEnabled, siIndexers)
 	if err != nil {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
