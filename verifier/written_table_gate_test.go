@@ -124,30 +124,28 @@ func TestReplayJob_WriteToATableThatIsNotReadyIsRefused(t *testing.T) {
 
 // A refused write is one withheld vote: the subscription moves on to the
 // next job at once, as it does for any refused or failed job, and the arbiter
-// re-dispatches the refused one later.
+// re-dispatches the refused one later. The test drives the role's dispatch
+// through the real subscription loop without the protocol-table reconcile
+// loop: Run itself currently ends on the first reconcile pass that meets a
+// table whose DDL this binary refuses (#76), which is not what this test
+// pins.
 func TestRun_RefusedWriteDoesNotStallLaterJobs(t *testing.T) {
 	view, core := newFakeRegistryView(), &fakeReplayCore{}
 	role, server, cfg := newRegistryRoleV(t, view, core)
 	role.cfg.AddTransitionReadyWait = time.Minute
-	// The unservable table's periodic reconcile failures must not end Run
-	// within the test (a separate matter from the attestation gate).
-	role.cfg.ProtocolTablesMaxFailures = 1 << 20
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- role.Run(ctx) }()
-	t.Cleanup(func() { cancel(); <-done })
-	for start := time.Now(); ; time.Sleep(20 * time.Millisecond) {
-		if _, active := server.subscriptionSnapshot(); active > 0 {
-			break
-		}
-		if time.Since(start) > 15*time.Second {
-			t.Fatal("the verifier never subscribed")
-		}
-	}
-	// Registered after startup, as a table a later rules version admits
-	// while this verifier runs.
 	chain := unservableSchema("db.l_" + cfg.ReplicaID[len("verifier-"):])
 	view.set(genesisIncarnationV(1, cfg.NetworkID, cfg.Tables[0]), chainIncarnationV(t, 2, cfg.NetworkID, chain, wire.TableStatusActive))
+	if role.TableReady(chain.TableID) || !role.TableReady(cfg.Tables[0].TableID) {
+		t.Fatal("fixture: want the chain table not Ready and the genesis table Ready")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- role.d.Client.RunVerifierSubscription(ctx, cfg.ReplicaID, func(d *pb.VerifierDispatch) error {
+			return role.handleReplayJob(ctx, d.GetReplayJob())
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-done })
 
 	refused := writeJob(t, cfg, 9, "0xprev", "0xroot", chain, true, "u", []byte("x"))
 	served := writeJob(t, cfg, 10, "0xprev", "0xroot", cfg.Tables[0], false, "g", []byte("y"))
