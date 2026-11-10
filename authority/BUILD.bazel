@@ -17,6 +17,7 @@ go_library(
         "snode_messages.go",
         "stage3.go",
         "validator.go",
+        "voter_messages.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/authority",
     visibility = ["//visibility:public"],
@@ -32,6 +33,7 @@ go_library(
 go_test(
     name = "authority_test",
     srcs = [
+        "anchor_finality_test.go",
         "artifact_disposition_test.go",
         "authority_test.go",
         "consensus_golden_test.go",
