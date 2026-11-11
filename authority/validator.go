@@ -77,58 +77,66 @@ func (v *Validator) verify(wantCmdHash, wantPurpose, token string, enforceAge bo
 // when enforceAge, and that the recovered signer is allowlisted.
 func (v *Validator) verifyOne(wantCmdHash, wantPurpose, token string, enforceAge bool) (string, error) {
 	if len(v.AllowedAddresses) == 0 {
-		return "", fmt.Errorf("authority allowlist is empty: refusing to authorize any command")
+		return "", tokenErrorf(ErrSignerNotAllowed, "authority allowlist is empty: refusing to authorize any command")
 	}
 	if enforceAge && v.MaxTokenAge <= 0 {
 		return "", fmt.Errorf("authority validator: MaxTokenAge must be positive (fail-closed; a zero value would mean never-expiring tokens)")
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", fmt.Errorf("authority token: want JWS compact form with 3 parts, got %d", len(parts))
+		return "", tokenErrorf(ErrMalformedToken, "authority token: want JWS compact form with 3 parts, got %d", len(parts))
 	}
 	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", fmt.Errorf("authority token header: %w", err)
+		return "", tokenErrorf(ErrMalformedToken, "authority token header: %w", err)
 	}
 	var header jwsHeader
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		return "", fmt.Errorf("authority token header: %w", err)
+		return "", tokenErrorf(ErrMalformedToken, "authority token header: %w", err)
 	}
 	// "secp256k1" is accepted for parity with housegate pkg/auth's
 	// historical dual-alg tolerance; this package's own Signer only ever
 	// emits "ES256K".
 	if header.Alg != "ES256K" && header.Alg != "secp256k1" {
-		return "", fmt.Errorf("authority token: unexpected alg %q", header.Alg)
+		return "", tokenErrorf(ErrMalformedToken, "authority token: unexpected alg %q", header.Alg)
 	}
 	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", fmt.Errorf("authority token payload: %w", err)
+		return "", tokenErrorf(ErrMalformedToken, "authority token payload: %w", err)
 	}
 	var payload JWSCommandPayload
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return "", fmt.Errorf("authority token payload: %w", err)
+		return "", tokenErrorf(ErrMalformedToken, "authority token payload: %w", err)
 	}
 	if payload.Purpose != wantPurpose {
-		return "", fmt.Errorf("authority token: unexpected purpose %q (want %q)", payload.Purpose, wantPurpose)
+		return "", tokenErrorf(ErrTokenCommandMismatch, "authority token: unexpected purpose %q (want %q)", payload.Purpose, wantPurpose)
 	}
 	if !strings.EqualFold(payload.CmdHash, wantCmdHash) {
-		return "", fmt.Errorf("authority token: command hash mismatch")
+		return "", tokenErrorf(ErrTokenCommandMismatch, "authority token: command hash mismatch")
 	}
 	if enforceAge {
 		now := time.Now().Unix()
 		if payload.Iat-now > clockSkewToleranceSeconds {
-			return "", fmt.Errorf("authority token issued in the future")
+			return "", tokenErrorf(ErrTokenAge, "authority token issued in the future")
 		}
 		if now-payload.Iat > int64(v.MaxTokenAge.Seconds())+clockSkewToleranceSeconds {
-			return "", fmt.Errorf("authority token expired")
+			return "", tokenErrorf(ErrTokenAge, "authority token expired")
 		}
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return "", fmt.Errorf("authority token signature: %w", err)
+		return "", tokenErrorf(ErrMalformedToken, "authority token signature: %w", err)
 	}
 	if len(sig) != 65 {
-		return "", fmt.Errorf("authority token signature: want 65 bytes, got %d", len(sig))
+		return "", tokenErrorf(ErrMalformedToken, "authority token signature: want 65 bytes, got %d", len(sig))
+	}
+	if enforceAge {
+		// Admission only (see CheckTokenEncoding): a Verify method must keep
+		// accepting a committed token whose signature segment the decoder
+		// read past a stray CR or LF.
+		if err := checkCompactEncoding(token); err != nil {
+			return "", err
+		}
 	}
 	recSig := make([]byte, 65)
 	copy(recSig, sig)
@@ -138,11 +146,11 @@ func (v *Validator) verifyOne(wantCmdHash, wantPurpose, token string, enforceAge
 	signingInput := parts[0] + "." + parts[1]
 	pub, err := crypto.SigToPub(crypto.Keccak256([]byte(signingInput)), recSig)
 	if err != nil {
-		return "", fmt.Errorf("recover authority address: %w", err)
+		return "", tokenErrorf(ErrSignerNotAllowed, "recover authority address: %w", err)
 	}
 	addr := strings.ToLower(crypto.PubkeyToAddress(*pub).Hex())
 	if !v.AllowedAddresses[addr] {
-		return "", fmt.Errorf("authority address %s not in allowlist", addr)
+		return "", tokenErrorf(ErrSignerNotAllowed, "authority address %s not in allowlist", addr)
 	}
 	return addr, nil
 }
