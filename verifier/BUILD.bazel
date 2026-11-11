@@ -52,6 +52,7 @@ go_test(
         "scanner_test.go",
         "table_set_test.go",
         "tracks_test.go",
+        "unservable_run_test.go",
         "unsupported_type_refusal_test.go",
         "verifier_fakes_test.go",
         "verifier_test.go",

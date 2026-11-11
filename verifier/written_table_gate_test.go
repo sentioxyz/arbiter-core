@@ -126,9 +126,8 @@ func TestReplayJob_WriteToATableThatIsNotReadyIsRefused(t *testing.T) {
 // next job at once, as it does for any refused or failed job, and the arbiter
 // re-dispatches the refused one later. The test drives the role's dispatch
 // through the real subscription loop without the protocol-table reconcile
-// loop: Run itself currently ends on the first reconcile pass that meets a
-// table whose DDL this binary refuses (#76), which is not what this test
-// pins.
+// loop; that Run keeps serving next to an unservable table is pinned by
+// TestRun_VerifierKeepsServingWithAnUnservableRegistryTable (#76).
 func TestRun_RefusedWriteDoesNotStallLaterJobs(t *testing.T) {
 	view, core := newFakeRegistryView(), &fakeReplayCore{}
 	role, server, cfg := newRegistryRoleV(t, view, core)

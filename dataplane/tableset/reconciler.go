@@ -17,6 +17,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,7 +48,34 @@ const (
 	StatePurging State = "purging"
 	// StatePurgeReported: this node's purge is recorded by the arbiter.
 	StatePurgeReported State = "purge_reported"
+	// StateUnservable: this binary cannot build the table's protocol DDL
+	// (ddl.UnservableTableError: its partition key or a column type is
+	// outside what it replays). The table is never Ready here, so every
+	// attestation and intake gate refuses it, while the node keeps serving
+	// its other tables; a later pass retries, so a binary that can build it
+	// picks it up (arbiter-core#76).
+	StateUnservable State = "unservable"
 )
+
+// Reasons a table is unservable (UnservableTable.Reason).
+const (
+	UnservablePartitionFreeze       = "partition_freeze"
+	UnservableUnsupportedColumnType = "unsupported_column_type"
+)
+
+// UnservableTable is one table in StateUnservable.
+type UnservableTable struct {
+	TableID     string
+	Incarnation uint64
+	Reason      string
+}
+
+func unservableReason(err error) string {
+	if errors.Is(err, payloadexec.ErrUnsupportedColumnType) {
+		return UnservableUnsupportedColumnType
+	}
+	return UnservablePartitionFreeze
+}
 
 // Arbiter is the slice of *dataplane.Client the reconciler calls.
 type Arbiter interface {
@@ -116,6 +144,8 @@ type Stats struct {
 	// then replica; KeeperAuditRuns counts the audits that completed.
 	KeeperFindings  []KeeperFinding
 	KeeperAuditRuns uint64
+	// Unservable lists the tables in StateUnservable, sorted by table id.
+	Unservable []UnservableTable
 }
 
 type tableStatus struct {
@@ -123,6 +153,8 @@ type tableStatus struct {
 	seq         uint64
 	failures    int
 	nextAttempt time.Time
+	// reason is the UnservableTable.Reason while state is StateUnservable.
+	reason string
 }
 
 // Reconciler reconciles one node's protocol tables. Reconcile passes are
@@ -153,6 +185,10 @@ type Reconciler struct {
 	// backoffs (P9).
 	early    chan struct{}
 	passDone chan struct{}
+	// ensure creates and verifies one table's protocol tables
+	// (ddl.EnsureTableFor on this node's connection and pinned names); a
+	// test stands in for a binary that cannot build a declaration yet.
+	ensure func(ctx context.Context, schema payloadexec.TableSchema, scope ddl.KeeperScope, mode ddl.Mode) error
 }
 
 // New validates cfg and returns a reconciler.
@@ -186,11 +222,15 @@ func New(cfg Config, d Deps) (*Reconciler, error) {
 	for _, t := range cfg.Genesis {
 		genesis[t.TableID] = t
 	}
-	return &Reconciler{
+	r := &Reconciler{
 		cfg: cfg, d: d, genesis: genesis, now: time.Now,
 		tables: map[string]*tableStatus{}, failures: map[string]uint64{}, owed: map[string]bool{},
 		early: make(chan struct{}, 1), passDone: make(chan struct{}),
-	}, nil
+	}
+	r.ensure = func(ctx context.Context, schema payloadexec.TableSchema, scope ddl.KeeperScope, mode ddl.Mode) error {
+		return ddl.EnsureTableFor(ctx, r.d.Conn, r.cfg.Pinned, schema, scope, mode)
+	}
+	return r, nil
 }
 
 // Ready reports whether all three tables of tableID's current incarnation
@@ -332,9 +372,13 @@ func (r *Reconciler) Stats() Stats {
 	defer r.mu.Unlock()
 	out := Stats{States: map[State]int{}, Failures: map[string]uint64{}, Unknown: slices.Clone(r.unknown), LeftoverDrops: r.leftoverDrops,
 		KeeperFindings: slices.Clone(r.keeperFindings), KeeperAuditRuns: r.keeperAuditRuns}
-	for _, ts := range r.tables {
+	for key, ts := range r.tables {
 		out.States[ts.state]++
+		if ts.state == StateUnservable {
+			out.Unservable = append(out.Unservable, UnservableTable{TableID: key, Incarnation: ts.seq, Reason: ts.reason})
+		}
 	}
+	slices.SortFunc(out.Unservable, func(a, b UnservableTable) int { return strings.Compare(a.TableID, b.TableID) })
 	for id, n := range r.failures {
 		out.Failures[id] = n
 	}
@@ -347,7 +391,9 @@ func (r *Reconciler) Stats() Stats {
 // errors (drift, a verify-only table missing, an unattributable table) and
 // any failure of a genesis table, which the role's existing retry budget
 // handles; every other per-table failure is recorded, backed off and retried
-// by a later pass.
+// by a later pass. A chain table this binary cannot build
+// (ddl.UnservableTableError) is such a per-table failure: it is recorded as
+// StateUnservable and never returned (arbiter-core#76).
 func (r *Reconciler) Reconcile(ctx context.Context, genesisMode ddl.Mode) error {
 	r.passMu.Lock()
 	defer r.passMu.Unlock()
@@ -493,6 +539,9 @@ func (r *Reconciler) reconcileRegistry(ctx context.Context, snap wire.TableRegis
 		t := present[physical]
 		if err := r.ensurePresent(ctx, snap, t, comments[physical], unsafeLocal[physical]); err != nil {
 			switch {
+			case ddl.UnservableTableError(err) && t.inc.Origin != wire.TableOriginGenesis:
+				// Recorded as StateUnservable by fail: one table this binary
+				// cannot build, not a reason to stop serving the others.
 			case ddl.FatalReconcileError(err):
 				fatal = append(fatal, err)
 			case t.inc.Origin == wire.TableOriginGenesis:
@@ -620,7 +669,7 @@ func (r *Reconciler) ensurePresent(ctx context.Context, snap wire.TableRegistryS
 			return err
 		}
 	}
-	if err := ddl.EnsureTableFor(ctx, r.d.Conn, r.cfg.Pinned, t.schema, scope, t.mode); err != nil {
+	if err := r.ensure(ctx, t.schema, scope, t.mode); err != nil {
 		r.fail(key, t.inc.Seq, StateCreating, err)
 		return err
 	}
@@ -1075,6 +1124,7 @@ func (r *Reconciler) setState(key string, seq uint64, state State) {
 		r.tables[key] = ts
 	}
 	ts.state = state
+	ts.reason = ""
 	// A non-failing transition ends any backoff: a nextAttempt left behind
 	// once expired would pin NextDelay at 0 and spin the loop. Only a
 	// converged table resets the consecutive-failure count.
@@ -1098,13 +1148,30 @@ func (r *Reconciler) fail(key string, seq uint64, state State, err error) {
 		ts = &tableStatus{seq: seq}
 		r.tables[key] = ts
 	}
+	entered := false
+	if ddl.UnservableTableError(err) {
+		entered = ts.state != StateUnservable
+		state = StateUnservable
+		ts.reason = unservableReason(err)
+	} else {
+		ts.reason = ""
+	}
 	ts.state = state
 	ts.failures++
 	ts.nextAttempt = r.now().Add(ddl.ReconcileBackoff(ts.failures, r.cfg.Interval))
 	r.failures[key]++
 	failures := ts.failures
+	reason := ts.reason
 	r.mu.Unlock()
-	r.d.Logger.Warn("table reconcile failed", "table", key, "incarnation", seq, "state", state, "consecutive_failures", failures, "err", err)
+	switch {
+	case entered:
+		r.d.Logger.Error("table is unservable by this binary; refusing it locally and serving the other tables until a binary that can build it runs here",
+			"table", key, "incarnation", seq, "reason", reason, "err", err)
+	case state == StateUnservable:
+		r.d.Logger.Debug("table is still unservable by this binary", "table", key, "incarnation", seq, "reason", reason, "consecutive_failures", failures)
+	default:
+		r.d.Logger.Warn("table reconcile failed", "table", key, "incarnation", seq, "state", state, "consecutive_failures", failures, "err", err)
+	}
 }
 
 // forgetAbsent drops the status of keys no longer in the registry snapshot.
