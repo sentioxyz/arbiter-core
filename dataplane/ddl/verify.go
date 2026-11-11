@@ -154,8 +154,26 @@ func equalIdentifiers(a, b []string) bool {
 // renders in system.tables.sorting_key and partition_key. Simple identifiers
 // are emitted bare; identifiers needing quoting use backticks, with either a
 // backslash escape (ClickHouse's metadata rendering) or doubled backticks.
+// One pair of parentheses around the whole list is accepted: ClickHouse 26.8
+// keeps the parentheses a key was written with, so ORDER BY (`_hg_row_id`)
+// prints (_hg_row_id) there and _hg_row_id on 25.8 and 26.3 (arbiter-core#86).
 func parseMetadataIdentifiers(input string) ([]string, error) {
 	input = strings.TrimSpace(input)
+	if len(input) >= 2 && input[0] == '(' && input[len(input)-1] == ')' {
+		inner := strings.TrimSpace(input[1 : len(input)-1])
+		if inner == "" || inner[0] == '(' {
+			return nil, fmt.Errorf("ddl: malformed parenthesized metadata key %q", input)
+		}
+		ids, err := parseMetadataIdentifierList(inner)
+		if err != nil {
+			return nil, fmt.Errorf("ddl: malformed parenthesized metadata key %q: %w", input, err)
+		}
+		return ids, nil
+	}
+	return parseMetadataIdentifierList(input)
+}
+
+func parseMetadataIdentifierList(input string) ([]string, error) {
 	if input == "" {
 		return nil, nil
 	}

@@ -20,6 +20,14 @@ func TestParseMetadataIdentifiers_ClickHouseQuoting(t *testing.T) {
 		},
 		"doubled backtick": {input: "`part``key`, _hg_row_id", want: []string{"part`key", "_hg_row_id"}},
 		"empty":            {input: "", want: nil},
+		// ClickHouse 26.8 keeps the parentheses a key was written with:
+		// ORDER BY (`_hg_row_id`) prints (_hg_row_id), where 25.8 and 26.3
+		// print _hg_row_id (arbiter-core#86).
+		"parenthesized single":      {input: "(_hg_row_id)", want: []string{"_hg_row_id"}},
+		"parenthesized quoted":      {input: "(`part key`)", want: []string{"part key"}},
+		"parenthesized list":        {input: "(p, _hg_row_id)", want: []string{"p", "_hg_row_id"}},
+		"parenthesized with spaces": {input: " ( p ) ", want: []string{"p"}},
+		"quoted parenthesis":        {input: "(`a(`)", want: []string{"a("}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -45,6 +53,13 @@ func TestParseMetadataIdentifiers_RejectsMalformedLists(t *testing.T) {
 		"toString(p)",
 		"1st",
 		"part-key",
+		"(p",
+		"p)",
+		"()",
+		"((p))",
+		"(p), (q)",
+		"(p)(q)",
+		"tuple(p)",
 	} {
 		t.Run(input, func(t *testing.T) {
 			if _, err := parseMetadataIdentifiers(input); err == nil {
