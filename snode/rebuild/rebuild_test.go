@@ -126,13 +126,13 @@ func TestIndexStoreReadsTheBackupIndex(t *testing.T) {
 	if got := s.Parts("db.other", "p_a"); got != nil {
 		t.Fatalf("Parts of another table = %+v", got)
 	}
-	for ids, want := range map[string]string{"all": "", "p_a": "PARTITIONS 'a'", "p_a,p_it's": `PARTITIONS 'a', 'it\'s'`} {
+	for ids, want := range map[string]string{"all": "", "p_a": "PARTITIONS 'a'", "p_a,p_it's": `PARTITIONS 'a', 'it\'s'`, "p_": "PARTITIONS ''", "p_,p_a": "PARTITIONS '', 'a'"} {
 		got, err := partitionsClause(strings.Split(ids, ","))
 		if err != nil || got != want {
 			t.Fatalf("partitionsClause(%s) = %q, %v; want %q", ids, got, err, want)
 		}
 	}
-	for id, sch := range map[string]payloadexec.TableSchema{"all": {TableID: "db.u"}, "p_it's": {TableID: "db.t", PartitionBy: "p"}} {
+	for id, sch := range map[string]payloadexec.TableSchema{"all": {TableID: "db.u"}, "p_it's": {TableID: "db.t", PartitionBy: "p"}, "p_": {TableID: "db.t", PartitionBy: "p"}} {
 		want, err := objstore.PartitionClause(sch, id)
 		if err != nil {
 			t.Fatal(err)

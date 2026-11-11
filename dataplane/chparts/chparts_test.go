@@ -61,7 +61,8 @@ func TestQuotePartition(t *testing.T) {
 		{"partitioned value", partitionedSchema(), "p_a", "'a'", ""},
 		{"partitioned value is escaped", partitionedSchema(), `p_a'b\c`, `'a\'b\\c'`, ""},
 		{"partitioned refuses all", partitionedSchema(), "all", "", "partition id all does not use p_<value> form"},
-		{"partitioned refuses an empty value", partitionedSchema(), "p_", "", "partition id p_ does not use p_<value> form"},
+		// arbiter-core#84: an empty String partition value is a real partition.
+		{"partitioned empty value", partitionedSchema(), "p_", "''", ""},
 		{"partitioned refuses another prefix", partitionedSchema(), "q_a", "", "partition id q_a does not use p_<value> form"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

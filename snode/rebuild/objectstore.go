@@ -118,8 +118,10 @@ func partitionsClause(partitionIDs []string) (string, error) {
 	}
 	values := make([]string, 0, len(partitionIDs))
 	for _, id := range partitionIDs {
+		// The value may be empty: p_ is a String key's empty partition, which
+		// '' selects (arbiter-core#84).
 		value, ok := strings.CutPrefix(id, "p_")
-		if !ok || value == "" {
+		if !ok {
 			return "", fmt.Errorf("rebuild: partition id %s does not use p_<value> form", id)
 		}
 		values = append(values, "'"+chparts.EscapeSQLString(value)+"'")

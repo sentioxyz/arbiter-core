@@ -675,6 +675,7 @@ func TestRestorePartitionsSelectsRulesV3Partitions(t *testing.T) {
 		key, columnType string
 		values          []string
 	}{
+		{"c", "String", []string{"''", "'a'", "'it\\'s'"}}, // '' is partition p_ (arbiter-core#84)
 		{"c", "UInt64", []string{"0", "18446744073709551615"}},
 		{"c", "Int64", []string{"-9223372036854775808", "-1", "9223372036854775807"}},
 		{"c", "Date32", []string{"'1900-01-01'", "'2299-12-31'"}},
