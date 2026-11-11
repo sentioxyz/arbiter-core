@@ -34,6 +34,8 @@ func TestTracksCanonicalForms(t *testing.T) {
 			update + `,"manifest_delta_snapshot":true,"promotion_ack_delta_snapshot":true}`},
 		"snapshot query tracks update": {ConsensusParamsUpdate{NetworkID: "n", TracksEnabled: true, ManifestDeltaSnapshot: true, PromotionAckDeltaSnapshot: true, SnapshotQueryTracks: true},
 			update + `,"tracks_enabled":true,"manifest_delta_snapshot":true,"promotion_ack_delta_snapshot":true,"snapshot_query_tracks":true}`},
+		"custody frontier update": {ConsensusParamsUpdate{NetworkID: "n", TracksEnabled: true, ManifestDeltaSnapshot: true, PromotionAckDeltaSnapshot: true, SnapshotQueryTracks: true, CustodyFrontier: true},
+			update + `,"tracks_enabled":true,"manifest_delta_snapshot":true,"promotion_ack_delta_snapshot":true,"snapshot_query_tracks":true,"custody_frontier":true}`},
 		"anchor finality quorum update": {ConsensusParamsUpdate{NetworkID: "n", PromotionFinalityGate: true,
 			Voters:         []VoterEntry{{VoterID: "v0", Ed25519Pubkey: []byte{1}, ConsentSig: "aa"}},
 			AnchorFinality: &AnchorFinalityParams{Quorum: 1, FinalityMode: "safe", L2ChainID: 8453, RegistryContract: "0x01"}},
