@@ -50,13 +50,21 @@ func VerifyProtocolTable(ctx context.Context, conn clickhouse.Conn, want TableIn
 	if sortingErr != nil || !equalIdentifiers(gotSortingKey, want.SortingKey) {
 		drift("sorting_key", sortingKey, wantSortingKey)
 	}
-	wantPartitionKey := []string(nil)
-	if want.PartitionKey != "" {
-		wantPartitionKey = []string{want.PartitionKey}
-	}
-	gotPartitionKey, partitionErr := parseMetadataIdentifiers(partitionKey)
-	if partitionErr != nil || !equalIdentifiers(gotPartitionKey, wantPartitionKey) {
-		drift("partition_key", partitionKey, want.PartitionKey)
+	if isPartitionExpression(want.PartitionKey) {
+		// An admitted expression is the spelling ClickHouse prints, byte for
+		// byte (table admission rules v3).
+		if partitionKey != want.PartitionKey {
+			drift("partition_key", partitionKey, want.PartitionKey)
+		}
+	} else {
+		wantPartitionKey := []string(nil)
+		if want.PartitionKey != "" {
+			wantPartitionKey = []string{want.PartitionKey}
+		}
+		gotPartitionKey, partitionErr := parseMetadataIdentifiers(partitionKey)
+		if partitionErr != nil || !equalIdentifiers(gotPartitionKey, wantPartitionKey) {
+			drift("partition_key", partitionKey, want.PartitionKey)
+		}
 	}
 
 	columns, err := readColumns(ctx, conn, want.Database, want.Table)

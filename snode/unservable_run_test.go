@@ -51,7 +51,7 @@ func TestRun_SNodeKeepsServingWithAnUnservableRegistryTable(t *testing.T) {
 				t.Fatal(err)
 			}
 			bad := chainSchemaS("db.u_" + suffix)
-			bad.PartitionBy = "v" // UInt64: the P1c partition freeze refuses it
+			bad.PartitionBy = "intDiv(v, 1)" // a divisor below 2: no admission rules version admits it, so the partition freeze refuses it
 			view := newFakeRegistryS()
 			install := func() {
 				view.set(genesisIncarnationS(1, g), chainIncarnationS(t, 2, bad, wire.TableStatusActive))

@@ -72,8 +72,9 @@ func TestPayloadSpoolImplementations(t *testing.T) {
 
 func TestValidate_PartitionByMustBeBareStringColumn(t *testing.T) {
 	cases := map[string]func(*payloadexec.TableSchema){
-		"non-string column": func(s *payloadexec.TableSchema) {
-			s.Columns = []lthash.Column{{Name: "p", Type: "UInt64"}}
+		// A bare UInt64 key is admitted from rules v3; Float64 never is.
+		"unadmitted column type": func(s *payloadexec.TableSchema) {
+			s.Columns = []lthash.Column{{Name: "p", Type: "Float64"}}
 			s.PartitionBy = "p"
 		},
 		"expression": func(s *payloadexec.TableSchema) {

@@ -21,7 +21,7 @@ import (
 
 func unservableSchemas(t *testing.T) map[string]payloadexec.TableSchema {
 	freeze := schemaFor(t, "freeze")
-	freeze.PartitionBy = "v" // UInt64: the P1c partition freeze refuses it
+	freeze.PartitionBy = "intDiv(v, 1)" // a divisor below 2: no admission rules version admits it, so the partition freeze refuses it
 	decimal := schemaFor(t, "decimal", lthash.Column{Name: "d", Type: "Decimal(18, 4)"})
 	return map[string]payloadexec.TableSchema{
 		UnservablePartitionFreeze:       freeze,

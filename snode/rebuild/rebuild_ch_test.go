@@ -26,6 +26,7 @@ import (
 	"github.com/sentioxyz/arbiter-core/dataplane/chparts"
 	"github.com/sentioxyz/arbiter-core/dataplane/chtest"
 	"github.com/sentioxyz/arbiter-core/dataplane/ddl"
+	"github.com/sentioxyz/arbiter-core/dataplane/objstore"
 	"github.com/sentioxyz/arbiter-core/wire"
 )
 
@@ -657,5 +658,95 @@ func TestRebuildRefusesForeignSafeParts(t *testing.T) {
 	scans, err := chexec.ScanAllParts(context.Background(), f.a, f.cfg.Pinned.SafeDB+"."+table, f.schema)
 	if err != nil || len(scans) != 4 {
 		t.Fatalf("hg_safe holds %d parts (%v), want the three rebuilt and the foreign one", len(scans), err)
+	}
+}
+
+// TestRestorePartitionsSelectsRulesV3Partitions: for every rules-v3 partition
+// key shape, RESTORE ... PARTITIONS with partitionsClause's '<text>' literal
+// (objstore.PartitionClause's text for one partition) restores exactly that
+// partition of a backed-up hg_safe table, and the whole list restores every
+// row. The literal needs no schema, so the ObjectStore interface does not
+// change for rules v3.
+func TestRestorePartitionsSelectsRulesV3Partitions(t *testing.T) {
+	a, _ := requireRebuildCH(t)
+	ctx := context.Background()
+	s, _ := suffixOf(t)
+	for i, tc := range []struct {
+		key, columnType string
+		values          []string
+	}{
+		{"c", "UInt64", []string{"0", "18446744073709551615"}},
+		{"c", "Int64", []string{"-9223372036854775808", "-1", "9223372036854775807"}},
+		{"c", "Date32", []string{"'1900-01-01'", "'2299-12-31'"}},
+		{"c", "DateTime('UTC')", []string{"'1970-01-01 00:00:00'", "'2106-02-07 06:28:15'"}},
+		{"c", "DateTime64(3, 'UTC')", []string{"'1969-12-31 23:59:59.999'", "'2024-01-15 23:59:59.999'"}},
+		{"toYYYYMM(c)", "DateTime('UTC')", []string{"'2024-01-31 23:59:59'", "'2024-02-01 00:00:00'"}},
+		{"toYYYYMMDD(c)", "Date32", []string{"'1900-01-01'", "'2299-12-31'"}},
+		{"toDate(c)", "DateTime('UTC')", []string{"'2024-01-14 23:59:59'", "'2024-01-15 00:00:00'"}},
+		{"toMonday(c)", "Date", []string{"'1970-01-03'", "'2024-02-29'"}},
+		{"toStartOfDay(c)", "DateTime('UTC')", []string{"'2024-01-15 10:00:00'", "'2024-01-16 00:00:00'"}},
+		{"intDiv(c, 1000)", "Int64", []string{"-1500", "-999", "1000"}},
+	} {
+		sch := payloadexec.TableSchema{TableID: fmt.Sprintf("rb.v3_%d", i), PartitionBy: tc.key,
+			Columns: []lthash.Column{{Name: "c", Type: tc.columnType}, {Name: "v", Type: "UInt64"}}}
+		p := ddl.Pinned{UnsafeDB: "hg_unsafe_v3" + s, SafeDB: fmt.Sprintf("hg_safe_v3%s_%d", s, i), PromoteDB: fmt.Sprintf("hg_promote_v3%s_%d", s, i), NodeID: "rb-v3"}
+		dropDatabasesAtEnd(t, a, p.SafeDB, p.PromoteDB)
+		mustExec(t, a, "CREATE DATABASE `"+p.SafeDB+"`")
+		mustExec(t, a, "CREATE DATABASE `"+p.PromoteDB+"`")
+		_, safe, _, err := ddl.Intents(p, sch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustExec(t, a, safe.SQL())
+		tuples := make([]string, len(tc.values))
+		for j, v := range tc.values {
+			tuples[j] = fmt.Sprintf("(SHA256('%d'), %s, %d)", j, v, j)
+		}
+		mustExec(t, a, fmt.Sprintf("INSERT INTO `%s`.`%s` (`%s`, `c`, `v`) VALUES %s", p.SafeDB, safe.Table, ddl.RowIDColumn, strings.Join(tuples, ", ")))
+		parts, err := chparts.ActiveParts(ctx, a, p.SafeDB, safe.Table)
+		if err != nil || len(parts) < 2 {
+			t.Fatalf("%s: active parts %+v, %v", tc.key, parts, err)
+		}
+		rows := map[string]uint64{}
+		var ids []string
+		for _, part := range parts {
+			id := chparts.LogicalPartitionID(sch, part)
+			if _, seen := rows[id]; !seen {
+				ids = append(ids, id)
+			}
+			rows[id] += part.Rows
+		}
+		backup := fmt.Sprintf("rb_v3_%s_%d_%d.zip", s, i, time.Now().UnixNano())
+		mustExec(t, a, fmt.Sprintf("BACKUP TABLE `%s`.`%s` TO Disk('backups', '%s')", p.SafeDB, safe.Table, backup))
+		restore := func(n int, clause string) uint64 {
+			scratch := fmt.Sprintf("r_%d", n)
+			mustExec(t, a, fmt.Sprintf("RESTORE TABLE `%s`.`%s` AS `%s`.`%s` %s FROM Disk('backups', '%s')", p.SafeDB, safe.Table, p.PromoteDB, scratch, clause, backup))
+			var got uint64
+			if err := a.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM `%s`.`%s`", p.PromoteDB, scratch)).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			return got
+		}
+		var total uint64
+		for n, id := range ids {
+			clause, err := partitionsClause([]string{id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want, err := objstore.PartitionClause(sch, id); err != nil || want != clause {
+				t.Fatalf("%s %s: objstore.PartitionClause = %q, %v; partitionsClause = %q", tc.key, id, want, err, clause)
+			}
+			if got := restore(n, clause); got != rows[id] {
+				t.Fatalf("%s: RESTORE %s restored %d rows, want %d", tc.key, clause, got, rows[id])
+			}
+			total += rows[id]
+		}
+		clause, err := partitionsClause(ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := restore(len(ids), clause); got != total {
+			t.Fatalf("%s: RESTORE %s restored %d rows, want %d", tc.key, clause, got, total)
+		}
 	}
 }

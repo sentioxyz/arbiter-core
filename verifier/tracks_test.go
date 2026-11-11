@@ -21,7 +21,7 @@ func TestVerifierRegistrationAdvertisesTrackManifests(t *testing.T) {
 		t.Fatal(err)
 	}
 	regs, _ := fake.snapshot()
-	want := append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature, "table_admission_rules_v2")
+	want := append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature, "table_admission_rules_v2", "table_admission_rules_v3")
 	if len(regs) != 1 || !slices.Equal(regs[0].GetFeatures(), want) ||
 		!slices.Contains(regs[0].GetFeatures(), arbiter.TrackManifestsFeature) {
 		t.Fatalf("verifier registrations = %v, want features %v", regs, want)

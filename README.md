@@ -35,7 +35,7 @@ named `arbiter` so domain types retain concise names such as
 | `member/confinement` | Test-only ClickHouse proof that the member users are confined (§ Member role (stage 3 P2)). |
 | `member/consensus` | The member consensus mode: verify role, readiness, checkpoints and their `checkpoint_seq` journal, purge reports, the quiescence ledger and the `hg_member_unsafe` reconciler (§ Member consensus mode (stage 3 P5)). |
 | `conformance` | Field and enum compatibility gates against `arbiter-proto` and Housegate replay types. |
-| `tableadmission` | The frozen table admission rules v1 and v2 (refused codes, column-type allowlists, partition freeze, declared-hash check) that the Arbiter's table registry applies to every `AddTable`, selected by the consensus parameter `table_admission_rules_version` (0 = v1; `AdmitDeclaredSchema`), exported so a host can refuse an inadmissible `CREATE TABLE` before registering it. v2 adds `Date32`, `UUID`, `Int128/256`, `UInt128/256`, `LowCardinality(String)` and `Nullable` over a plain scalar; everything else is v1's. |
+| `tableadmission` | The frozen table admission rules v1, v2 and v3 (refused codes, column-type allowlists, partition freeze, declared-hash check) that the Arbiter's table registry applies to every `AddTable`, selected by the consensus parameter `table_admission_rules_version` (0 = v1; `AdmitDeclaredSchema`), exported so a host can refuse an inadmissible `CREATE TABLE` before registering it. v2 adds `Date32`, `UUID`, `Int128/256`, `UInt128/256`, `LowCardinality(String)` and `Nullable` over a plain scalar; everything else is v1's. v3 (arbiter#169) is v2 with a wider, arbiter-owned partition rule: besides a bare `String` column, a bare `[U]Int8..64`, `Date`, `Date32`, `DateTime('UTC')` or `DateTime64(P, 'UTC')` column, `toYYYYMM`/`toYYYYMMDD` (over Date, Date32 and the UTC temporal types), `toDate`/`toStartOfMonth`/`toMonday` (over `Date` and `DateTime('UTC')`), `toStartOfDay(DateTime('UTC'))` and `intDiv(c, N)` (`[U]Int32/64`, 2 ≤ N ≤ the type's max), spelled exactly as ClickHouse 25.8 and 26.8 print them; a refusal keeps the code `partition_freeze`. `DataPlaneFeatures` advertises `table_admission_rules_v3` when the compiled housegate parses every v3 key (`payloadexec.ParsePartitionKey`), and `ddl`'s partition freeze is that parser, so `BuildDDL` renders a bare key quoted and an expression verbatim, with the key's source column leading the sorting key. |
 
 The private `github.com/sentioxyz/arbiter` repository owns the Raft FSM,
 orchestrator, servers, anchoring backend, and operator binaries. It consumes
@@ -56,7 +56,7 @@ repositories must declare both modules and pin their source revisions:
 bazel_dep(name = "arbiter_core")
 bazel_dep(
     name = "housegate",
-    version = "0.26.6",
+    version = "0.27.3",
 )
 
 git_override(
@@ -66,8 +66,8 @@ git_override(
 )
 git_override(
     module_name = "housegate",
-    # Resolved Housegate v0.26.6; source is pinned by the commit below.
-    commit = "e3e244b2d802f96b9e7eb97d0d939fd5ee65185f",
+    # Resolved Housegate v0.27.3; source is pinned by the commit below.
+    commit = "6d7f1cae82538202d936a398eb9a00878487cbf0",
     remote = "https://github.com/housegate/housegate",
 )
 ```

@@ -18,7 +18,11 @@ func TestNormalizeConsensusParamsUpdateTableAdmissionRulesVersion(t *testing.T) 
 	if err != nil || got.TableAdmissionRulesVersion != 2 {
 		t.Fatalf("v2 with the registry: %v, version %d", err, got.TableAdmissionRulesVersion)
 	}
-	for _, bad := range []uint32{1, 3, 0xffffffff} {
+	u.TableAdmissionRulesVersion = 3
+	if got, err := NormalizeConsensusParamsUpdate(u); err != nil || got.TableAdmissionRulesVersion != 3 {
+		t.Fatalf("v3 with the registry: %v, version %d", err, got.TableAdmissionRulesVersion)
+	}
+	for _, bad := range []uint32{1, 4, 0xffffffff} {
 		u.TableAdmissionRulesVersion = bad
 		if _, err := NormalizeConsensusParamsUpdate(u); err == nil || !strings.Contains(err.Error(), "table_admission_rules_version") {
 			t.Fatalf("version %d: err = %v", bad, err)

@@ -9,10 +9,12 @@ import (
 	"github.com/housegate/housegate/pkg/replay/payloadexec"
 )
 
-// ErrPartitionFreeze is returned for a declared schema outside the P1c
-// partition-key freeze: partition_by must be empty or name a declared bare
-// String column (no expressions, no other types).
-var ErrPartitionFreeze = errors.New("ddl: partition_by must be a bare String column declared in the schema (P1c partition freeze: no expressions, no non-String keys)")
+// ErrPartitionFreeze is returned for a declared schema whose partition key
+// the compiled housegate cannot derive partitions for: partition_by must be
+// empty or a key payloadexec.ParsePartitionKey admits (table admission rules
+// v3: a bare String, integer, Date, Date32 or UTC DateTime/DateTime64 column,
+// or an admitted partition expression).
+var ErrPartitionFreeze = errors.New("ddl: partition_by is not a partition key this binary can replay (it must be empty or a key admitted by table admission rules v3)")
 
 // TableIntent is the structured form of one protocol table. BuildDDL renders
 // it and VerifyProtocolTable compares live metadata against it, so both sides
@@ -24,7 +26,10 @@ type TableIntent struct {
 	ZooKeeperPath string // ReplicatedMergeTree only
 	ReplicaName   string // ReplicatedMergeTree only
 	Columns       []lthash.Column
-	PartitionKey  string // "" for unpartitioned
+	// PartitionKey is the partition key as ClickHouse prints it in
+	// system.tables.partition_key: "" for unpartitioned, a bare column name,
+	// or an admitted partition expression (it contains a parenthesis).
+	PartitionKey string
 	SortingKey    []string
 	Settings      []PinnedSetting
 	// Comment marks the tables of one chain-origin registry incarnation
@@ -49,7 +54,7 @@ func (t TableIntent) SQL() string {
 	}
 	b.WriteString("\n")
 	if t.PartitionKey != "" {
-		fmt.Fprintf(&b, "PARTITION BY %s\n", quoteIdent(t.PartitionKey))
+		fmt.Fprintf(&b, "PARTITION BY %s\n", partitionKeySQL(t.PartitionKey))
 	}
 	keys := make([]string, 0, len(t.SortingKey))
 	for _, k := range t.SortingKey {
@@ -94,9 +99,15 @@ func Intents(p Pinned, t payloadexec.TableSchema) (TableIntent, TableIntent, Tab
 	cols := make([]lthash.Column, 0, len(t.Columns)+1)
 	cols = append(cols, lthash.Column{Name: RowIDColumn, Type: RowIDType})
 	cols = append(cols, t.Columns...)
+	// The sorting key leads with the partition key's source column: the
+	// column itself for a bare key, the expression's argument otherwise.
+	key, err := payloadexec.ParsePartitionKey(t)
+	if err != nil {
+		return TableIntent{}, TableIntent{}, TableIntent{}, fmt.Errorf("table %s: %w: %v", t.TableID, ErrPartitionFreeze, err)
+	}
 	var sorting []string
-	if t.PartitionBy != "" {
-		sorting = append(sorting, t.PartitionBy)
+	if key.IsPartitioned() {
+		sorting = append(sorting, key.Column())
 	}
 	sorting = append(sorting, RowIDColumn)
 	table := CHTableName(t.TableID)
@@ -128,27 +139,32 @@ func BuildDDL(p Pinned, t payloadexec.TableSchema) (string, string, string, erro
 	return unsafe.SQL(), safe.SQL(), promote.SQL(), nil
 }
 
-// ValidatePartitionFreeze is the role-config entry point for the P1c freeze
-// (partition_by must be empty or name a declared bare String column). Roles
+// ValidatePartitionFreeze is the role-config entry point for the partition
+// freeze (partition_by must be empty or a partition key the compiled
+// housegate admits). Roles
 // call it so a freeze violation fails both of them identically at startup,
 // rather than bricking one and leaving the other silently without protocol
 // tables for that table.
 func ValidatePartitionFreeze(t payloadexec.TableSchema) error { return validatePartitionFreeze(t) }
 
 func validatePartitionFreeze(t payloadexec.TableSchema) error {
-	if t.PartitionBy == "" {
-		return nil
+	if _, err := payloadexec.ParsePartitionKey(t); err != nil {
+		return fmt.Errorf("%w: %v", ErrPartitionFreeze, err)
 	}
-	if strings.ContainsAny(t.PartitionBy, "()") {
-		return fmt.Errorf("%w: got expression %q", ErrPartitionFreeze, t.PartitionBy)
+	return nil
+}
+
+// isPartitionExpression reports whether an admitted partition key is an
+// expression rather than a bare column: only an expression has parentheses
+// (payloadexec.ParsePartitionKey never admits a bare name with one).
+func isPartitionExpression(key string) bool { return strings.ContainsAny(key, "()") }
+
+// partitionKeySQL renders an admitted partition key: a bare column quoted, an
+// expression verbatim (its column is a plain identifier that both supported
+// ClickHouse versions print unquoted).
+func partitionKeySQL(key string) string {
+	if isPartitionExpression(key) {
+		return key
 	}
-	for _, c := range t.Columns {
-		if c.Name == t.PartitionBy {
-			if c.Type != "String" {
-				return fmt.Errorf("%w: column %q has type %s", ErrPartitionFreeze, t.PartitionBy, c.Type)
-			}
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: %q names no declared column", ErrPartitionFreeze, t.PartitionBy)
+	return quoteIdent(key)
 }

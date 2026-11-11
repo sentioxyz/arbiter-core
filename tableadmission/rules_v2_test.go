@@ -157,21 +157,29 @@ func TestAdmitDeclaredSchemaSelectsByVersion(t *testing.T) {
 	for _, tc := range []struct {
 		param    uint32
 		admitted bool
-	}{{0, false}, {RulesV1, false}, {RulesV2, true}} {
+	}{{0, false}, {RulesV1, false}, {RulesV2, true}, {RulesV3, true}} {
 		got := AdmitDeclaredSchema(tc.param, rulesNet, "db.n", h, js)
 		if (got == nil) != tc.admitted {
 			t.Fatalf("param %d: verdict %+v, want admitted=%v", tc.param, got, tc.admitted)
 		}
 	}
-	if EffectiveRulesVersion(0) != RulesV1 || EffectiveRulesVersion(2) != RulesV2 {
+	if EffectiveRulesVersion(0) != RulesV1 || EffectiveRulesVersion(2) != RulesV2 || EffectiveRulesVersion(3) != RulesV3 {
 		t.Fatal("EffectiveRulesVersion")
 	}
-	for param, valid := range map[uint32]bool{0: true, 1: false, 2: true, 3: false} {
+	// A non-String bare partition key: refused by v1 and v2, admitted by v3.
+	pjs := `{"table_id":"db.n","partition_by":"v","columns":[{"name":"v","type":"UInt64"}]}`
+	ph := rulesHash(t, "db.n", "v", lthash.Column{Name: "v", Type: "UInt64"})
+	for param, admitted := range map[uint32]bool{0: false, RulesV2: false, RulesV3: true} {
+		if got := AdmitDeclaredSchema(param, rulesNet, "db.n", ph, pjs); (got == nil) != admitted {
+			t.Fatalf("param %d, UInt64 partition key: verdict %+v, want admitted=%v", param, got, admitted)
+		}
+	}
+	for param, valid := range map[uint32]bool{0: true, 1: false, 2: true, 3: true, 4: false} {
 		if ValidRulesVersionParam(param) != valid {
 			t.Fatalf("ValidRulesVersionParam(%d) = %v", param, !valid)
 		}
 	}
-	if LatestRulesVersion != RulesV2 {
+	if LatestRulesVersion != RulesV3 {
 		t.Fatal("LatestRulesVersion moved without a new rules version")
 	}
 }

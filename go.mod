@@ -24,13 +24,13 @@ require (
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
-	github.com/housegate/rewriter-go v0.17.0 // indirect
+	github.com/housegate/rewriter-go v0.23.2 // indirect
 	github.com/housegate/rewriter-proto v0.4.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
-	github.com/tobilg/polyglot/packages/go v0.13.0 // indirect
+	github.com/tobilg/polyglot/packages/go v0.13.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
@@ -47,7 +47,7 @@ require (
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/google/uuid v1.6.0
 	github.com/holiman/uint256 v1.3.2 // indirect
-	github.com/housegate/housegate v0.26.6
+	github.com/housegate/housegate v0.27.3
 	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect

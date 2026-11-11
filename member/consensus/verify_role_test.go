@@ -84,7 +84,7 @@ func TestMemberVerifyRoleRegistersAsAVerifierWithARegistrationSeq(t *testing.T) 
 		reg, mark := regs[i], marks[i]
 		if reg.GetNodeId() != testNodeID || !slices.Equal(reg.GetRoles(), []pb.NodeRole{pb.NodeRole_NODE_ROLE_VERIFIER}) ||
 			!slices.Equal(reg.GetEd25519Pubkey(), pub) || reg.GetRegistrationSeq() != want || reg.GetSignerJws() != "" ||
-			!slices.Equal(reg.GetFeatures(), append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature, "table_admission_rules_v2")) {
+			!slices.Equal(reg.GetFeatures(), append(arbiter.LocalNodeFeatures(), arbiter.MembershipLeaseFeature, "table_admission_rules_v2", "table_admission_rules_v3")) {
 			t.Fatalf("registration %d = %v", i, reg)
 		}
 		body := arbiter.NodeRegistration{NodeID: testNodeID, Roles: []arbiter.NodeRole{arbiter.NodeRoleVerifier}, Ed25519Pubkey: pub, RegistrationSeq: want}
