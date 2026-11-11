@@ -17,6 +17,8 @@ var (
 	// ErrMalformedToken: the token is not a well-formed ES256K compact JWS
 	// (part count, segment encoding, header or payload JSON, signature length,
 	// algorithm, or a multi-signature form the threshold does not accept).
+	// It is decided without a key: a well-formed signature that fails to
+	// verify is ErrSignerNotAllowed, not this.
 	ErrMalformedToken = errors.New("malformed authority token")
 	// ErrTokenCommandMismatch: the token is well formed but signs another
 	// command (purpose or command hash).
@@ -24,8 +26,9 @@ var (
 	// ErrTokenAge: the token's iat is outside the admission window. Only the
 	// Authorize methods check age; Verify methods never return it.
 	ErrTokenAge = errors.New("authority token age outside the admission window")
-	// ErrSignerNotAllowed: the recovered signer is not in the allowlist, or
-	// the allowlist is empty.
+	// ErrSignerNotAllowed: no allowlisted key signed the token. The signature
+	// recovers no key, the recovered signer is not in the allowlist, or the
+	// allowlist is empty.
 	ErrSignerNotAllowed = errors.New("authority token signer is not allowlisted")
 	// ErrThresholdNotMet: a multi-signature token carries fewer signatures
 	// than the authority threshold requires.

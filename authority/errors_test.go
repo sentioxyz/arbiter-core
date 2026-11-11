@@ -165,6 +165,8 @@ func TestValidatorRefusalTextIsUnchanged(t *testing.T) {
 		{"signature length", shortSig, false, "authority token signature: want 65 bytes, got 64", ErrMalformedToken},
 		{"signer", sign(other, JWSCommandPayload{Iat: now, Purpose: ConsensusParamsUpdatePurpose, CmdHash: hash}), false,
 			"authority address " + strings.ToLower(other.Address()) + " not in allowlist", ErrSignerNotAllowed},
+		{"unrecoverable signature", parts[0] + "." + parts[1] + "." + b64(make([]byte, 65)), false,
+			"recover authority address: recovery failed", ErrSignerNotAllowed},
 		{"multi-signature at threshold 1", genuine + TokenSetSeparator + genuine, false,
 			"authority token: a multi-signature token is not accepted at authority threshold 1", ErrMalformedToken},
 	} {

@@ -146,7 +146,7 @@ func (v *Validator) verifyOne(wantCmdHash, wantPurpose, token string, enforceAge
 	signingInput := parts[0] + "." + parts[1]
 	pub, err := crypto.SigToPub(crypto.Keccak256([]byte(signingInput)), recSig)
 	if err != nil {
-		return "", tokenErrorf(ErrMalformedToken, "recover authority address: %w", err)
+		return "", tokenErrorf(ErrSignerNotAllowed, "recover authority address: %w", err)
 	}
 	addr := strings.ToLower(crypto.PubkeyToAddress(*pub).Hex())
 	if !v.AllowedAddresses[addr] {
