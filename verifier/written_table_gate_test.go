@@ -30,7 +30,8 @@ import (
 // partition freeze), so it can never become Ready here: the shape of a table
 // a later admission rules version admits before this verifier upgrades.
 func unservableSchema(tableID string) payloadexec.TableSchema {
-	return payloadexec.TableSchema{TableID: tableID, PartitionBy: "c",
+	// intDiv(c, 1): a divisor below 2, which no admission rules version admits.
+	return payloadexec.TableSchema{TableID: tableID, PartitionBy: "intDiv(c, 1)",
 		Columns: []lthash.Column{{Name: "p", Type: "String"}, {Name: "c", Type: "UInt64"}}}
 }
 

@@ -351,7 +351,7 @@ func TestEnsureProtocolTables_SkipsFreezeViolationWithWarning(t *testing.T) {
 	p := testPinned(t)
 	dropDatabasesSync(t, conn, p)
 	good := ensureSchema(t)
-	bad := payloadexec.TableSchema{TableID: "db.bad_" + uniqueSuffix(t), PartitionBy: "n", Columns: []lthash.Column{{Name: "n", Type: "UInt64"}}}
+	bad := payloadexec.TableSchema{TableID: "db.bad_" + uniqueSuffix(t), PartitionBy: "intDiv(n, 1)", Columns: []lthash.Column{{Name: "n", Type: "UInt64"}}}
 
 	if err := EnsureProtocolTables(ctx, conn, p, []payloadexec.TableSchema{bad, good}, ModeCreateAndVerify, slog.Default()); err != nil {
 		t.Fatalf("one bad declaration must not stop the ensure: %v", err)

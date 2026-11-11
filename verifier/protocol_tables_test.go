@@ -153,20 +153,21 @@ func TestConfigRejectsPartitionFreezeViolation(t *testing.T) {
 		mutate     func(*payloadexec.TableSchema)
 		wantDetail string
 	}{
+		// Keys table admission rules v3 does not admit.
 		"expression": {
-			mutate:     func(s *payloadexec.TableSchema) { s.PartitionBy = "toYYYYMM(d)" },
-			wantDetail: `got expression "toYYYYMM(d)"`,
+			mutate:     func(s *payloadexec.TableSchema) { s.PartitionBy = "toStartOfWeek(" + s.Columns[0].Name + ")" },
+			wantDetail: `function "toStartOfWeek" is not an admitted partition function`,
 		},
-		"non_string": {
+		"unadmitted_type": {
 			mutate: func(s *payloadexec.TableSchema) {
-				s.Columns[0].Type = "UInt64"
+				s.Columns[0].Type = "Float64"
 				s.PartitionBy = s.Columns[0].Name
 			},
-			wantDetail: `column "p" has type UInt64`,
+			wantDetail: `of type Float64 is not an admitted partition key type`,
 		},
 		"undeclared": {
 			mutate:     func(s *payloadexec.TableSchema) { s.PartitionBy = "nope" },
-			wantDetail: `"nope" names no declared column`,
+			wantDetail: `partition_by "nope": names no declared column`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

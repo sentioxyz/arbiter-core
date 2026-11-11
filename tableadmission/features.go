@@ -14,8 +14,8 @@ import (
 //     table_admission_rules_version parameter and judges AddTable by rules v
 //     once the parameter is raised to v;
 //   - a data-plane node (in NodeRegistration.features, DataPlaneFeatures)
-//     whose compiled housegate column profile replays every column type rules
-//     v admits.
+//     whose compiled housegate replays every column type rules v admits and,
+//     from v3, parses and evaluates every partition key rules v admits.
 //
 // The leader's gate for a raise to v requires it from every voter and, unless
 // the operator names the lagging nodes, from every registered, non-evicted
@@ -33,25 +33,47 @@ func RulesFeature(v uint32) string {
 // against a housegate that cannot replay a type of rules v never advertises
 // v. v1 has no feature: every data-plane binary replays it.
 func DataPlaneFeatures() []string {
-	return dataPlaneFeatures(payloadexec.SupportedColumnType)
+	return dataPlaneFeatures(payloadexec.SupportedColumnType, housegatePartitionKeySupported)
 }
 
-// dataPlaneFeatures is DataPlaneFeatures over the profile predicate supported.
-func dataPlaneFeatures(supported func(typeName string) bool) []string {
+// housegatePartitionKeySupported reports whether the compiled housegate
+// parses schema's partition key (payloadexec.ParsePartitionKey), which is what
+// every replay lane derives partition ids with.
+func housegatePartitionKeySupported(schema payloadexec.TableSchema) bool {
+	_, err := payloadexec.ParsePartitionKey(schema)
+	return err == nil
+}
+
+// dataPlaneFeatures is DataPlaneFeatures over the profile predicate supported
+// and the partition-key predicate partitionSupported.
+func dataPlaneFeatures(supported func(typeName string) bool, partitionSupported func(payloadexec.TableSchema) bool) []string {
 	var out []string
 	for v := RulesV1 + 1; v <= LatestRulesVersion; v++ {
-		if replaysAll(admittedColumnTypes(v), supported) {
-			out = append(out, RulesFeature(v))
+		if !replaysAll(admittedColumnTypes(v), supported) {
+			continue
 		}
+		if v >= RulesV3 && !parsesAll(admittedPartitionKeysV3(), partitionSupported) {
+			continue
+		}
+		out = append(out, RulesFeature(v))
 	}
 	return out
 }
 
+func parsesAll(schemas []payloadexec.TableSchema, supported func(payloadexec.TableSchema) bool) bool {
+	for _, s := range schemas {
+		if !supported(s) {
+			return false
+		}
+	}
+	return true
+}
+
 // admittedColumnTypes is the canonical admitted column-type set of rules v,
-// for v1 < v <= LatestRulesVersion.
+// for v1 < v <= LatestRulesVersion. v3 admits v2's types.
 func admittedColumnTypes(v uint32) []string {
 	switch v {
-	case RulesV2:
+	case RulesV2, RulesV3:
 		return AdmittedColumnTypesV2()
 	default:
 		panic(fmt.Sprintf("tableadmission: no admitted column-type set for rules v%d", v))

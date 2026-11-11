@@ -127,8 +127,11 @@ func TestBuildDDL_KeeperShardAndNodeIDLandInZKPath(t *testing.T) {
 
 func TestBuildDDL_RejectsPartitionFreezeViolations(t *testing.T) {
 	cases := map[string]payloadexec.TableSchema{
-		"expression": {TableID: "db.t", PartitionBy: "toYYYYMM(d)", Columns: []lthash.Column{{Name: "d", Type: "Date"}}},
-		"non-string": {TableID: "db.t", PartitionBy: "n", Columns: []lthash.Column{{Name: "n", Type: "UInt64"}}},
+		// Keys table admission rules v3 does not admit.
+		"expression":     {TableID: "db.t", PartitionBy: "toDate(d)", Columns: []lthash.Column{{Name: "d", Type: "Date32"}}},
+		"naive datetime": {TableID: "db.t", PartitionBy: "toYYYYMM(d)", Columns: []lthash.Column{{Name: "d", Type: "DateTime"}}},
+		"float":          {TableID: "db.t", PartitionBy: "n", Columns: []lthash.Column{{Name: "n", Type: "Float64"}}},
+		"spelling":       {TableID: "db.t", PartitionBy: "(toYYYYMM(d))", Columns: []lthash.Column{{Name: "d", Type: "Date"}}},
 		"undeclared": {TableID: "db.t", PartitionBy: "x", Columns: []lthash.Column{{Name: "p", Type: "String"}}},
 	}
 	for name, sch := range cases {
@@ -207,14 +210,14 @@ func TestIntents_RejectsColumnTypeOutsideTheSIWhitelist(t *testing.T) {
 	}
 }
 
-// The partition freeze is checked before column types so an expression
+// The partition freeze is checked before column types so an unadmitted
 // partition key keeps reporting ErrPartitionFreeze, which callers (ensure)
 // treat as skip-with-warning rather than as a hard failure.
 func TestIntents_PartitionFreezeOutranksColumnTypeRejection(t *testing.T) {
 	schema := payloadexec.TableSchema{
 		TableID:     "db.t",
 		PartitionBy: "toYYYYMM(d)",
-		Columns:     []lthash.Column{{Name: "d", Type: "Date"}},
+		Columns:     []lthash.Column{{Name: "d", Type: "DateTime"}, {Name: "v", Type: "Decimal(18, 4)"}},
 	}
 	_, _, _, err := Intents(goldenPinned(), schema)
 	if !errors.Is(err, ErrPartitionFreeze) {
@@ -362,4 +365,37 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// TestBuildDDL_RendersRulesV3PartitionKeys: a bare key is quoted, an admitted
+// expression is rendered verbatim (the spelling ClickHouse prints back), and
+// the sorting key leads with the key's source column.
+func TestBuildDDL_RendersRulesV3PartitionKeys(t *testing.T) {
+	for _, tc := range []struct {
+		key, typ, partition, order string
+	}{
+		{"n", "UInt64", "PARTITION BY `n`", "ORDER BY (`n`, `_hg_row_id`)"},
+		{"ts", "DateTime64(3, 'UTC')", "PARTITION BY `ts`", "ORDER BY (`ts`, `_hg_row_id`)"},
+		{"toYYYYMM(ts)", "DateTime('UTC')", "PARTITION BY toYYYYMM(ts)", "ORDER BY (`ts`, `_hg_row_id`)"},
+		{"toStartOfDay(ts)", "DateTime('UTC')", "PARTITION BY toStartOfDay(ts)", "ORDER BY (`ts`, `_hg_row_id`)"},
+		{"intDiv(ts, 1000)", "Int64", "PARTITION BY intDiv(ts, 1000)", "ORDER BY (`ts`, `_hg_row_id`)"},
+	} {
+		sch := payloadexec.TableSchema{TableID: "db.t", PartitionBy: tc.key, Columns: []lthash.Column{{Name: "v", Type: "String"}, {Name: "ts", Type: tc.typ}, {Name: "n", Type: "UInt64"}}}
+		if tc.key == "n" {
+			sch.Columns[1].Type = "String"
+		}
+		unsafe, safe, promote, err := Intents(goldenPinned(), sch)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.key, err)
+		}
+		for _, intent := range []TableIntent{unsafe, safe, promote} {
+			sql := intent.SQL()
+			if intent.PartitionKey != tc.key || !contains(sql, tc.partition+"\n") || !contains(sql, tc.order+"\n") {
+				t.Fatalf("%s: intent %+v renders\n%s", tc.key, intent, sql)
+			}
+		}
+		if err := ValidatePartitionFreeze(sch); err != nil {
+			t.Fatalf("%s: ValidatePartitionFreeze: %v", tc.key, err)
+		}
+	}
 }

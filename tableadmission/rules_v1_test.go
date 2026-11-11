@@ -224,17 +224,27 @@ func TestAdmissionRulesV1MatchHousegateProfile(t *testing.T) {
 	if admissionRowIDColumnV1 != ddl.RowIDColumn {
 		t.Fatalf("row id column drifted: v1 %q, ddl %q", admissionRowIDColumnV1, ddl.RowIDColumn)
 	}
-	// The partition freeze must agree with the rule the data-plane roles
-	// enforce before creating a table.
+	// The data-plane roles' freeze (ddl) is the widest rules version's
+	// partition rule (v3): every key v1 admits passes it, and it agrees with
+	// v3 exactly.
 	for _, schema := range []payloadexec.TableSchema{
 		{TableID: "db.n", PartitionBy: "p", Columns: []lthash.Column{{Name: "p", Type: "String"}}},
 		{TableID: "db.n", PartitionBy: "p", Columns: []lthash.Column{{Name: "p", Type: "UInt64"}}},
+		{TableID: "db.n", PartitionBy: "p", Columns: []lthash.Column{{Name: "p", Type: "Float64"}}},
 		{TableID: "db.n", PartitionBy: "toDate(p)", Columns: []lthash.Column{{Name: "p", Type: "String"}}},
+		{TableID: "db.n", PartitionBy: "toDate(p)", Columns: []lthash.Column{{Name: "p", Type: "Date"}}},
 		{TableID: "db.n", PartitionBy: "q", Columns: []lthash.Column{{Name: "p", Type: "String"}}},
 	} {
-		v1 := partitionByAdmittedV1(declaredSchemaV1{TableID: schema.TableID, PartitionBy: schema.PartitionBy, Columns: schema.Columns})
-		if hg := ddl.ValidatePartitionFreeze(schema); v1 != (hg == nil) || (hg != nil && !errors.Is(hg, ddl.ErrPartitionFreeze)) {
-			t.Fatalf("partition freeze disagrees for %+v: v1 %v, ddl %v", schema, v1, hg)
+		declared := declaredSchemaV1{TableID: schema.TableID, PartitionBy: schema.PartitionBy, Columns: schema.Columns}
+		hg := ddl.ValidatePartitionFreeze(schema)
+		if hg != nil && !errors.Is(hg, ddl.ErrPartitionFreeze) {
+			t.Fatalf("%+v: ddl %v is not ErrPartitionFreeze", schema, hg)
+		}
+		if partitionByAdmittedV1(declared) && hg != nil {
+			t.Fatalf("partition freeze refuses a v1 key %+v: %v", schema, hg)
+		}
+		if v3 := partitionByAdmittedV3(declared); v3 != (hg == nil) {
+			t.Fatalf("partition freeze disagrees for %+v: v3 %v, ddl %v", schema, v3, hg)
 		}
 	}
 	// The hash and the physical name are protocol identity, delegated rather

@@ -6,6 +6,7 @@ go_library(
         "features.go",
         "rules_v1.go",
         "rules_v2.go",
+        "rules_v3.go",
     ],
     importpath = "github.com/sentioxyz/arbiter-core/tableadmission",
     visibility = ["//visibility:public"],
@@ -21,6 +22,7 @@ go_test(
         "features_test.go",
         "rules_v1_test.go",
         "rules_v2_test.go",
+        "rules_v3_test.go",
     ],
     embed = [":tableadmission"],
     deps = [

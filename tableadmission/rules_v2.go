@@ -17,7 +17,7 @@ const (
 	RulesV2 uint32 = 2
 	// LatestRulesVersion is the highest version this binary implements. A
 	// consensus update may not raise the parameter above it.
-	LatestRulesVersion = RulesV2
+	LatestRulesVersion = RulesV3
 )
 
 // EffectiveRulesVersion maps the consensus parameter to the rules version it
@@ -39,13 +39,16 @@ func ValidRulesVersionParam(param uint32) bool {
 
 // AdmitDeclaredSchema applies the schema half of the admission rules the
 // consensus parameter selects. Callers validate the parameter first
-// (ValidRulesVersionParam); a version above v2 is not reachable and is
-// judged by v2, the widest rules this binary has.
+// (ValidRulesVersionParam); a version above v3 is not reachable and is
+// judged by v3, the widest rules this binary has.
 func AdmitDeclaredSchema(rulesParam uint32, networkID, key, hash, schemaJSON string) *Refusal {
-	if EffectiveRulesVersion(rulesParam) == RulesV1 {
+	switch EffectiveRulesVersion(rulesParam) {
+	case RulesV1:
 		return AdmitDeclaredSchemaV1(networkID, key, hash, schemaJSON)
+	case RulesV2:
+		return AdmitDeclaredSchemaV2(networkID, key, hash, schemaJSON)
 	}
-	return AdmitDeclaredSchemaV2(networkID, key, hash, schemaJSON)
+	return AdmitDeclaredSchemaV3(networkID, key, hash, schemaJSON)
 }
 
 // v2PlainAdditions are the plain (non-wrapped) types admission rules v2 adds
@@ -128,6 +131,17 @@ func canonicalPlainColumnTypeV2(typeName string) (string, bool) {
 // v1's, and every refusal detail is v1's except that a type refusal names
 // rules v2.
 func AdmitDeclaredSchemaV2(networkID, key, hash, schemaJSON string) *Refusal {
+	return admitDeclaredSchemaV2With(networkID, key, hash, schemaJSON, func(schema declaredSchemaV1) *Refusal {
+		if schema.PartitionBy != "" && !partitionByAdmittedV1(schema) {
+			return &Refusal{RefusedPartitionFreeze, fmt.Sprintf("partition_by %+q must be empty or name a declared String column", schema.PartitionBy)}
+		}
+		return nil
+	})
+}
+
+// admitDeclaredSchemaV2With is v2's decoder and check order with the
+// partition rule passed in: v2's (the v1 freeze) or v3's.
+func admitDeclaredSchemaV2With(networkID, key, hash, schemaJSON string, partition func(declaredSchemaV1) *Refusal) *Refusal {
 	schema, err := decodeDeclaredSchemaV1(schemaJSON)
 	if err != nil {
 		return &Refusal{RefusedSchemaDecode, schemaDecodeDetailV1}
@@ -162,8 +176,8 @@ func AdmitDeclaredSchemaV2(networkID, key, hash, schemaJSON string) *Refusal {
 		}
 		return &Refusal{RefusedColumnType, fmt.Sprintf("column %+q: type %+q is not admitted by admission rules v2", col.Name, col.Type)}
 	}
-	if schema.PartitionBy != "" && !partitionByAdmittedV1(schema) {
-		return &Refusal{RefusedPartitionFreeze, fmt.Sprintf("partition_by %+q must be empty or name a declared String column", schema.PartitionBy)}
+	if refusal := partition(schema); refusal != nil {
+		return refusal
 	}
 	declared := payloadexec.TableSchema{TableID: schema.TableID, PartitionBy: schema.PartitionBy, Columns: schema.Columns}
 	if got := payloadexec.TableSchemaHash(networkID, declared); got != hash {

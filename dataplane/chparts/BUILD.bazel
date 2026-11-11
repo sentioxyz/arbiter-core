@@ -17,6 +17,7 @@ go_test(
     srcs = [
         "chparts_ch_test.go",
         "chparts_test.go",
+        "partition_key_ch_test.go",
     ],
     embed = [":chparts"],
     deps = [
