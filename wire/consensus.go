@@ -40,6 +40,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		HistoryRetainBlocks:           m.GetHistoryRetainBlocks(),
 		AuthorityChangeDelayL2Blocks:  m.GetAuthorityChangeDelayL2Blocks(),
 		PendingAuthorityChange:        PendingAuthorityChangeFromPB(m.GetPendingAuthorityChange()),
+		AccountBudget:                 AccountBudgetParamsFromPB(m.GetAccountBudget()),
 	}
 }
 
@@ -76,6 +77,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		HistoryRetainBlocks:           v.HistoryRetainBlocks,
 		AuthorityChangeDelayL2Blocks:  v.AuthorityChangeDelayL2Blocks,
 		PendingAuthorityChange:        PendingAuthorityChangeToPB(v.PendingAuthorityChange),
+		AccountBudget:                 AccountBudgetParamsToPB(v.AccountBudget),
 	}
 }
 
@@ -288,5 +290,35 @@ func PendingAuthorityChangeToPB(v *arbiter.PendingAuthorityChange) *pb.PendingAu
 		AuthorityThreshold:           v.AuthorityThreshold,
 		AuthorityChangeDelayL2Blocks: v.AuthorityChangeDelayL2Blocks,
 		NotBeforeL2Block:             v.NotBeforeL2Block,
+	}
+}
+
+// AccountBudgetParamsFromPB copies an account budget; absent stays nil.
+func AccountBudgetParamsFromPB(m *pb.AccountBudgetParams) *arbiter.AccountBudgetParams {
+	if m == nil {
+		return nil
+	}
+	return &arbiter.AccountBudgetParams{
+		WindowL2Blocks:     m.GetWindowL2Blocks(),
+		MaxStatements:      m.GetMaxStatements(),
+		MaxBytes:           m.GetMaxBytes(),
+		MaxStatementsTotal: m.GetMaxStatementsTotal(),
+		MaxBytesTotal:      m.GetMaxBytesTotal(),
+		Enforce:            m.GetEnforce(),
+	}
+}
+
+// AccountBudgetParamsToPB returns an independent transport message.
+func AccountBudgetParamsToPB(v *arbiter.AccountBudgetParams) *pb.AccountBudgetParams {
+	if v == nil {
+		return nil
+	}
+	return &pb.AccountBudgetParams{
+		WindowL2Blocks:     v.WindowL2Blocks,
+		MaxStatements:      v.MaxStatements,
+		MaxBytes:           v.MaxBytes,
+		MaxStatementsTotal: v.MaxStatementsTotal,
+		MaxBytesTotal:      v.MaxBytesTotal,
+		Enforce:            v.Enforce,
 	}
 }

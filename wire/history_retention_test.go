@@ -84,3 +84,18 @@ func TestConsensusParamsUpdateCarriesTheAuthorityChangeDelay(t *testing.T) {
 	}
 	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
 }
+
+// TestConsensusParamsUpdateCarriesTheAccountBudget (arbiter#143 layer C): the
+// converters copy the budget both ways; unset stays off the wire.
+func TestConsensusParamsUpdateCarriesTheAccountBudget(t *testing.T) {
+	u := legacyGoldenUpdate()
+	if m := ConsensusParamsUpdateToPB(u); m.GetAccountBudget() != nil {
+		t.Fatal("an update without the budget carried it")
+	}
+	u.AccountBudget = &arbiter.AccountBudgetParams{WindowL2Blocks: 1800, MaxStatements: 2, MaxBytes: 3, MaxStatementsTotal: 4, MaxBytesTotal: 5, Enforce: true}
+	back := ConsensusParamsUpdateFromPB(ConsensusParamsUpdateToPB(u))
+	if !reflect.DeepEqual(back.AccountBudget, u.AccountBudget) {
+		t.Fatalf("round trip = %+v", back.AccountBudget)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}

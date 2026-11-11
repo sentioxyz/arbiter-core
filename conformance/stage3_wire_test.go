@@ -92,3 +92,11 @@ func TestStage3AdmissionCodesMatchProto(t *testing.T) {
 		t.Fatal("the stage-3 AdmissionCode constants drifted from the pb enum numbers 12 and 13")
 	}
 }
+
+// TestAccountBudgetAdmissionCodeMatchesProto pins ACCOUNT_BUDGET_EXCEEDED
+// (arbiter#143 layer C).
+func TestAccountBudgetAdmissionCodeMatchesProto(t *testing.T) {
+	if int32(arbiter.AdmissionCodeAccountBudgetExceeded) != int32(pb.AdmissionCode_ADMISSION_CODE_ACCOUNT_BUDGET_EXCEEDED) || arbiter.AdmissionCodeAccountBudgetExceeded != 14 {
+		t.Fatal("AdmissionCodeAccountBudgetExceeded drifted from the pb enum number 14")
+	}
+}

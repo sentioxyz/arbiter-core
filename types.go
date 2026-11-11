@@ -150,6 +150,8 @@ const (
 	AdmissionCodeVerifiersUnavailable AdmissionCode = 12
 	// AdmissionCodeCopiesBackpressure: strict mode holds the table's cleanup at the copy floor above its uncleaned-parts bound (spec §9.3, plan S3-E1 K59); returned only with stage3.strict_copies on; nothing changed, the coordinate is unspent; retryable back-pressure.
 	AdmissionCodeCopiesBackpressure AdmissionCode = 13
+	// AdmissionCodeAccountBudgetExceeded: the statement would exceed the signer's or the network-wide budget of the committed account_budget parameter (AccountBudgetParams, arbiter#143); returned only while it is committed with Enforce set; nothing changed, the coordinate is unspent; retryable once the table-registry cursor has advanced.
+	AdmissionCodeAccountBudgetExceeded AdmissionCode = 14
 )
 
 // NodeRole mirrors pb.NodeRole.

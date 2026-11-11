@@ -377,6 +377,65 @@ type ConsensusParamsUpdate struct {
 	// fields, absent (and omitted from the canonical form) when none is
 	// pending. It needs AuthorityChangeDelayL2Blocks in the same update.
 	PendingAuthorityChange *PendingAuthorityChange `json:"pending_authority_change,omitempty"`
+	// AccountBudget is the write budget of signed statements (arbiter#143
+	// layer C): a leaky bucket per signer and one for the whole network,
+	// measured on the committed table-registry cursor. Absent (nil), and
+	// omitted from the canonical form so every earlier digest is unchanged,
+	// means never set. authority.NormalizeConsensusParamsUpdate refuses
+	// values outside AccountBudgetParams.Validate and one without
+	// TableRegistry and SIIndexers in the same update; the carry (once set,
+	// every update carries it; its values may change) and genesis rules are
+	// the FSM's.
+	AccountBudget *AccountBudgetParams `json:"account_budget,omitempty"`
+}
+
+// AccountBudgetParams bounds the signed statements admitted to the shared
+// log (arbiter#143 layer C), measured in L2 blocks of the committed
+// table-registry cursor, never a wall clock. Each bucket is a leaky bucket
+// that holds at most its Max* value and refills Max* / WindowL2Blocks per L2
+// block the cursor advances: after a full refill at most Max* is admitted
+// over any WindowL2Blocks span. A statement costs one statement and its
+// payload_length bytes. The signer's bucket (client_account, every client
+// lane together) is checked first, then the network-wide total, so one
+// account cannot take more than its own share of the shared total. An empty
+// bucket always admits one statement, whatever its size; the overdraft is
+// repaid before the next. With Enforce false (observe mode) every admission
+// still charges the buckets and nothing is refused. The buckets refill only
+// when the cursor moves: a stalled table-registry watcher refills nothing,
+// so a signer or the network already at its budget stays refused until the
+// cursor moves again (fail-closed); everyone below it is unaffected.
+type AccountBudgetParams struct {
+	WindowL2Blocks     uint64 `json:"window_l2_blocks"`
+	MaxStatements      uint64 `json:"max_statements"`
+	MaxBytes           uint64 `json:"max_bytes"`
+	MaxStatementsTotal uint64 `json:"max_statements_total"`
+	MaxBytesTotal      uint64 `json:"max_bytes_total"`
+	Enforce            bool   `json:"enforce,omitempty"`
+}
+
+// MaxAccountBudgetWindowL2Blocks is the largest account budget window.
+const MaxAccountBudgetWindowL2Blocks uint64 = 1_000_000
+
+// MaxAccountBudgetValue is the largest Max* value of an account budget. With
+// MaxAccountBudgetWindowL2Blocks it keeps every scaled bucket level
+// (value x window) below 2^60.
+const MaxAccountBudgetValue uint64 = 1 << 40
+
+// Validate checks the static bounds of an account budget.
+func (p AccountBudgetParams) Validate() error {
+	switch {
+	case p.WindowL2Blocks == 0 || p.WindowL2Blocks > MaxAccountBudgetWindowL2Blocks:
+		return fmt.Errorf("account budget: window_l2_blocks %d must be in [1, %d]", p.WindowL2Blocks, MaxAccountBudgetWindowL2Blocks)
+	case p.MaxStatements == 0 || p.MaxBytes == 0:
+		return fmt.Errorf("account budget: max_statements and max_bytes must be positive")
+	case p.MaxStatementsTotal < p.MaxStatements:
+		return fmt.Errorf("account budget: max_statements_total %d is below max_statements %d", p.MaxStatementsTotal, p.MaxStatements)
+	case p.MaxBytesTotal < p.MaxBytes:
+		return fmt.Errorf("account budget: max_bytes_total %d is below max_bytes %d", p.MaxBytesTotal, p.MaxBytes)
+	case p.MaxStatementsTotal > MaxAccountBudgetValue || p.MaxBytesTotal > MaxAccountBudgetValue:
+		return fmt.Errorf("account budget: every max_* value must be at most %d", MaxAccountBudgetValue)
+	}
+	return nil
 }
 
 // PendingAuthorityChange is a proposed change of the delayed authority fields
