@@ -88,6 +88,12 @@ type PromotionOutcome struct {
 	AckJWS         string
 	AckEpoch       uint64
 	CleanupPending bool
+	// Pruned: the promotion was acknowledged at or below a history
+	// checkpoint and compacted. Promote carries only the table and
+	// partition; StatementSeqs, AuthorityJWS, Ack and AckJWS are unset and
+	// the full record is in the archive. BlockSeq, the track, SourceNode, the
+	// epochs and Acked stay answered.
+	Pruned bool
 }
 
 // PromotionOutcomes is GetPromotionOutcomes' answer: the FSM's PromotionSeq at
@@ -182,6 +188,7 @@ func promotionOutcomeFromPB(m *pb.PromotionOutcome) PromotionOutcome {
 		AckJWS:         m.GetAckJws(),
 		AckEpoch:       m.GetAckEpoch(),
 		CleanupPending: m.GetCleanupPending(),
+		Pruned:         m.GetPruned(),
 	}
 	if track := m.GetTrack(); track != nil {
 		id := track.GetIndexerId()
@@ -207,6 +214,7 @@ func promotionOutcomeToPB(v PromotionOutcome) *pb.PromotionOutcome {
 		AckJws:         v.AckJWS,
 		AckEpoch:       v.AckEpoch,
 		CleanupPending: v.CleanupPending,
+		Pruned:         v.Pruned,
 	}
 	if v.TrackIndexerID != nil {
 		m.Track = &pb.L3BlockTrack{IndexerId: *v.TrackIndexerID}

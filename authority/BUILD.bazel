@@ -52,6 +52,7 @@ go_test(
         "da_put_test.go",
         "errors_test.go",
         "evict_node_test.go",
+        "history_retention_test.go",
         "manifest_delta_snapshot_test.go",
         "membership_lease_test.go",
         "multisig_test.go",
