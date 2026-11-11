@@ -334,7 +334,7 @@ func TestStage3TokensDoNotCrossPurposes(t *testing.T) {
 	purposes := []string{RebalanceGroupPurpose, ReselectVerifiersPurpose, MarkMemberLaggingPurpose, GroupMemberConsentPurpose, MemberReadyPurpose,
 		MemberCheckpointPurpose, PromotionPurpose, ConsensusParamsUpdatePurpose, EvictNodePurpose, QuarantineIndexerPurpose, ReleaseIndexerPurpose,
 		SettleTrackPurpose, SNodeEnrollmentPurpose, SNodeMessagePurpose, ArtifactDispositionAdminPurpose, QueryProfileActivationPurpose,
-		SnapshotQueryAbortPurpose}
+		SnapshotQueryAbortPurpose, RaftMembershipPurpose}
 	tokens := map[string]string{}
 	for _, m := range messages {
 		var own string
