@@ -47,6 +47,7 @@ go_test(
         "consensus_test.go",
         "context_exact_test.go",
         "context_test.go",
+        "custody_frontier_test.go",
         "da_put_test.go",
         "errors_test.go",
         "evict_node_test.go",

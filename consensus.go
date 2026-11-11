@@ -323,6 +323,16 @@ type ConsensusParamsUpdate struct {
 	// update carries it and it is never lowered. The raise-only, carry and
 	// "after the tracks activation" rules are the FSM's.
 	SnapshotQueryTracks bool `json:"snapshot_query_tracks,omitempty"`
+	// CustodyFrontier turns on the committed custody frontier: the leader
+	// records its payload custody progress (Raft tag 45,
+	// wire.RecordCustodyProgress) and a new leader resumes custody from it
+	// instead of re-asserting every block's holds. Once committed, the
+	// arbiter writes snapshot v25. False, and omitted from the canonical form
+	// so every earlier digest is unchanged, until one authority-signed update
+	// sets it; it needs SnapshotQueryTracks in the same update, and afterwards
+	// every update carries it and it is never lowered. The raise-only and
+	// carry rules are the FSM's.
+	CustodyFrontier bool `json:"custody_frontier,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed

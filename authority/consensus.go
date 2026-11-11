@@ -91,6 +91,9 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if cmd.SnapshotQueryTracks && (!cmd.TracksEnabled || !cmd.PromotionAckDeltaSnapshot) {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: snapshot_query_tracks requires tracks_enabled and promotion_ack_delta_snapshot in the same update")
 	}
+	if cmd.CustodyFrontier && !cmd.SnapshotQueryTracks {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: custody_frontier requires snapshot_query_tracks in the same update")
+	}
 	if !tableadmission.ValidRulesVersionParam(cmd.TableAdmissionRulesVersion) {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: table_admission_rules_version %d is not 0 (rules v1) or a known version above 1 (at most %d)", cmd.TableAdmissionRulesVersion, tableadmission.LatestRulesVersion)
 	}

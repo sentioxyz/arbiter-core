@@ -123,6 +123,39 @@ type RenewNodeLease struct {
 	Ed25519Signature string
 }
 
+// CustodyStage mirrors pb.CustodyStage: how far one sealed block's payload
+// custody chain (SEQUENCED, then REPLAY, then AUDIT) has progressed at the
+// payload store.
+type CustodyStage int32
+
+const (
+	CustodyStageUnspecified CustodyStage = 0
+	// CustodyStageReplayPinned: the block's REPLAY hold is durable and the
+	// SEQUENCED hold of every statement it carries is released.
+	CustodyStageReplayPinned CustodyStage = 1
+	// CustodyStageAuditDone: the block's AUDIT hold is durable and its
+	// REPLAY hold is released.
+	CustodyStageAuditDone CustodyStage = 2
+)
+
+// CustodyMark mirrors pb.CustodyMark: one block reached a custody stage.
+type CustodyMark struct {
+	BlockSeq uint64
+	Stage    CustodyStage
+}
+
+// RecordCustodyProgress mirrors pb.RecordCustodyProgressCmd (Raft tag 45):
+// custody progress the leader has already made at the payload store, so a
+// later leader does not repeat it. It is proposed by the leader, unsigned,
+// only after the custody_frontier parameter is committed. The record is
+// advisory: a false or early mark can only make a leader skip a pin or a
+// release, never issue one, so holds stay and the worst case is a leaked
+// hold, never an early release. Marks are in strictly ascending BlockSeq
+// order; the ordering, sealed-block and stage rules are the arbiter FSM's.
+type RecordCustodyProgress struct {
+	Marks []CustodyMark
+}
+
 // EvictNode mirrors pb.EvictNodeCmd. ExpectedRegistrationSeq and AuthorityJWS
 // are set only by the authority-signed EvictNode RPC after the activation.
 type EvictNode struct {
@@ -231,6 +264,9 @@ type Command struct {
 	// Membership lease: Raft tag 44, proposed only after the
 	// membership_lease_l2_blocks parameter is committed.
 	RenewNodeLease *RenewNodeLease `json:",omitempty"`
+	// Committed custody frontier: Raft tag 45, proposed only after the
+	// custody_frontier parameter is committed.
+	RecordCustodyProgress *RecordCustodyProgress `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -437,6 +473,10 @@ func Encode(c Command) ([]byte, error) {
 		set++
 		out.Cmd = &pb.RaftCommand_RenewNodeLease{RenewNodeLease: &pb.RenewNodeLeaseCmd{Renewal: RenewNodeLeaseToRequest(*c.RenewNodeLease)}}
 	}
+	if c.RecordCustodyProgress != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_RecordCustodyProgress{RecordCustodyProgress: RecordCustodyProgressToPB(*c.RecordCustodyProgress)}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -543,6 +583,9 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_RenewNodeLease:
 		v := RenewNodeLeaseFromRequest(cmd.RenewNodeLease.GetRenewal())
 		return Command{RenewNodeLease: &v}, nil
+	case *pb.RaftCommand_RecordCustodyProgress:
+		v := RecordCustodyProgressFromPB(cmd.RecordCustodyProgress)
+		return Command{RecordCustodyProgress: &v}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{
@@ -621,4 +664,24 @@ func Decode(b []byte) (Command, error) {
 // encoder fails on every voter instead of being applied by some.
 func errRequestOnly(field, carrier string) error {
 	return fmt.Errorf("wire: %s is request-only; the Raft command carries it in %s", field, carrier)
+}
+
+// RecordCustodyProgressToPB converts the custody progress record; an empty
+// mark list stays nil (the frozen nil/empty rule).
+func RecordCustodyProgressToPB(v RecordCustodyProgress) *pb.RecordCustodyProgressCmd {
+	out := &pb.RecordCustodyProgressCmd{}
+	for _, m := range v.Marks {
+		out.Marks = append(out.Marks, &pb.CustodyMark{BlockSeq: m.BlockSeq, Stage: pb.CustodyStage(m.Stage)})
+	}
+	return out
+}
+
+// RecordCustodyProgressFromPB converts the custody progress record. An
+// unknown stage number is kept as is; the FSM refuses it.
+func RecordCustodyProgressFromPB(m *pb.RecordCustodyProgressCmd) RecordCustodyProgress {
+	var out RecordCustodyProgress
+	for _, mark := range m.GetMarks() {
+		out.Marks = append(out.Marks, CustodyMark{BlockSeq: mark.GetBlockSeq(), Stage: CustodyStage(mark.GetStage())})
+	}
+	return out
 }
