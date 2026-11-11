@@ -137,6 +137,18 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 		pending.AuthorityAddresses = targets
 		cmd.PendingAuthorityChange = &pending
 	}
+	// account_budget (arbiter#143 layer C): static rules; the carry and
+	// genesis rules compare two parameters and are the FSM's.
+	if cmd.AccountBudget != nil {
+		if err := cmd.AccountBudget.Validate(); err != nil {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
+		}
+		if cmd.TableRegistry == nil || len(cmd.SIIndexers) == 0 {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: account_budget requires table_registry and si_indexers in the same update: the budget refills on committed L2 cursor blocks")
+		}
+		budget := *cmd.AccountBudget
+		cmd.AccountBudget = &budget
+	}
 	if cmd.HistoryRetainBlocks != 0 && !cmd.CustodyFrontier {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: history_retain_blocks requires custody_frontier in the same update")
 	}

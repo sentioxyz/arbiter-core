@@ -39,6 +39,7 @@ go_library(
 go_test(
     name = "authority_test",
     srcs = [
+        "account_budget_test.go",
         "anchor_finality_test.go",
         "artifact_disposition_test.go",
         "authority_change_delay_test.go",
