@@ -96,6 +96,47 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if cmd.CustodyFrontier && !cmd.SnapshotQueryTracks {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: custody_frontier requires snapshot_query_tracks in the same update")
 	}
+	// authority_change_delay_l2_blocks and pending_authority_change
+	// (arbiter#173 Slice 3): static rules; the activation, carry and
+	// propose / execute / cancel rules compare two parameters and are the
+	// FSM's.
+	if cmd.AuthorityChangeDelayL2Blocks != 0 {
+		switch {
+		case cmd.AuthorityChangeDelayL2Blocks < arbiter.MinAuthorityChangeDelayL2Blocks:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: authority_change_delay_l2_blocks %d is below the floor of %d L2 blocks", cmd.AuthorityChangeDelayL2Blocks, arbiter.MinAuthorityChangeDelayL2Blocks)
+		case cmd.AuthorityThreshold < 2:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: authority_change_delay_l2_blocks requires an authority_threshold of at least 2 in the same update: with one signer a single key could cancel every proposal")
+		case cmd.TableRegistry == nil:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: authority_change_delay_l2_blocks requires table_registry in the same update: the delay counts committed L2 cursor blocks")
+		}
+	}
+	if cmd.PendingAuthorityChange != nil {
+		if cmd.AuthorityChangeDelayL2Blocks == 0 {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_authority_change requires authority_change_delay_l2_blocks in the same update")
+		}
+		pending := *cmd.PendingAuthorityChange
+		targets, err := normalizeUpdateAddresses("pending authority change", pending.AuthorityAddresses)
+		if err != nil {
+			return arbiter.ConsensusParamsUpdate{}, err
+		}
+		switch {
+		case len(targets) == 0:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_authority_change must name its complete target authority set")
+		case pending.AuthorityThreshold < 2 || int(pending.AuthorityThreshold) > len(targets):
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_authority_change authority_threshold %d must be at least 2 and at most its %d authority addresses", pending.AuthorityThreshold, len(targets))
+		case pending.AuthorityChangeDelayL2Blocks < arbiter.MinAuthorityChangeDelayL2Blocks:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_authority_change authority_change_delay_l2_blocks %d is below the floor of %d L2 blocks", pending.AuthorityChangeDelayL2Blocks, arbiter.MinAuthorityChangeDelayL2Blocks)
+		case pending.NotBeforeL2Block == 0:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_authority_change needs a not_before_l2_block")
+		}
+		for _, address := range cmd.OperationsAuthorityAddresses {
+			if _, found := slices.BinarySearch(targets, address); found {
+				return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_authority_change address %s is an operations authority address; the operations and governance sets must be disjoint", address)
+			}
+		}
+		pending.AuthorityAddresses = targets
+		cmd.PendingAuthorityChange = &pending
+	}
 	if cmd.HistoryRetainBlocks != 0 && !cmd.CustodyFrontier {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: history_retain_blocks requires custody_frontier in the same update")
 	}

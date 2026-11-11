@@ -40,6 +40,7 @@ go_test(
     srcs = [
         "anchor_finality_test.go",
         "artifact_disposition_test.go",
+        "authority_change_delay_test.go",
         "authority_test.go",
         "chain_operations_test.go",
         "chain_test.go",
