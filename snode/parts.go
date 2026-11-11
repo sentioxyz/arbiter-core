@@ -17,6 +17,25 @@ func activeParts(ctx context.Context, conn clickhouse.Conn, db, table string) ([
 	return chparts.ActiveParts(ctx, conn, db, table)
 }
 
+// partsWithRows drops the active parts that hold no rows. hg_safe can show
+// such a part as active: ClickHouse 26.8's REPLACE PARTITION leaves an empty
+// part covering the replaced block range, which a restart loads as active
+// until remove_empty_parts retires it (about a minute), and an ATTACH
+// PARTITION FROM in that window copies it into the shadow, from where REPLACE
+// publishes it again; DROP PART leaves the same marker on any version. It holds
+// no rows, so it is no part of the partition's content or of its acknowledged
+// inventory, and an inventory that named it would report it missing once
+// ClickHouse retires it.
+func partsWithRows(parts []partInfo) []partInfo {
+	out := make([]partInfo, 0, len(parts))
+	for _, p := range parts {
+		if p.Rows > 0 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func diffParts(before, after []partInfo) []partInfo {
 	seen := make(map[string]bool, len(before))
 	for _, p := range before {

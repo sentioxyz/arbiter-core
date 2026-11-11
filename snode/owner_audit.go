@@ -541,5 +541,5 @@ func (r *Role) safePartitionParts(ctx context.Context, sch payloadexec.TableSche
 	if err != nil {
 		return nil, err
 	}
-	return partsInLogicalPartition(parts, sch, partitionID), nil
+	return partsWithRows(partsInLogicalPartition(parts, sch, partitionID)), nil
 }

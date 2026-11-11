@@ -85,12 +85,12 @@ func (r *Role) buildAndReplace(ctx context.Context, cmd arbiter.PromoteSafeParti
 		_ = r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition)
 		return "", safePartMappings{}, err
 	}
-	safeBefore = partsInLogicalPartition(safeBefore, sch, cmd.PartitionID)
+	safeBefore = partsWithRows(partsInLogicalPartition(safeBefore, sch, cmd.PartitionID))
 	intent := promotionIntentFor(cmd, post, safeBefore)
 	if err := r.state.BeginPromotion(partitionKey{Table: cmd.TableID, Partition: cmd.PartitionID}, intent); err != nil {
 		return "", safePartMappings{}, fmt.Errorf("journal promotion intent: %w", err)
 	}
-	if err := r.exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLACE PARTITION %s FROM %s", safe, partition, promote)); err != nil {
+	if err := r.publishShadow(ctx, sch, table, safe, promote, cmd.PartitionID, partition, shadowParts); err != nil {
 		return "", safePartMappings{}, err
 	}
 	if err := r.dropPartitionIfPresent(ctx, r.cfg.PromoteDatabase, table, sch, cmd.PartitionID, partition); err != nil {
@@ -255,6 +255,22 @@ func refuseDuplicateCandidates(cmd arbiter.PromoteSafePartition) error {
 
 // duplicateShadowPartHash refuses a shadow in which two parts have the same
 // row LtHash, i.e. the published partition would hold the same rows twice.
+// publishShadow makes the shadow partition the safe partition. It is REPLACE
+// PARTITION whenever the shadow holds a part with rows. A shadow without one is
+// published by dropping the safe partition instead: ClickHouse 26.6 and later
+// refuse REPLACE PARTITION from a source with no parts in the partition (code
+// 36, allow_replace_partition_from_empty_source), where 25.8 and 26.3 cleared
+// the destination. The shadow closure gate makes such a shadow unreachable
+// today (the arbiter refuses a promotion without candidates and every
+// candidate holds rows, so base ⊕ candidates is never the empty root), and
+// this keeps the outcome the same on every server version if that changes.
+func (r *Role) publishShadow(ctx context.Context, sch payloadexec.TableSchema, table, safe, promote, partitionID, partition string, shadow []shadowPart) error {
+	if len(shadow) == 0 {
+		return r.dropPartitionIfPresent(ctx, r.cfg.SafeDatabase, table, sch, partitionID, partition)
+	}
+	return r.exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLACE PARTITION %s FROM %s", safe, partition, promote))
+}
+
 func duplicateShadowPartHash(cmd arbiter.PromoteSafePartition, parts []shadowPart) error {
 	seen := make(map[string]string, len(parts))
 	for _, p := range parts {

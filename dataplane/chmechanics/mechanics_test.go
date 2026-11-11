@@ -487,6 +487,21 @@ func randomHex(t *testing.T, n int) string {
 	return hex.EncodeToString(b)
 }
 
+// serverAtLeast reports whether the server conn reaches runs ClickHouse
+// major.minor or later.
+func serverAtLeast(t *testing.T, conn clickhouse.Conn, major, minor int) bool {
+	t.Helper()
+	var version string
+	if err := conn.QueryRow(context.Background(), "SELECT version()").Scan(&version); err != nil {
+		t.Fatalf("SELECT version(): %v", err)
+	}
+	var gotMajor, gotMinor int
+	if _, err := fmt.Sscanf(version, "%d.%d.", &gotMajor, &gotMinor); err != nil {
+		t.Fatalf("cannot read ClickHouse version %q: %v", version, err)
+	}
+	return gotMajor > major || gotMajor == major && gotMinor >= minor
+}
+
 // eventually polls cond every 500 ms until it holds or timeout passes; cond
 // reports the state it saw for the failure message.
 func eventually(t *testing.T, timeout time.Duration, what string, cond func() (bool, string)) {

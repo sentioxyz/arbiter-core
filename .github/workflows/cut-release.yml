@@ -125,10 +125,24 @@ jobs:
         if: always()
         run: bash scripts/ci/clickhouse-mechanics.sh --cleanup
 
+      - name: validate ClickHouse mechanics on 26.8.36.3
+        run: bash scripts/ci/clickhouse-mechanics.sh clickhouse/clickhouse-server:26.8.36.3 26.8.36.3
+
+      - name: stop the mechanics pair (26.8.36.3)
+        if: always()
+        run: bash scripts/ci/clickhouse-mechanics.sh --cleanup
+
       - name: validate member confinement
         run: bash scripts/ci/clickhouse-member-confinement.sh clickhouse/clickhouse-server:26.3.37.3 26.3.37.3
 
       - name: stop the confinement servers
+        if: always()
+        run: bash scripts/ci/clickhouse-member-confinement.sh --cleanup
+
+      - name: validate member confinement on 26.8.36.3
+        run: bash scripts/ci/clickhouse-member-confinement.sh clickhouse/clickhouse-server:26.8.36.3 26.8.36.3
+
+      - name: stop the confinement servers (26.8.36.3)
         if: always()
         run: bash scripts/ci/clickhouse-member-confinement.sh --cleanup
 

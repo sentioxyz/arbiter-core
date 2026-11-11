@@ -310,7 +310,12 @@ func TestMechanics_S3BackupWithAKeyThatCannotDelete(t *testing.T) {
 	if got, want := accessTypes(t, env.A, "si_backup"), []string{"BACKUP", "CREATE TEMPORARY TABLE", "READ", "SELECT", "SELECT", "SELECT", "WRITE"}; !slices.Equal(got, want) {
 		t.Fatalf("system.grants of si_backup: %v, want %v", got, want)
 	}
-	if got, want := accessTypes(t, env.A, "si_restore"), []string{"ALTER", "CREATE DATABASE", "CREATE TABLE", "CREATE TEMPORARY TABLE", "DROP TABLE", "INSERT", "OPTIMIZE", "READ", "SELECT", "SELECT", "SELECT", "SELECT", "TRUNCATE"}; !slices.Equal(got, want) {
+	// 26.8 lists the one ALTER grant as its three parts.
+	restoreAlter := []string{"ALTER"}
+	if serverAtLeast(t, env.A, 26, 8) {
+		restoreAlter = []string{"ALTER DATABASE", "ALTER TABLE", "ALTER VIEW"}
+	}
+	if got, want := accessTypes(t, env.A, "si_restore"), append(restoreAlter, "CREATE DATABASE", "CREATE TABLE", "CREATE TEMPORARY TABLE", "DROP TABLE", "INSERT", "OPTIMIZE", "READ", "SELECT", "SELECT", "SELECT", "SELECT", "TRUNCATE"); !slices.Equal(got, want) {
 		t.Fatalf("system.grants of si_restore: %v, want %v", got, want)
 	}
 
