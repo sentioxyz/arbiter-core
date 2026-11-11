@@ -22,8 +22,7 @@ type rulesV3PartitionCase struct {
 
 func rulesV3PartitionCases() []rulesV3PartitionCase {
 	return []rulesV3PartitionCase{
-		// No empty String: QuotePartition refuses p_ (pre-existing, not v3).
-		{"c", "String", []string{"'a'", "'it\\'s'", "'with space'", "'tuple()'"}},
+		{"c", "String", []string{"''", "'a'", "'it\\'s'", "'with space'", "'tuple()'"}},
 		{"c", "UInt8", []string{"0", "255"}},
 		{"c", "Int64", []string{"-9223372036854775808", "-1", "9223372036854775807"}},
 		{"c", "UInt64", []string{"0", "18446744073709551615"}},

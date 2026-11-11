@@ -80,7 +80,9 @@ func PartsInLogicalPartition(parts []Part, sch payloadexec.TableSchema, partitio
 
 // QuotePartition renders a logical partition id as the partition expression
 // of an ALTER TABLE or RESTORE statement: tuple() for an unpartitioned table,
-// else the single-quoted, escaped value.
+// else the single-quoted, escaped value. The value may be empty: a String
+// partition key's empty value is partition p_, which '' selects exactly
+// (arbiter-core#84; measured on ClickHouse 25.8 and 26.8).
 func QuotePartition(sch payloadexec.TableSchema, partitionID string) (string, error) {
 	if sch.PartitionBy == "" {
 		if partitionID != "all" {
@@ -89,7 +91,7 @@ func QuotePartition(sch payloadexec.TableSchema, partitionID string) (string, er
 		return "tuple()", nil
 	}
 	value, ok := strings.CutPrefix(partitionID, "p_")
-	if !ok || value == "" {
+	if !ok {
 		return "", fmt.Errorf("partition id %s does not use p_<value> form", partitionID)
 	}
 	return "'" + EscapeSQLString(value) + "'", nil
