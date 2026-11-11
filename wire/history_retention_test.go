@@ -99,3 +99,24 @@ func TestConsensusParamsUpdateCarriesTheAccountBudget(t *testing.T) {
 	}
 	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
 }
+
+// TestConsensusParamsUpdateCarriesThePendingVoterChange (arbiter#223): the
+// converters copy the pending voter change both ways; unset stays off the
+// wire.
+func TestConsensusParamsUpdateCarriesThePendingVoterChange(t *testing.T) {
+	u := legacyGoldenUpdate()
+	if m := ConsensusParamsUpdateToPB(u); m.GetPendingVoterChange() != nil {
+		t.Fatal("an update without a pending voter change carried one")
+	}
+	u.PendingVoterChange = &arbiter.PendingVoterChange{
+		Additions:            []arbiter.VoterEntry{{VoterID: "arbiter-3", Ed25519Pubkey: []byte{3, 4}, ConsentSig: "cc"}},
+		AnchorFinalityQuorum: 3,
+		NotBeforeL2Block:     77,
+	}
+	m := ConsensusParamsUpdateToPB(u)
+	back := ConsensusParamsUpdateFromPB(m)
+	if !reflect.DeepEqual(back.PendingVoterChange, u.PendingVoterChange) {
+		t.Fatalf("round trip = %+v", back.PendingVoterChange)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}

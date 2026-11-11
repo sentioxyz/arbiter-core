@@ -387,6 +387,19 @@ type ConsensusParamsUpdate struct {
 	// every update carries it; its values may change) and genesis rules are
 	// the FSM's.
 	AccountBudget *AccountBudgetParams `json:"account_budget,omitempty"`
+	// PendingVoterChange is the proposed addition to Voters and/or lowering
+	// of AnchorFinality.Quorum (arbiter#223), absent (and omitted from the
+	// canonical form, so every earlier digest is unchanged) when none is
+	// pending. Once AuthorityChangeDelayL2Blocks and AnchorFinality are both
+	// committed, a voter is added (a new voter_id, or a new key for an
+	// enrolled id) and the quorum lowered only by executing a pending change
+	// whose NotBeforeL2Block the committed cursor has reached; removals and
+	// quorum raises take effect at once. authority.NormalizeConsensusParamsUpdate
+	// refuses it without AuthorityChangeDelayL2Blocks and AnchorFinality in
+	// the same update, normalizes its additions like Voters, and refuses one
+	// that adds nothing and lowers nothing or has no NotBeforeL2Block; the
+	// propose / execute / cancel, carry and genesis rules are the FSM's.
+	PendingVoterChange *PendingVoterChange `json:"pending_voter_change,omitempty"`
 }
 
 // AccountBudgetParams bounds the signed statements admitted to the shared
@@ -447,6 +460,18 @@ type PendingAuthorityChange struct {
 	AuthorityThreshold           uint32   `json:"authority_threshold"`
 	AuthorityChangeDelayL2Blocks uint64   `json:"authority_change_delay_l2_blocks"`
 	NotBeforeL2Block             uint64   `json:"not_before_l2_block"`
+}
+
+// PendingVoterChange is a proposed change of the delayed voter fields
+// (ConsensusParamsUpdate.PendingVoterChange): enrolments to add (a voter_id
+// not enrolled in force, or an enrolled voter_id with a different key), an
+// optional lowered anchor finality quorum (0 = none; the execution may then
+// keep or raise the quorum), and the earliest committed table-registry
+// cursor block at which an update may execute it.
+type PendingVoterChange struct {
+	Additions            []VoterEntry `json:"additions,omitempty"`
+	AnchorFinalityQuorum uint32       `json:"anchor_finality_quorum,omitempty"`
+	NotBeforeL2Block     uint64       `json:"not_before_l2_block"`
 }
 
 // MinAuthorityChangeDelayL2Blocks is the smallest authority change delay
