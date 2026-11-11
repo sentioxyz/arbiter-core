@@ -34,6 +34,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		AuthorityThreshold:            m.GetAuthorityThreshold(),
 		MembershipLeaseL2Blocks:       m.GetMembershipLeaseL2Blocks(),
 		PromotionAckDeltaSnapshot:     m.GetPromotionAckDeltaSnapshot(),
+		SnapshotQueryTracks:           m.GetSnapshotQueryTracks(),
 	}
 }
 
@@ -64,6 +65,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		AuthorityThreshold:            v.AuthorityThreshold,
 		MembershipLeaseL2Blocks:       v.MembershipLeaseL2Blocks,
 		PromotionAckDeltaSnapshot:     v.PromotionAckDeltaSnapshot,
+		SnapshotQueryTracks:           v.SnapshotQueryTracks,
 	}
 }
 

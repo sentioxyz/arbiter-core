@@ -61,6 +61,7 @@ go_test(
         "settle_golden_test.go",
         "settle_test.go",
         "snapshot_query_abort_test.go",
+        "snapshot_query_tracks_test.go",
         "snode_messages_test.go",
         "stage3_golden_test.go",
         "stage3_test.go",

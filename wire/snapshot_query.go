@@ -784,6 +784,9 @@ type AcquireSnapshotQueryRequest struct {
 	StatementID   string `json:"statement_id"`
 	RequestID     string `json:"request_id"`
 	ControlJWS    string `json:"control_jws"`
+	// TargetTableID is the query's target, signed by a v2 control token. It
+	// is empty, and the token is v1, on a network without tracks.
+	TargetTableID string `json:"target_table_id,omitempty"`
 }
 
 // AcquireSnapshotQueryRequestToPB converts the complete new-lane record without hashing or authenticating it.
@@ -795,6 +798,7 @@ func AcquireSnapshotQueryRequestToPB(v AcquireSnapshotQueryRequest) *pb.AcquireS
 		StatementId:   v.StatementID,
 		RequestId:     v.RequestID,
 		ControlJws:    v.ControlJWS,
+		TargetTableId: v.TargetTableID,
 	}
 }
 
@@ -807,6 +811,7 @@ func AcquireSnapshotQueryRequestFromPB(m *pb.AcquireSnapshotQueryRequest) Acquir
 		StatementID:   m.GetStatementId(),
 		RequestID:     m.GetRequestId(),
 		ControlJWS:    m.GetControlJws(),
+		TargetTableID: m.GetTargetTableId(),
 	}
 }
 
@@ -820,6 +825,9 @@ type GetSnapshotQueryReservationRequest struct {
 	ControlJWS        string `json:"control_jws"`
 	ReservationID     string `json:"reservation_id"`
 	FencingGeneration uint64 `json:"fencing_generation"`
+	// TargetTableID is the query's target, signed by a v2 control token. It
+	// is empty, and the token is v1, on a network without tracks.
+	TargetTableID string `json:"target_table_id,omitempty"`
 }
 
 // GetSnapshotQueryReservationRequestToPB converts the complete new-lane record without hashing or authenticating it.
@@ -833,6 +841,7 @@ func GetSnapshotQueryReservationRequestToPB(v GetSnapshotQueryReservationRequest
 		ControlJws:        v.ControlJWS,
 		ReservationId:     v.ReservationID,
 		FencingGeneration: v.FencingGeneration,
+		TargetTableId:     v.TargetTableID,
 	}
 }
 
@@ -847,6 +856,7 @@ func GetSnapshotQueryReservationRequestFromPB(m *pb.GetSnapshotQueryReservationR
 		ControlJWS:        m.GetControlJws(),
 		ReservationID:     m.GetReservationId(),
 		FencingGeneration: m.GetFencingGeneration(),
+		TargetTableID:     m.GetTargetTableId(),
 	}
 }
 
@@ -860,6 +870,9 @@ type ReleaseSnapshotQueryRequest struct {
 	ControlJWS        string `json:"control_jws"`
 	ReservationID     string `json:"reservation_id"`
 	FencingGeneration uint64 `json:"fencing_generation"`
+	// TargetTableID is the query's target, signed by a v2 control token. It
+	// is empty, and the token is v1, on a network without tracks.
+	TargetTableID string `json:"target_table_id,omitempty"`
 }
 
 // ReleaseSnapshotQueryRequestToPB converts the complete new-lane record without hashing or authenticating it.
@@ -873,6 +886,7 @@ func ReleaseSnapshotQueryRequestToPB(v ReleaseSnapshotQueryRequest) *pb.ReleaseS
 		ControlJws:        v.ControlJWS,
 		ReservationId:     v.ReservationID,
 		FencingGeneration: v.FencingGeneration,
+		TargetTableId:     v.TargetTableID,
 	}
 }
 
@@ -887,6 +901,7 @@ func ReleaseSnapshotQueryRequestFromPB(m *pb.ReleaseSnapshotQueryRequest) Releas
 		ControlJWS:        m.GetControlJws(),
 		ReservationID:     m.GetReservationId(),
 		FencingGeneration: m.GetFencingGeneration(),
+		TargetTableID:     m.GetTargetTableId(),
 	}
 }
 

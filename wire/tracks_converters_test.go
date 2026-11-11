@@ -4,7 +4,10 @@ import (
 	"reflect"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/sentioxyz/arbiter-core"
+	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 )
 
 // TestConsensusParamsUpdateCarriesTracksEnabled: the converters copy the tracks
@@ -180,4 +183,51 @@ func TestConsensusParamsUpdateCarriesTableAdmissionRulesVersion(t *testing.T) {
 		t.Fatalf("update round trip\n got %+v\nwant %+v", got, u)
 	}
 	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}
+
+// TestConsensusParamsUpdateCarriesSnapshotQueryTracks: the converters copy the
+// track-aware snapshot-query parameter both ways, and an update without it
+// encodes exactly as before the field existed.
+func TestConsensusParamsUpdateCarriesSnapshotQueryTracks(t *testing.T) {
+	u := legacyGoldenUpdate()
+	if ConsensusParamsUpdateToPB(u).GetSnapshotQueryTracks() {
+		t.Fatal("an update without the parameter set snapshot_query_tracks")
+	}
+	u.TracksEnabled, u.ManifestDeltaSnapshot, u.PromotionAckDeltaSnapshot, u.SnapshotQueryTracks = true, true, true, true
+	m := ConsensusParamsUpdateToPB(u)
+	if !m.GetSnapshotQueryTracks() {
+		t.Fatal("ConsensusParamsUpdateToPB dropped snapshot_query_tracks")
+	}
+	if got := ConsensusParamsUpdateFromPB(m); !reflect.DeepEqual(got, u) {
+		t.Fatalf("update round trip\n got %+v\nwant %+v", got, u)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}
+
+// TestSnapshotQueryControlRequestsCarryTargetTableID: the three control
+// requests copy target_table_id both ways, inside their Raft commands too,
+// and a request without one (v1 control) encodes exactly as before.
+func TestSnapshotQueryControlRequestsCarryTargetTableID(t *testing.T) {
+	acquire := AcquireSnapshotQueryRequest{NetworkID: "n", ClientAccount: "0xa", StatementID: "s", RequestID: "r", ControlJWS: "h.p.s"}
+	before, err := proto.Marshal(AcquireSnapshotQueryRequestToPB(acquire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := proto.Marshal(&pb.AcquireSnapshotQueryRequest{NetworkId: "n", ClientAccount: "0xa", StatementId: "s", RequestId: "r", ControlJws: "h.p.s"}); string(before) != string(after) {
+		t.Fatal("an acquire without a target does not encode as before")
+	}
+	acquire.TargetTableID = "tbl-1"
+	if got := AcquireSnapshotQueryRequestFromPB(AcquireSnapshotQueryRequestToPB(acquire)); got != acquire {
+		t.Fatalf("acquire round trip = %+v", got)
+	}
+	release := ReleaseSnapshotQueryRequest{NetworkID: "n", ClientAccount: "0xa", StatementID: "s", RequestID: "r", ControlJWS: "h.p.s", ReservationID: "res", FencingGeneration: 3, TargetTableID: "tbl-1"}
+	if got := ReleaseSnapshotQueryRequestFromPB(ReleaseSnapshotQueryRequestToPB(release)); got != release {
+		t.Fatalf("release round trip = %+v", got)
+	}
+	lookup := GetSnapshotQueryReservationRequest{NetworkID: "n", ClientAccount: "0xa", StatementID: "s", RequestID: "r", ControlJWS: "h.p.s", TargetTableID: "tbl-1"}
+	if got := GetSnapshotQueryReservationRequestFromPB(GetSnapshotQueryReservationRequestToPB(lookup)); got != lookup {
+		t.Fatalf("lookup round trip = %+v", got)
+	}
+	mustRoundTrip(t, Command{BeginSnapshotQuery: &BeginSnapshotQuery{Request: acquire}})
+	mustRoundTrip(t, Command{ReleaseSnapshotQuery: &ReleaseSnapshotQuery{Request: release}})
 }
