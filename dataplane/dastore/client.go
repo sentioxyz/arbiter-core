@@ -13,7 +13,10 @@ import (
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/sentioxyz/arbiter-core/transport"
 )
 
 // HolderID is the cluster-stable custody holder of every pin this client
@@ -38,6 +41,9 @@ type Config struct {
 	// PutAuthorizer, when set, attaches a put token to every Put. Nil sends
 	// puts without one.
 	PutAuthorizer PutAuthorizer
+	// TLS, when set, dials both services over TLS and requires the server
+	// to be a da identity of TLS.NetworkID. Nil dials in plaintext.
+	TLS *transport.ClientConfig
 }
 
 func (cfg Config) withDefaults() Config {
@@ -61,6 +67,8 @@ type Client struct {
 
 	limitsMu sync.Mutex
 	limits   *pb.StoreLimits
+
+	creds credentials.TransportCredentials
 }
 
 // New constructs a lazy payload-store client without performing I/O.
@@ -69,7 +77,18 @@ func New(cfg Config) (*Client, error) {
 	if cfg.DataAddr == "" && cfg.ControlAddr == "" {
 		return nil, fmt.Errorf("dastore: at least one of data_addr or control_addr is required")
 	}
-	return &Client{cfg: cfg}, nil
+	c := &Client{cfg: cfg, creds: insecure.NewCredentials()}
+	if cfg.TLS != nil {
+		r, err := cfg.TLS.NewClientReloader(transport.ReloaderOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("dastore: tls: %w", err)
+		}
+		c.creds, err = cfg.TLS.Credentials(r, transport.Expect{Roles: []transport.Role{transport.RoleDA}})
+		if err != nil {
+			return nil, fmt.Errorf("dastore: tls: %w", err)
+		}
+	}
+	return c, nil
 }
 
 // Close closes any connections opened by the client.
@@ -106,7 +125,7 @@ func (c *Client) dataConnection() (*grpc.ClientConn, error) {
 	if c.cfg.DataAddr == "" {
 		return nil, fmt.Errorf("dastore: data_addr is not configured")
 	}
-	conn, err := grpc.NewClient(c.cfg.DataAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(c.cfg.DataAddr, grpc.WithTransportCredentials(c.creds))
 	if err != nil {
 		return nil, fmt.Errorf("dastore: data connection %s: %w", c.cfg.DataAddr, err)
 	}
@@ -127,7 +146,7 @@ func (c *Client) controlConnection() (*grpc.ClientConn, error) {
 	if c.cfg.ControlAddr == "" {
 		return nil, fmt.Errorf("dastore: control_addr is not configured")
 	}
-	conn, err := grpc.NewClient(c.cfg.ControlAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(c.cfg.ControlAddr, grpc.WithTransportCredentials(c.creds))
 	if err != nil {
 		return nil, fmt.Errorf("dastore: control connection %s: %w", c.cfg.ControlAddr, err)
 	}

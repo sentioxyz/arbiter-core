@@ -12,6 +12,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+
+	"github.com/sentioxyz/arbiter-core/transport"
 )
 
 type Peer struct {
@@ -38,6 +40,11 @@ type Config struct {
 	MaxRecvMsgSize int
 	// Logger receives subscription diagnostics. Nil selects slog.Default().
 	Logger *slog.Logger
+	// TLS, when set, dials every peer over TLS, presents the configured
+	// client certificate and requires the server to be the voter the peer
+	// entry names (spiffe://sentio-network/<network_id>/voter/<peer id>).
+	// Nil dials in plaintext, as before.
+	TLS *transport.ClientConfig
 }
 
 func (cfg Config) withDefaults() Config {
@@ -70,6 +77,8 @@ type Client struct {
 	conns      map[string]*grpc.ClientConn
 	addrs      map[string]string
 	lastLeader string
+
+	tls *transport.Reloader
 }
 
 func New(cfg Config) (*Client, error) {
@@ -91,6 +100,15 @@ func New(cfg Config) (*Client, error) {
 		}
 		c.addrs[p.ID] = p.GRPCAddr
 		c.order = append(c.order, p.ID)
+	}
+	if cfg.TLS != nil {
+		r, err := cfg.TLS.NewClientReloader(transport.ReloaderOptions{
+			OnError: func(err error) { cfg.Logger.Warn("dataplane: reload TLS material", "err", err) },
+		})
+		if err != nil {
+			return nil, fmt.Errorf("dataplane: tls: %w", err)
+		}
+		c.tls = r
 	}
 	return c, nil
 }
@@ -116,8 +134,16 @@ func (c *Client) conn(id string) (*grpc.ClientConn, error) {
 	if !ok {
 		return nil, fmt.Errorf("dataplane: unknown peer %q", id)
 	}
+	creds := insecure.NewCredentials()
+	if c.tls != nil {
+		var err error
+		creds, err = c.cfg.TLS.Credentials(c.tls, transport.Expect{Roles: []transport.Role{transport.RoleVoter}, ID: id})
+		if err != nil {
+			return nil, fmt.Errorf("dataplane: tls for %s: %w", id, err)
+		}
+	}
 	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(creds),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(c.cfg.MaxRecvMsgSize)),
 	)
 	if err != nil {
