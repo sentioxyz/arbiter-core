@@ -12,6 +12,7 @@ go_library(
         "evict_node.go",
         "multisig.go",
         "payload.go",
+        "payload_release.go",
         "quarantine.go",
         "query_profile_activation.go",
         "settle.go",
@@ -52,6 +53,7 @@ go_test(
         "manifest_delta_snapshot_test.go",
         "membership_lease_test.go",
         "multisig_test.go",
+        "payload_release_test.go",
         "promotion_ack_delta_snapshot_test.go",
         "promotion_finality_test.go",
         "quarantine_test.go",
@@ -65,6 +67,7 @@ go_test(
         "table_admission_rules_test.go",
         "tracks_golden_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":authority"],
     deps = [
         "//:arbiter-core",

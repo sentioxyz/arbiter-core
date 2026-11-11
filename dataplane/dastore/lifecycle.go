@@ -76,9 +76,12 @@ func (c *Client) Pin(ctx context.Context, purpose pb.PinPurpose, scopeKey string
 	return nil
 }
 
-// Release idempotently releases the exact custody key. authority_jws is
-// deliberately empty while the v1 store operates in channel-trust mode.
-func (c *Client) Release(ctx context.Context, purpose pb.PinPurpose, scopeKey string) error {
+// Release idempotently releases the exact custody key. authorityJWS is the
+// da.proto ReleasePinsRequest.authority_jws, signed by the caller for this
+// key (authority.Signer.SignPayloadRelease with HolderID); empty sends the
+// request in channel-trust form. A failed call is not retried here: a
+// later retry signs a fresh token with a higher release_seq.
+func (c *Client) Release(ctx context.Context, purpose pb.PinPurpose, scopeKey, authorityJWS string) error {
 	conn, err := c.controlConnection()
 	if err != nil {
 		return err
@@ -91,6 +94,7 @@ func (c *Client) Release(ctx context.Context, purpose pb.PinPurpose, scopeKey st
 			Purpose:  purpose,
 			ScopeKey: scopeKey,
 		},
+		AuthorityJws: authorityJWS,
 	})
 	if err != nil {
 		return fmt.Errorf("dastore: release %s/%s: %w", purpose, scopeKey, err)

@@ -16,7 +16,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const holderID = "arbiter"
+// HolderID is the cluster-stable custody holder of every pin this client
+// places (da.proto PinKey.holder_id). Release tokens bind it.
+const HolderID = "arbiter"
+
+const holderID = HolderID
 
 var errClientClosed = errors.New("dastore: client is closed")
 
