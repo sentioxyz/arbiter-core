@@ -2,8 +2,6 @@ module github.com/sentioxyz/arbiter-core
 
 go 1.26.10
 
-replace github.com/wasmerio/wasmer-go => github.com/sentioxyz/wasmer-go v1.0.5-0.20250206064014-c65a8b154145
-
 replace github.com/ClickHouse/ch-go => github.com/sentioxyz/ch-go v0.73.0-sentioxyz-20260629
 
 replace github.com/ClickHouse/clickhouse-go/v2 => github.com/sentioxyz/clickhouse-go/v2 v2.47.0-sentioxyz-20260629
