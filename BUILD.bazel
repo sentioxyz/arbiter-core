@@ -19,6 +19,7 @@ go_library(
         "anchor_finality.go",
         "consensus.go",
         "domains.go",
+        "raft_membership.go",
         "stage3.go",
         "table_registry.go",
         "types.go",
