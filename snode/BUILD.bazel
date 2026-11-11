@@ -95,6 +95,7 @@ go_test(
         "staged_prepare_test.go",
         "state_test.go",
         "tracks_test.go",
+        "unservable_run_test.go",
         "unsupported_type_refusal_test.go",
         "zero_row_parts_test.go",
     ],

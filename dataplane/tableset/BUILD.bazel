@@ -29,6 +29,7 @@ go_test(
         "owner_ch_test.go",
         "owner_test.go",
         "reconciler_ch_test.go",
+        "unservable_ch_test.go",
     ],
     embed = [":tableset"],
     deps = [

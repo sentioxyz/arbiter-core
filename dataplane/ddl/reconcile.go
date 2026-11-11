@@ -25,6 +25,18 @@ func FatalReconcileError(err error) bool {
 		errors.Is(err, payloadexec.ErrUnsupportedColumnType)
 }
 
+// UnservableTableError reports whether a reconcile error says that this
+// binary cannot build the declaration's protocol DDL at all: the partition
+// key or a column type is outside what it replays. It is a fact about one
+// table and this binary, not about the node's ClickHouse, so a reconciler
+// marks that table locally unservable (never Ready) and keeps serving the
+// others (arbiter-core#76); a binary that can build it picks it up on a
+// later pass. It is a subset of FatalReconcileError, which still decides for
+// configured genesis tables and every other error.
+func UnservableTableError(err error) bool {
+	return errors.Is(err, ErrPartitionFreeze) || errors.Is(err, payloadexec.ErrUnsupportedColumnType)
+}
+
 // ReconcileBackoff returns the delay before retry number consecutiveFailures.
 // It doubles from one second and is capped by the steady-state interval.
 func ReconcileBackoff(consecutiveFailures int, interval time.Duration) time.Duration {
