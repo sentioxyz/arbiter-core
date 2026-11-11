@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 
@@ -286,6 +287,40 @@ func assertResurrected(t *testing.T, conn clickhouse.Conn, fx replaceFixture) {
 	}
 }
 
+// assertCoveredAfterARestart checks the state a restart inside
+// old_parts_lifetime leaves after replaceAPartition on a server whose REPLACE
+// leaves a covering part (26.8): no retired part is active, the parts with
+// rows are exactly the replacements, and the covering part is active with no
+// rows (the window in which K2's "no active zero-row part" does not hold, and
+// every reader of active parts must leave it out). remove_empty_parts then
+// retires it, leaving exactly the replacements.
+func assertCoveredAfterARestart(t *testing.T, conn clickhouse.Conn, fx replaceFixture, when string) {
+	t.Helper()
+	active := activeParts(t, conn, fx.p.SafeDB, fx.table, "p0")
+	for _, retired := range fx.retired {
+		if _, back := partNamed(active, retired.Name); back {
+			t.Fatalf("%s: retired part %s is active: %v", when, retired.Name, names(active))
+		}
+	}
+	data := withRows(active)
+	if got, want := names(data), names(fx.replacements); !slices.Equal(got, want) {
+		t.Fatalf("%s: p0 parts with rows %v, want exactly the replacements %v", when, got, want)
+	}
+	if got, want := physHashes(data), physHashes(fx.replacements); !slices.Equal(got, want) {
+		t.Fatalf("%s: hash_of_all_files %v, want %v", when, got, want)
+	}
+	covers := zeroRowParts(active)
+	if len(covers) == 0 {
+		t.Fatalf("%s: no active zero-row covering part in p0 %v; ReplaceLeavesACoveringPart says this server leaves one", when, names(active))
+	}
+	t.Logf("%s: active zero-row covering parts %v", when, names(covers))
+	eventually(t, 3*time.Minute, when+": remove_empty_parts retires the covering part", func() (bool, string) {
+		now := activeParts(t, conn, fx.p.SafeDB, fx.table, "p0")
+		return len(zeroRowParts(now)) == 0, fmt.Sprintf("active p0 parts %v", names(now))
+	})
+	assertExactlyTheReplacements(t, conn, fx, when+", once the covering part is retired")
+}
+
 // assertExactlyTheReplacements checks that p0's active parts are exactly what
 // REPLACE published: the replacement parts by name and hash_of_all_files,
 // with their rows, and no zero-row part (clarification K2).
@@ -339,16 +374,23 @@ func assertNotDetached(t *testing.T, conn clickhouse.Conn, fx replaceFixture) {
 // and a graceful shutdown (a pod deletion's SIGTERM). A row whose outcome
 // changes on an image is a measured fact to record in Appendix B, not a test
 // to weaken.
+//
+// The outcome depends on the server (chtest.ReplaceLeavesACoveringPart):
+// 25.8 and 26.3 resurrect the retired parts; 26.8's REPLACE leaves an empty
+// part covering their block range, so they stay outdated, and the restart
+// shows that covering part active, with no rows, until remove_empty_parts
+// retires it (assertCoveredAfterARestart).
 func TestMechanics_ReplacePartitionResurrectsReplacedPartsAfterARestart(t *testing.T) {
 	requireMechanics(t)
 	addr := requireRestartable(t)
+	resurrects := !chtest.ReplaceLeavesACoveringPart(t, chtest.Open(t, addr))
 	for _, tc := range []struct {
 		name            string
 		kind            restartKind
 		wantResurrected bool
 	}{
-		{name: "abrupt", kind: restartAbrupt, wantResurrected: true},
-		{name: "graceful", kind: restartGraceful, wantResurrected: true},
+		{name: "abrupt", kind: restartAbrupt, wantResurrected: resurrects},
+		{name: "graceful", kind: restartGraceful, wantResurrected: resurrects},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conn := chtest.Open(t, addr)
@@ -361,7 +403,7 @@ func TestMechanics_ReplacePartitionResurrectsReplacedPartsAfterARestart(t *testi
 			if tc.wantResurrected {
 				assertResurrected(t, restarted, fx)
 			} else {
-				assertExactlyTheReplacements(t, restarted, fx, "after a "+tc.name+" restart")
+				assertCoveredAfterARestart(t, restarted, fx, "after a "+tc.name+" restart")
 			}
 		})
 	}
@@ -434,9 +476,27 @@ func TestMechanics_DropPartitionThenAttachDoesNotResurrect(t *testing.T) {
 // PART followed by DROP DETACHED PART is the alternative K2 measured as
 // equivalent. The zero-row check runs right after the drop, because the audit
 // lists system.parts right after its drops.
+//
+// On a server whose REPLACE leaves a covering part (26.8) a restart
+// resurrects no twin, so there is nothing to remove: the test pins that, and
+// that a second restart brings no retired part back either. The second
+// restart shows the covering part active again (remove_empty_parts only made
+// it outdated, and it is still on disk inside old_parts_lifetime), until
+// remove_empty_parts retires it again.
 func TestMechanics_DropPartOfAResurrectedTwinLeavesNoActivePartAndStaysDropped(t *testing.T) {
 	requireMechanics(t)
 	addr := requireRestartable(t)
+	if chtest.ReplaceLeavesACoveringPart(t, chtest.Open(t, addr)) {
+		fx := replaceAPartition(t, chtest.Open(t, addr), addr)
+		restarted := restartServer(t, addr, restartAbrupt)
+		waitLoaded(t, restarted, fx.p.SafeDB, fx.table)
+		assertCoveredAfterARestart(t, restarted, fx, "after an abrupt restart")
+		again := restartServer(t, addr, restartAbrupt)
+		waitLoaded(t, again, fx.p.SafeDB, fx.table)
+		assertCoveredAfterARestart(t, again, fx, "after a second abrupt restart")
+		assertNotDetached(t, again, fx)
+		return
+	}
 	for _, tc := range []struct {
 		name   string
 		remove func(t *testing.T, conn clickhouse.Conn, table, part string)

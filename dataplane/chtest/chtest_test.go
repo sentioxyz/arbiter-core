@@ -76,3 +76,17 @@ func TestOpenConnectsAsTheConfiguredUser(t *testing.T) {
 		}
 	}
 }
+
+func TestReplaceLeavesACoveringPart(t *testing.T) {
+	for version, want := range map[string]bool{"25.8.33.6": false, "26.3.37.3": false, "26.8.36.3": true, "27.1.1.1": true} {
+		got, err := replaceLeavesACoveringPart(version)
+		if err != nil || got != want {
+			t.Fatalf("%s: got %v, %v; want %v", version, got, err, want)
+		}
+	}
+	for _, version := range []string{"26.5.1.1", "x"} {
+		if _, err := replaceLeavesACoveringPart(version); err == nil {
+			t.Fatalf("%s: want an error", version)
+		}
+	}
+}

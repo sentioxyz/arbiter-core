@@ -136,8 +136,8 @@ type ScannedPart struct {
 // PartitionContentScan scans every active part of one logical partition of
 // db.table with chexec.ScanParts (the executor's row derivation) and returns
 // the partition's content root, payloadexec.SumPartRowLtHashes of the parts'
-// row LtHashes, with the parts in name order. A partition without parts has
-// the zero root and no parts.
+// row LtHashes, with the parts in name order. Parts without rows are left out.
+// A partition without parts that hold rows has the zero root and no parts.
 func PartitionContentScan(ctx context.Context, conn clickhouse.Conn, db, table string, sch payloadexec.TableSchema, partitionID string) (string, []ScannedPart, error) {
 	parts, err := ActiveParts(ctx, conn, db, table)
 	if err != nil {
@@ -145,6 +145,15 @@ func PartitionContentScan(ctx context.Context, conn clickhouse.Conn, db, table s
 	}
 	var names []string
 	for _, p := range PartsInLogicalPartition(parts, sch, partitionID) {
+		if p.Rows == 0 {
+			// An empty part adds nothing to the root, and the scan finds no
+			// row of it. ClickHouse 26.8 loads the empty part a REPLACE
+			// PARTITION leaves over the replaced block range as active after
+			// a restart, until remove_empty_parts retires it; an ATTACH
+			// PARTITION FROM in that window copies it; DROP PART leaves one
+			// on any version.
+			continue
+		}
 		names = append(names, p.Name)
 	}
 	if len(names) == 0 {

@@ -24,7 +24,7 @@ func (r *Role) safeMappings(ctx context.Context, safe, table string, sch payload
 	if err != nil {
 		return safePartMappings{}, err
 	}
-	after = partsInLogicalPartition(after, sch, cmd.PartitionID)
+	after = partsWithRows(partsInLogicalPartition(after, sch, cmd.PartitionID))
 	names := make([]string, 0, len(after))
 	infoByName := make(map[string]partInfo, len(after))
 	for _, p := range after {

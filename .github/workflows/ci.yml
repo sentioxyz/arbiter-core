@@ -160,11 +160,24 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted]
     timeout-minutes: 60
+    # 26.3 is what devnet2 and testnet-v2 run; 26.8 is the next server.
+    # REPLACE PARTITION's restart behaviour differs between them
+    # (arbiter-core#88), so both lanes must pass.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ch_image: clickhouse/clickhouse-server:26.3.37.3
+            ch_version: "26.3.37.3"
+          - ch_image: clickhouse/clickhouse-server:26.8.36.3
+            ch_version: "26.8.36.3"
+    env:
+      ARBITER_CI_LANE: ch${{ matrix.ch_version }}
     steps:
       - uses: actions/checkout@v4
       - uses: bazelbuild/setup-bazelisk@v3
-      - name: ClickHouse mechanics on upstream 26.3.37.3
-        run: bash scripts/ci/clickhouse-mechanics.sh clickhouse/clickhouse-server:26.3.37.3 26.3.37.3
+      - name: ClickHouse mechanics on upstream ${{ matrix.ch_version }}
+        run: bash scripts/ci/clickhouse-mechanics.sh ${{ matrix.ch_image }} ${{ matrix.ch_version }}
       - name: stop the mechanics pair
         if: always()
         run: bash scripts/ci/clickhouse-mechanics.sh --cleanup
@@ -178,11 +191,21 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted]
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ch_image: clickhouse/clickhouse-server:26.3.37.3
+            ch_version: "26.3.37.3"
+          - ch_image: clickhouse/clickhouse-server:26.8.36.3
+            ch_version: "26.8.36.3"
+    env:
+      ARBITER_CI_LANE: ch${{ matrix.ch_version }}
     steps:
       - uses: actions/checkout@v4
       - uses: bazelbuild/setup-bazelisk@v3
-      - name: member confinement on upstream 26.3.37.3
-        run: bash scripts/ci/clickhouse-member-confinement.sh clickhouse/clickhouse-server:26.3.37.3 26.3.37.3
+      - name: member confinement on upstream ${{ matrix.ch_version }}
+        run: bash scripts/ci/clickhouse-member-confinement.sh ${{ matrix.ch_image }} ${{ matrix.ch_version }}
       - name: stop the confinement servers
         if: always()
         run: bash scripts/ci/clickhouse-member-confinement.sh --cleanup

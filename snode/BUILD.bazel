@@ -99,6 +99,7 @@ go_test(
         "unservable_run_test.go",
         "unsupported_type_refusal_test.go",
         "zero_row_parts_test.go",
+        "zero_row_safe_parts_test.go",
     ],
     embed = [":snode"],
     embedsrcs = ["staged.go"],

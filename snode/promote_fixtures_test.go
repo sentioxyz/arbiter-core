@@ -160,7 +160,8 @@ func assertExactSafePartMappings(t *testing.T, ctx context.Context, role *Role, 
 
 func assertCompleteSafeInventory(t *testing.T, ctx context.Context, role *Role, schema payloadexec.TableSchema, partitionID string, mappings []arbiter.SafePartMapping) {
 	t.Helper()
-	parts := partsInLogicalPartition(activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, CHTableName(schema.TableID)), schema, partitionID)
+	// The inventory leaves out an active part without rows (partsWithRows).
+	parts := partsWithRows(partsInLogicalPartition(activePartsMust(t, ctx, role.d.Conn, role.cfg.SafeDatabase, CHTableName(schema.TableID)), schema, partitionID))
 	if len(mappings) != len(parts) {
 		t.Fatalf("complete inventory has %d parts, active safe partition has %d", len(mappings), len(parts))
 	}

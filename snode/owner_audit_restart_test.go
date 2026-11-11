@@ -96,8 +96,15 @@ func waitWritableS(t *testing.T, ctx context.Context, conn clickhouse.Conn, db, 
 // watcher sees the start time move and the restart pass audits the table. Repair
 // mode drops the twin, the rows are back and the third promotion goes through;
 // report mode drops nothing and reports the twin.
+//
+// On a server whose REPLACE leaves a covering part (26.8,
+// chtest.ReplaceLeavesACoveringPart) the restart resurrects nothing; it shows
+// that covering part active with no rows instead, which the audit must leave
+// out: both modes find the partition clean, and the third promotion, inside
+// the window in which the covering part is active, goes through.
 func TestOwnerAuditRepairsResurrectedPartsAcrossAClickHouseRestart(t *testing.T) {
 	conn := requireRestartableCHS(t)
+	resurrects := !chtest.ReplaceLeavesACoveringPart(t, conn)
 	for _, mode := range []OwnerAuditMode{OwnerAuditRepair, OwnerAuditReport} {
 		t.Run(string(mode), func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -123,6 +130,44 @@ func TestOwnerAuditRepairsResurrectedPartsAcrossAClickHouseRestart(t *testing.T)
 			})
 
 			stats := f.role.OwnerAuditStats()
+			if !resurrects {
+				var covers []string
+				for _, p := range f.safeParts(ctx) {
+					if p.Rows == 0 {
+						covers = append(covers, p.Name)
+					}
+				}
+				if len(covers) == 0 {
+					t.Fatal("no active zero-row covering part right after the restart; the audit's window is not exercised (see M3)")
+				}
+				if stats.DroppedTwins != 0 || len(stats.Unclean) != 0 {
+					t.Fatalf("stats = %+v, want a clean audit: the active covering parts %v hold no rows", stats, covers)
+				}
+				if got := f.safeRows(ctx); got != 4 {
+					t.Fatalf("safe rows after the restart = %d, want 4", got)
+				}
+				if !f.role.OwnerAuditClean(f.schema.TableID) {
+					t.Fatal("a covering part held the table")
+				}
+				waitWritableS(t, ctx, conn, f.role.cfg.UnsafeDatabase, f.table())
+				third := f.submit(ctx, 3)
+				if err := f.promote(ctx, 3, third); err != nil {
+					t.Fatalf("third promotion with an active covering part: %v", err)
+				}
+				if got := f.safeRows(ctx); got != 6 {
+					t.Fatalf("safe rows after the third promotion = %d, want 6", got)
+				}
+				thirdAck := f.lastAck()
+				assertCompleteSafeInventory(t, ctx, f.role, f.schema, auditPartitionS, thirdAck.SafePartitionParts)
+				for _, m := range thirdAck.SafePartitionParts {
+					for _, p := range f.safeParts(ctx) {
+						if p.Name == m.SafePartName && p.Rows == 0 {
+							t.Fatalf("the acknowledged inventory names the empty part %s", p.Name)
+						}
+					}
+				}
+				return
+			}
 			switch mode {
 			case OwnerAuditRepair:
 				if stats.DroppedTwins != 1 || len(stats.Unclean) != 0 {

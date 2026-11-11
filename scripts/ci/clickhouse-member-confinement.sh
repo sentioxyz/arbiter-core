@@ -26,7 +26,9 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "${repo_root}"
 
-suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
+# ARBITER_CI_LANE (for example the image's version) keeps the containers of
+# two matrix lanes of one run apart on a shared runner host.
+suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}${ARBITER_CI_LANE:+-${ARBITER_CI_LANE}}"
 network="arbiter-core-member-${suffix}"
 confined="arbiter-core-member-confined-${suffix}"
 peer="arbiter-core-member-peer-${suffix}"
