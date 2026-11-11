@@ -38,6 +38,8 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		CustodyFrontier:               m.GetCustodyFrontier(),
 		OperationsAuthorityAddresses:  mapSlice(m.GetOperationsAuthorityAddresses(), func(address string) string { return address }),
 		HistoryRetainBlocks:           m.GetHistoryRetainBlocks(),
+		AuthorityChangeDelayL2Blocks:  m.GetAuthorityChangeDelayL2Blocks(),
+		PendingAuthorityChange:        PendingAuthorityChangeFromPB(m.GetPendingAuthorityChange()),
 	}
 }
 
@@ -72,6 +74,8 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		CustodyFrontier:               v.CustodyFrontier,
 		OperationsAuthorityAddresses:  mapSlice(v.OperationsAuthorityAddresses, func(address string) string { return address }),
 		HistoryRetainBlocks:           v.HistoryRetainBlocks,
+		AuthorityChangeDelayL2Blocks:  v.AuthorityChangeDelayL2Blocks,
+		PendingAuthorityChange:        PendingAuthorityChangeToPB(v.PendingAuthorityChange),
 	}
 }
 
@@ -258,4 +262,31 @@ func cloneBytes(b []byte) []byte {
 		return nil
 	}
 	return append([]byte(nil), b...)
+}
+
+// PendingAuthorityChangeFromPB copies a pending authority change; absent
+// stays nil.
+func PendingAuthorityChangeFromPB(m *pb.PendingAuthorityChange) *arbiter.PendingAuthorityChange {
+	if m == nil {
+		return nil
+	}
+	return &arbiter.PendingAuthorityChange{
+		AuthorityAddresses:           mapSlice(m.GetAuthorityAddresses(), func(address string) string { return address }),
+		AuthorityThreshold:           m.GetAuthorityThreshold(),
+		AuthorityChangeDelayL2Blocks: m.GetAuthorityChangeDelayL2Blocks(),
+		NotBeforeL2Block:             m.GetNotBeforeL2Block(),
+	}
+}
+
+// PendingAuthorityChangeToPB returns an independent transport message.
+func PendingAuthorityChangeToPB(v *arbiter.PendingAuthorityChange) *pb.PendingAuthorityChange {
+	if v == nil {
+		return nil
+	}
+	return &pb.PendingAuthorityChange{
+		AuthorityAddresses:           mapSlice(v.AuthorityAddresses, func(address string) string { return address }),
+		AuthorityThreshold:           v.AuthorityThreshold,
+		AuthorityChangeDelayL2Blocks: v.AuthorityChangeDelayL2Blocks,
+		NotBeforeL2Block:             v.NotBeforeL2Block,
+	}
 }

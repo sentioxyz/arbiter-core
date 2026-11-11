@@ -359,7 +359,45 @@ type ConsensusParamsUpdate struct {
 	// update, and afterwards every update carries a value at least as large
 	// (raise-only). The raise-only and carry rules are the FSM's.
 	HistoryRetainBlocks uint64 `json:"history_retain_blocks,omitempty"`
+	// AuthorityChangeDelayL2Blocks is the authority change delay D
+	// (arbiter#173 Slice 3), in L2 blocks of the committed table-registry
+	// cursor, not seconds: scale it to the L2's block time
+	// (RecommendedAuthorityChangeDelayL2Blocks is about a day at 2 s). 0, and
+	// omitted from the canonical form so every earlier digest is unchanged,
+	// means never set. Once committed, AuthorityAddresses, AuthorityThreshold
+	// and this field change only by executing a PendingAuthorityChange whose
+	// NotBeforeL2Block the committed cursor has reached;
+	// OperationsAuthorityAddresses and every other field change at once.
+	// authority.NormalizeConsensusParamsUpdate refuses a value below
+	// MinAuthorityChangeDelayL2Blocks and one without an AuthorityThreshold
+	// of at least 2 and a TableRegistry in the same update; the activation,
+	// carry, propose / execute / cancel and genesis rules are the FSM's.
+	AuthorityChangeDelayL2Blocks uint64 `json:"authority_change_delay_l2_blocks,omitempty"`
+	// PendingAuthorityChange is the proposed change of the delayed authority
+	// fields, absent (and omitted from the canonical form) when none is
+	// pending. It needs AuthorityChangeDelayL2Blocks in the same update.
+	PendingAuthorityChange *PendingAuthorityChange `json:"pending_authority_change,omitempty"`
 }
+
+// PendingAuthorityChange is a proposed change of the delayed authority fields
+// (ConsensusParamsUpdate.PendingAuthorityChange): the complete target
+// authority set, threshold and delay, and the earliest committed
+// table-registry cursor block at which an update may execute it.
+type PendingAuthorityChange struct {
+	AuthorityAddresses           []string `json:"authority_addresses"`
+	AuthorityThreshold           uint32   `json:"authority_threshold"`
+	AuthorityChangeDelayL2Blocks uint64   `json:"authority_change_delay_l2_blocks"`
+	NotBeforeL2Block             uint64   `json:"not_before_l2_block"`
+}
+
+// MinAuthorityChangeDelayL2Blocks is the smallest authority change delay
+// authority.NormalizeConsensusParamsUpdate accepts (about two hours on a 2 s
+// L2), low enough to test on a devnet. It is a floor, not a recommendation.
+const MinAuthorityChangeDelayL2Blocks uint64 = 3600
+
+// RecommendedAuthorityChangeDelayL2Blocks is the documented default delay:
+// about one day on a 2 s L2. Scale it to the L2's block time.
+const RecommendedAuthorityChangeDelayL2Blocks uint64 = 43200
 
 // EvictNodeCommand is the canonical signing form of an authority-signed
 // eviction (housegate spec 2026-10-10 §6.5); its wire form is
