@@ -178,6 +178,31 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)
 	}
 	cmd.Voters, cmd.AnchorFinality = voters, anchorFinality
+	// pending_voter_change (arbiter#223): static rules; whether each
+	// addition really adds, the quorum target lowers, and the propose /
+	// execute / cancel and carry rules compare two parameters and are the
+	// FSM's.
+	if cmd.PendingVoterChange != nil {
+		switch {
+		case cmd.AuthorityChangeDelayL2Blocks == 0:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_voter_change requires authority_change_delay_l2_blocks in the same update")
+		case cmd.AnchorFinality == nil:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_voter_change requires anchor_finality in the same update")
+		}
+		pending := *cmd.PendingVoterChange
+		additions, err := normalizeVoters(pending.Additions, MessageContext{NetworkID: cmd.NetworkID, GenesisSnapshotID: cmd.GenesisSnapshotID})
+		if err != nil {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_voter_change additions: %w", err)
+		}
+		switch {
+		case len(additions) == 0 && pending.AnchorFinalityQuorum == 0:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_voter_change must add a voter or name a lowered anchor_finality_quorum")
+		case pending.NotBeforeL2Block == 0:
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: pending_voter_change needs a not_before_l2_block")
+		}
+		pending.Additions = additions
+		cmd.PendingVoterChange = &pending
+	}
 	stage3, err := normalizeStage3(cmd.Stage3, cmd.TracksEnabled, siIndexers)
 	if err != nil {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: %w", err)

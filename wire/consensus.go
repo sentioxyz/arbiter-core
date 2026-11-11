@@ -41,6 +41,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		AuthorityChangeDelayL2Blocks:  m.GetAuthorityChangeDelayL2Blocks(),
 		PendingAuthorityChange:        PendingAuthorityChangeFromPB(m.GetPendingAuthorityChange()),
 		AccountBudget:                 AccountBudgetParamsFromPB(m.GetAccountBudget()),
+		PendingVoterChange:            PendingVoterChangeFromPB(m.GetPendingVoterChange()),
 	}
 }
 
@@ -78,6 +79,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		AuthorityChangeDelayL2Blocks:  v.AuthorityChangeDelayL2Blocks,
 		PendingAuthorityChange:        PendingAuthorityChangeToPB(v.PendingAuthorityChange),
 		AccountBudget:                 AccountBudgetParamsToPB(v.AccountBudget),
+		PendingVoterChange:            PendingVoterChangeToPB(v.PendingVoterChange),
 	}
 }
 
@@ -290,6 +292,30 @@ func PendingAuthorityChangeToPB(v *arbiter.PendingAuthorityChange) *pb.PendingAu
 		AuthorityThreshold:           v.AuthorityThreshold,
 		AuthorityChangeDelayL2Blocks: v.AuthorityChangeDelayL2Blocks,
 		NotBeforeL2Block:             v.NotBeforeL2Block,
+	}
+}
+
+// PendingVoterChangeFromPB copies a pending voter change; absent stays nil.
+func PendingVoterChangeFromPB(m *pb.PendingVoterChange) *arbiter.PendingVoterChange {
+	if m == nil {
+		return nil
+	}
+	return &arbiter.PendingVoterChange{
+		Additions:            VoterEntriesFromPB(m.GetAdditions()),
+		AnchorFinalityQuorum: m.GetAnchorFinalityQuorum(),
+		NotBeforeL2Block:     m.GetNotBeforeL2Block(),
+	}
+}
+
+// PendingVoterChangeToPB returns an independent transport message.
+func PendingVoterChangeToPB(v *arbiter.PendingVoterChange) *pb.PendingVoterChange {
+	if v == nil {
+		return nil
+	}
+	return &pb.PendingVoterChange{
+		Additions:            VoterEntriesToPB(v.Additions),
+		AnchorFinalityQuorum: v.AnchorFinalityQuorum,
+		NotBeforeL2Block:     v.NotBeforeL2Block,
 	}
 }
 

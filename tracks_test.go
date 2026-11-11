@@ -48,6 +48,11 @@ func TestTracksCanonicalForms(t *testing.T) {
 			update + `,"account_budget":{"window_l2_blocks":1800,"max_statements":36000,"max_bytes":17179869184,"max_statements_total":360000,"max_bytes_total":137438953472}}`},
 		"enforced account budget update": {ConsensusParamsUpdate{NetworkID: "n", AccountBudget: &AccountBudgetParams{WindowL2Blocks: 1, MaxStatements: 1, MaxBytes: 1, MaxStatementsTotal: 1, MaxBytesTotal: 1, Enforce: true}},
 			update + `,"account_budget":{"window_l2_blocks":1,"max_statements":1,"max_bytes":1,"max_statements_total":1,"max_bytes_total":1,"enforce":true}}`},
+		"pending voter change update": {ConsensusParamsUpdate{NetworkID: "n", PendingVoterChange: &PendingVoterChange{
+			Additions: []VoterEntry{{VoterID: "v3", Ed25519Pubkey: []byte{3}, ConsentSig: "cc"}}, AnchorFinalityQuorum: 2, NotBeforeL2Block: 9}},
+			update + `,"pending_voter_change":{"additions":[{"voter_id":"v3","ed25519_pubkey":"Aw==","consent_sig":"cc"}],"anchor_finality_quorum":2,"not_before_l2_block":9}}`},
+		"pending voter change quorum only": {ConsensusParamsUpdate{NetworkID: "n", PendingVoterChange: &PendingVoterChange{AnchorFinalityQuorum: 2, NotBeforeL2Block: 9}},
+			update + `,"pending_voter_change":{"anchor_finality_quorum":2,"not_before_l2_block":9}}`},
 		"anchor finality quorum update": {ConsensusParamsUpdate{NetworkID: "n", PromotionFinalityGate: true,
 			Voters:         []VoterEntry{{VoterID: "v0", Ed25519Pubkey: []byte{1}, ConsentSig: "aa"}},
 			AnchorFinality: &AnchorFinalityParams{Quorum: 1, FinalityMode: "safe", L2ChainID: 8453, RegistryContract: "0x01"}},
