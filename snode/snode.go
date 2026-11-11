@@ -164,6 +164,7 @@ func New(cfg Config, d Deps) (*Role, error) {
 			Anchor: authority.AuthorityAnchor{
 				NetworkID: cfg.NetworkID, GenesisSnapshotID: anchorGenesis,
 				Epoch: cfg.AuthorityTrustEpoch, Addresses: cfg.AuthorityAddresses, Threshold: cfg.AuthorityTrustThreshold,
+				OperationsAddresses: cfg.AuthorityTrustOperationsAddresses,
 			},
 			StateDir: cfg.StateDir, PollInterval: cfg.AuthorityPollInterval, MaxTokenAge: authorityMaxTokenAge,
 		}, d.Logger)
@@ -173,7 +174,8 @@ func New(cfg Config, d Deps) (*Role, error) {
 		r.follower = follower
 		epoch, addrs, fork := follower.Current()
 		d.Logger.Info("snode follows the committed authority set",
-			"anchor_epoch", cfg.AuthorityTrustEpoch, "verified_epoch", epoch, "authority_addresses", addrs, "fork", fork)
+			"anchor_epoch", cfg.AuthorityTrustEpoch, "verified_epoch", epoch, "authority_addresses", addrs,
+			"operational_addresses", follower.OperationalAddresses(), "fork", fork)
 	}
 	r.ensureFn = r.ensureProtocolTablesMode
 	if cfg.protocolTables != ddl.ModeOff && d.Conn != nil {

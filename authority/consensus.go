@@ -41,22 +41,24 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if len(cmd.AuthorityAddresses) == 0 {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: authority addresses must be non-empty")
 	}
-	addresses := make([]string, len(cmd.AuthorityAddresses))
-	for i, address := range cmd.AuthorityAddresses {
-		if len(address) != 42 || !strings.EqualFold(address[:2], "0x") {
-			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: authority address %q must be a 0x-prefixed 20-byte hex address", address)
-		}
-		decoded, err := hex.DecodeString(address[2:])
-		if err != nil {
-			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: invalid authority address %q: %w", address, err)
-		}
-		if !slices.ContainsFunc(decoded, func(b byte) bool { return b != 0 }) {
-			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: zero authority address is not allowed")
-		}
-		addresses[i] = strings.ToLower(address)
+	addresses, err := normalizeUpdateAddresses("authority", cmd.AuthorityAddresses)
+	if err != nil {
+		return arbiter.ConsensusParamsUpdate{}, err
 	}
-	slices.Sort(addresses)
-	cmd.AuthorityAddresses = slices.Compact(addresses)
+	cmd.AuthorityAddresses = addresses
+	// operations_authority_addresses (arbiter#173 Slice 2): normalized the
+	// same way, empty stays nil (never set, off the canonical form), and
+	// disjoint from the governance set of the same update.
+	operations, err := normalizeUpdateAddresses("operations authority", cmd.OperationsAuthorityAddresses)
+	if err != nil {
+		return arbiter.ConsensusParamsUpdate{}, err
+	}
+	for _, address := range operations {
+		if _, found := slices.BinarySearch(cmd.AuthorityAddresses, address); found {
+			return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: operations authority address %s is also an authority address; the operations and governance sets must be disjoint", address)
+		}
+	}
+	cmd.OperationsAuthorityAddresses = operations
 	if int(cmd.AuthorityThreshold) > len(cmd.AuthorityAddresses) {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: authority_threshold %d exceeds the %d authority addresses", cmd.AuthorityThreshold, len(cmd.AuthorityAddresses))
 	}
@@ -130,6 +132,31 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	}
 	cmd.SIIndexers, cmd.Verifiers, cmd.Stage3 = siIndexers, verifiers, stage3
 	return cmd, nil
+}
+
+// normalizeUpdateAddresses returns a lowercase, sorted, duplicate-free copy
+// of one address list of an update (nil when empty), refusing anything but a
+// non-zero 0x-prefixed 20-byte hex address. kind names the list in errors.
+func normalizeUpdateAddresses(kind string, in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	addresses := make([]string, len(in))
+	for i, address := range in {
+		if len(address) != 42 || !strings.EqualFold(address[:2], "0x") {
+			return nil, fmt.Errorf("consensus params update: %s address %q must be a 0x-prefixed 20-byte hex address", kind, address)
+		}
+		decoded, err := hex.DecodeString(address[2:])
+		if err != nil {
+			return nil, fmt.Errorf("consensus params update: invalid %s address %q: %w", kind, address, err)
+		}
+		if !slices.ContainsFunc(decoded, func(b byte) bool { return b != 0 }) {
+			return nil, fmt.Errorf("consensus params update: zero %s address is not allowed", kind)
+		}
+		addresses[i] = strings.ToLower(address)
+	}
+	slices.Sort(addresses)
+	return slices.Compact(addresses), nil
 }
 
 // normalizeStage3 returns a validated copy of the stage-3 parameter whose

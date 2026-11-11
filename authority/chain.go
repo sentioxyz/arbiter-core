@@ -35,6 +35,11 @@ type AuthorityAnchor struct {
 	// when never set, which means one signer). An anchor at epoch 0, or at
 	// any epoch before the threshold was first set, leaves it 0.
 	Threshold uint32
+	// OperationsAddresses is the committed operations authority set in force
+	// at Epoch (arbiter#173 Slice 2), nil when it was not set yet. An anchor
+	// at epoch 0, or at any epoch before the set was first committed, leaves
+	// it nil.
+	OperationsAddresses []string
 }
 
 // SignedConsensusUpdate is one committed consensus update exactly as it was
@@ -57,8 +62,14 @@ type AuthorityChain struct {
 	// number of signers the next consensus update needs (0 means one). A
 	// chain persisted before thresholds existed reads as 0, which was the
 	// only value then.
-	Threshold    uint32   `json:"threshold,omitempty"`
-	UpdateHashes []string `json:"update_hashes,omitempty"`
+	Threshold uint32 `json:"threshold,omitempty"`
+	// OperationsAddresses is the committed operations authority set in force
+	// at Epoch: the only addresses operational commands (promotion, cleanup)
+	// verify against once set (arbiter#173 Slice 2). nil means not set yet,
+	// and operational commands verify against Addresses. A chain persisted
+	// before the set existed reads as nil, which was the only value then.
+	OperationsAddresses []string `json:"operations_addresses,omitempty"`
+	UpdateHashes        []string `json:"update_hashes,omitempty"`
 }
 
 // NewAuthorityChain starts a chain at anchor. The anchor's addresses are
@@ -76,7 +87,12 @@ func NewAuthorityChain(anchor AuthorityAnchor) (AuthorityChain, error) {
 	if int(anchor.Threshold) > len(addrs) {
 		return AuthorityChain{}, fmt.Errorf("authority anchor: threshold %d exceeds the %d authority addresses", anchor.Threshold, len(addrs))
 	}
-	return AuthorityChain{Anchor: anchor, Epoch: anchor.Epoch, Addresses: slices.Clone(addrs), Threshold: anchor.Threshold}, nil
+	ops, err := normalizeOperationsAddresses(anchor.OperationsAddresses, addrs)
+	if err != nil {
+		return AuthorityChain{}, fmt.Errorf("authority anchor: %w", err)
+	}
+	anchor.OperationsAddresses = ops
+	return AuthorityChain{Anchor: anchor, Epoch: anchor.Epoch, Addresses: slices.Clone(addrs), Threshold: anchor.Threshold, OperationsAddresses: slices.Clone(ops)}, nil
 }
 
 // SameAnchor reports whether c starts at anchor (addresses compared as a set).
@@ -85,8 +101,13 @@ func (c AuthorityChain) SameAnchor(anchor AuthorityAnchor) bool {
 	if err != nil {
 		return false
 	}
+	ops, err := normalizeOperationsAddresses(anchor.OperationsAddresses, addrs)
+	if err != nil {
+		return false
+	}
 	return c.Anchor.NetworkID == anchor.NetworkID && c.Anchor.GenesisSnapshotID == anchor.GenesisSnapshotID &&
-		c.Anchor.Epoch == anchor.Epoch && slices.Equal(c.Anchor.Addresses, addrs) && c.Anchor.Threshold == anchor.Threshold
+		c.Anchor.Epoch == anchor.Epoch && slices.Equal(c.Anchor.Addresses, addrs) && c.Anchor.Threshold == anchor.Threshold &&
+		slices.Equal(c.Anchor.OperationsAddresses, ops)
 }
 
 // Validate checks a chain read back from storage: a well-formed anchor and an
@@ -106,6 +127,9 @@ func (c AuthorityChain) Validate() error {
 	if int(c.Threshold) > len(addrs) {
 		return fmt.Errorf("authority chain: threshold %d exceeds the %d authority addresses", c.Threshold, len(addrs))
 	}
+	if _, err := normalizeOperationsAddresses(c.OperationsAddresses, addrs); err != nil {
+		return fmt.Errorf("authority chain: %w", err)
+	}
 	return nil
 }
 
@@ -119,8 +143,12 @@ func (c AuthorityChain) Validate() error {
 // bound) against the set and threshold in force before it (arbiter#173: the
 // old k authorizes every change of k); the chain then adopts its normalized
 // authority set and threshold. Once the chain's threshold is non-zero an
-// update that omits it is refused, as the Arbiter refuses it. A history that starts above the chain's epoch is a
-// gap and an error. On any error the returned chain is c, unchanged.
+// update that omits it is refused, as the Arbiter refuses it. The chain also
+// adopts the update's operations authority set (arbiter#173 Slice 2); once
+// it is set, an update that omits it is refused (the Arbiter's one-way rule),
+// and the normalizer has already refused one that overlaps the update's
+// authority set. A history that starts above the chain's epoch is a gap and
+// an error. On any error the returned chain is c, unchanged.
 //
 // The previous_params_digest of an update is not recomputed: that needs the
 // Arbiter's full parameter normalization. The epoch compare-and-swap plus one
@@ -132,7 +160,8 @@ func (c AuthorityChain) Extend(from uint64, updates []SignedConsensusUpdate) (Au
 	if from > c.Epoch && len(updates) > 0 {
 		return c, fmt.Errorf("authority history gap: it starts at epoch %d, the chain is at epoch %d", from, c.Epoch)
 	}
-	next := AuthorityChain{Anchor: c.Anchor, Epoch: c.Epoch, Addresses: slices.Clone(c.Addresses), Threshold: c.Threshold, UpdateHashes: slices.Clone(c.UpdateHashes)}
+	next := AuthorityChain{Anchor: c.Anchor, Epoch: c.Epoch, Addresses: slices.Clone(c.Addresses), Threshold: c.Threshold,
+		OperationsAddresses: slices.Clone(c.OperationsAddresses), UpdateHashes: slices.Clone(c.UpdateHashes)}
 	for i, su := range updates {
 		epoch := from + uint64(i)
 		if su.Update.ExpectedEpoch != epoch {
@@ -163,9 +192,15 @@ func (c AuthorityChain) Extend(from uint64, updates []SignedConsensusUpdate) (Au
 		if next.Threshold != 0 && normalized.AuthorityThreshold == 0 {
 			return c, fmt.Errorf("authority history: epoch %d: update omits authority_threshold after it was set", epoch)
 		}
+		if next.OperationsAddresses != nil && normalized.OperationsAuthorityAddresses == nil {
+			return c, fmt.Errorf("authority history: epoch %d: update omits operations_authority_addresses after it was set", epoch)
+		}
 		next.Addresses = slices.Clone(normalized.AuthorityAddresses)
 		if normalized.AuthorityThreshold != 0 {
 			next.Threshold = normalized.AuthorityThreshold
+		}
+		if normalized.OperationsAuthorityAddresses != nil {
+			next.OperationsAddresses = slices.Clone(normalized.OperationsAuthorityAddresses)
 		}
 		next.UpdateHashes = append(next.UpdateHashes, hash)
 		next.Epoch++
@@ -173,12 +208,23 @@ func (c AuthorityChain) Extend(from uint64, updates []SignedConsensusUpdate) (Au
 	return next, nil
 }
 
-// Validator returns a validator over the chain's current set for the
-// operational commands an SNode receives (promotion, cleanup): they are
+// Validator returns a validator over the chain's current operational set for
+// the operational commands an SNode receives (promotion, cleanup): they are
 // signed by the leader's one online key and stay single-signature whatever
-// the chain's governance threshold (arbiter#173 Slice 1).
+// the chain's governance threshold (arbiter#173 Slice 1), and once the
+// operations authority set is committed only its members sign them
+// (Slice 2).
 func (c AuthorityChain) Validator(maxTokenAge time.Duration) *Validator {
-	return &Validator{AllowedAddresses: addressSet(c.Addresses), MaxTokenAge: maxTokenAge, Threshold: 1}
+	return &Validator{AllowedAddresses: addressSet(c.OperationalAddresses()), MaxTokenAge: maxTokenAge, Threshold: 1}
+}
+
+// OperationalAddresses is the set operational commands verify against at the
+// chain's epoch: OperationsAddresses once set, Addresses before.
+func (c AuthorityChain) OperationalAddresses() []string {
+	if c.OperationsAddresses != nil {
+		return slices.Clone(c.OperationsAddresses)
+	}
+	return slices.Clone(c.Addresses)
 }
 
 // Context is the consensus context a token issued under the chain's current
@@ -241,6 +287,25 @@ func normalizeAuthorityAddresses(in []string) ([]string, error) {
 	}
 	slices.Sort(out)
 	return slices.Compact(out), nil
+}
+
+// normalizeOperationsAddresses normalizes an operations authority set like
+// normalizeAuthorityAddresses, except that empty stays nil (not set), and
+// refuses an address that is also in governance (already normalized).
+func normalizeOperationsAddresses(in, governance []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	ops, err := normalizeAuthorityAddresses(in)
+	if err != nil {
+		return nil, fmt.Errorf("operations %w", err)
+	}
+	for _, a := range ops {
+		if slices.Contains(governance, a) {
+			return nil, fmt.Errorf("operations authority address %s is also an authority address; the sets must be disjoint", a)
+		}
+	}
+	return ops, nil
 }
 
 func addressSet(addrs []string) map[string]bool {

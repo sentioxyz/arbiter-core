@@ -213,6 +213,18 @@ func TestConfigAuthorityTrustThreshold(t *testing.T) {
 	}
 }
 
+func TestConfigAuthorityTrustOperationsAddresses(t *testing.T) {
+	cfg := testConfigS(t)
+	cfg.AuthorityTrustOperationsAddresses = []string{"0xcccccccccccccccccccccccccccccccccccccccc"}
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "authority trust operations addresses require follow_consensus_authority") {
+		t.Fatalf("err = %v", err)
+	}
+	cfg.FollowConsensusAuthority = true
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func mustTestSigner(t *testing.T, seed string) *authority.Signer {
 	t.Helper()
 	hexKey := strings.Repeat("0", 62) + map[string]string{"a": "a1", "b": "b2"}[seed]
