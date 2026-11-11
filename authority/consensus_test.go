@@ -85,6 +85,9 @@ func TestConsensusUpdateBindsEveryField(t *testing.T) {
 		"custody frontier": func(c *arbiter.ConsensusParamsUpdate) {
 			c.TracksEnabled, c.ManifestDeltaSnapshot, c.PromotionAckDeltaSnapshot, c.SnapshotQueryTracks, c.CustodyFrontier = true, true, true, true, true
 		},
+		"history retention": func(c *arbiter.ConsensusParamsUpdate) {
+			c.TracksEnabled, c.ManifestDeltaSnapshot, c.PromotionAckDeltaSnapshot, c.SnapshotQueryTracks, c.CustodyFrontier, c.HistoryRetainBlocks = true, true, true, true, true, 64
+		},
 		"part-claim uniqueness": func(c *arbiter.ConsensusParamsUpdate) {
 			c.TracksEnabled, c.PartClaimUniqueness = true, true
 		},

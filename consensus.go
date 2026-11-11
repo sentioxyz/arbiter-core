@@ -349,6 +349,16 @@ type ConsensusParamsUpdate struct {
 	// FSM's (and the SNode follower's). To stop all operational signing,
 	// governance sets an address whose key nobody holds.
 	OperationsAuthorityAddresses []string `json:"operations_authority_addresses,omitempty"`
+	// HistoryRetainBlocks turns on history pruning and archival with a
+	// retention window of this many safe blocks: the leader archives sealed
+	// history below the prune horizon to the payload store
+	// (PIN_PURPOSE_ARCHIVE) and proposes wire.PruneHistory (Raft tag 46).
+	// Once committed, the arbiter writes snapshot v26. 0, and omitted from
+	// the canonical form so every earlier digest is unchanged, until one
+	// authority-signed update sets it; it needs CustodyFrontier in the same
+	// update, and afterwards every update carries a value at least as large
+	// (raise-only). The raise-only and carry rules are the FSM's.
+	HistoryRetainBlocks uint64 `json:"history_retain_blocks,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed

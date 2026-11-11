@@ -90,7 +90,7 @@ func stage3PromotionOutcomesFixture() PromotionOutcomes {
 				BaseSafeSnapshotID: "0xbase", BasePartitionRoot: "0xroot",
 				CandidateParts: []arbiter.PartRef{{TableID: "db.t", PartitionID: "p_a", PartRowLtHash: "0xrow-9", PartName: "a_9_9_0"}}},
 			StatementSeqs: []uint64{30, 31}, BlockSeq: 8, TrackIndexerID: &track, SourceNode: "snode-3",
-			AuthorityJWS: "h.p.s", AuthorityEpoch: 4, Acked: true, Ack: &ack, AckJWS: "a.b.c", AckEpoch: 5, CleanupPending: true,
+			AuthorityJWS: "h.p.s", AuthorityEpoch: 4, Acked: true, Ack: &ack, AckJWS: "a.b.c", AckEpoch: 5, CleanupPending: true, Pruned: true,
 		}},
 		NextAfterPromotionSeq: 9,
 	}

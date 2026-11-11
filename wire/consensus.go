@@ -37,6 +37,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		SnapshotQueryTracks:           m.GetSnapshotQueryTracks(),
 		CustodyFrontier:               m.GetCustodyFrontier(),
 		OperationsAuthorityAddresses:  mapSlice(m.GetOperationsAuthorityAddresses(), func(address string) string { return address }),
+		HistoryRetainBlocks:           m.GetHistoryRetainBlocks(),
 	}
 }
 
@@ -70,6 +71,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		SnapshotQueryTracks:           v.SnapshotQueryTracks,
 		CustodyFrontier:               v.CustodyFrontier,
 		OperationsAuthorityAddresses:  mapSlice(v.OperationsAuthorityAddresses, func(address string) string { return address }),
+		HistoryRetainBlocks:           v.HistoryRetainBlocks,
 	}
 }
 

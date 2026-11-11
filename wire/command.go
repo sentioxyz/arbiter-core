@@ -156,6 +156,20 @@ type RecordCustodyProgress struct {
 	Marks []CustodyMark
 }
 
+// PruneHistory mirrors pb.PruneHistoryCmd (Raft tag 46): the leader's prune
+// of the sealed history at or below ThroughBlockSeq, proposed unsigned only
+// after the history_retain_blocks parameter is committed and after the
+// leader has put the archive object (ArchiveRef, ArchiveSHA256) to the
+// payload store and pinned it under PIN_PURPOSE_ARCHIVE. Apply recomputes
+// the prune horizon and RecordSetDigest from committed state; those rules are
+// the arbiter FSM's.
+type PruneHistory struct {
+	ThroughBlockSeq uint64
+	ArchiveRef      string
+	ArchiveSHA256   string
+	RecordSetDigest string
+}
+
 // EvictNode mirrors pb.EvictNodeCmd. ExpectedRegistrationSeq and AuthorityJWS
 // are set only by the authority-signed EvictNode RPC after the activation.
 type EvictNode struct {
@@ -267,6 +281,9 @@ type Command struct {
 	// Committed custody frontier: Raft tag 45, proposed only after the
 	// custody_frontier parameter is committed.
 	RecordCustodyProgress *RecordCustodyProgress `json:",omitempty"`
+	// History pruning: Raft tag 46, proposed only after the
+	// history_retain_blocks parameter is committed.
+	PruneHistory *PruneHistory `json:",omitempty"`
 }
 
 // Encode marshals a Command into RaftCommand log-entry bytes.
@@ -477,6 +494,10 @@ func Encode(c Command) ([]byte, error) {
 		set++
 		out.Cmd = &pb.RaftCommand_RecordCustodyProgress{RecordCustodyProgress: RecordCustodyProgressToPB(*c.RecordCustodyProgress)}
 	}
+	if c.PruneHistory != nil {
+		set++
+		out.Cmd = &pb.RaftCommand_PruneHistory{PruneHistory: PruneHistoryToPB(*c.PruneHistory)}
+	}
 	if set != 1 {
 		return nil, fmt.Errorf("wire: exactly one command must be set, got %d", set)
 	}
@@ -586,6 +607,9 @@ func Decode(b []byte) (Command, error) {
 	case *pb.RaftCommand_RecordCustodyProgress:
 		v := RecordCustodyProgressFromPB(cmd.RecordCustodyProgress)
 		return Command{RecordCustodyProgress: &v}, nil
+	case *pb.RaftCommand_PruneHistory:
+		v := PruneHistoryFromPB(cmd.PruneHistory)
+		return Command{PruneHistory: &v}, nil
 
 	case *pb.RaftCommand_SubmitStatement:
 		return Command{SubmitStatement: &SubmitStatement{
@@ -684,4 +708,14 @@ func RecordCustodyProgressFromPB(m *pb.RecordCustodyProgressCmd) RecordCustodyPr
 		out.Marks = append(out.Marks, CustodyMark{BlockSeq: mark.GetBlockSeq(), Stage: CustodyStage(mark.GetStage())})
 	}
 	return out
+}
+
+// PruneHistoryToPB converts the history prune command.
+func PruneHistoryToPB(v PruneHistory) *pb.PruneHistoryCmd {
+	return &pb.PruneHistoryCmd{ThroughBlockSeq: v.ThroughBlockSeq, ArchiveRef: v.ArchiveRef, ArchiveSha256: v.ArchiveSHA256, RecordSetDigest: v.RecordSetDigest}
+}
+
+// PruneHistoryFromPB converts the history prune command.
+func PruneHistoryFromPB(m *pb.PruneHistoryCmd) PruneHistory {
+	return PruneHistory{ThroughBlockSeq: m.GetThroughBlockSeq(), ArchiveRef: m.GetArchiveRef(), ArchiveSHA256: m.GetArchiveSha256(), RecordSetDigest: m.GetRecordSetDigest()}
 }

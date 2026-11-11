@@ -47,6 +47,7 @@ go_test(
         "custody_frontier_test.go",
         "dispatch_from_test.go",
         "dispatch_table_set_test.go",
+        "history_retention_test.go",
         "known_keeper_replica_test.go",
         "legacy_command_golden_test.go",
         "manifest_owner_test.go",
