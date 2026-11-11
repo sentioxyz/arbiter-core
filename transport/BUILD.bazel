@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "transport",
+    srcs = [
+        "demux.go",
+        "grpc.go",
+        "identity.go",
+        "reloader.go",
+        "tlsconfig.go",
+    ],
+    importpath = "github.com/sentioxyz/arbiter-core/transport",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@org_golang_google_grpc//credentials",
+        "@org_golang_google_grpc//peer",
+    ],
+)
+
+go_test(
+    name = "transport_test",
+    srcs = [
+        "demux_test.go",
+        "identity_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    deps = [
+        ":transport",
+        "//transport/transporttest",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//health/grpc_health_v1",
+    ],
+)

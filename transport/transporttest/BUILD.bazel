@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "transporttest",
+    srcs = ["ca.go"],
+    importpath = "github.com/sentioxyz/arbiter-core/transport/transporttest",
+    visibility = ["//visibility:public"],
+    deps = ["//transport"],
+)

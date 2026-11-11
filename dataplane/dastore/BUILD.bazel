@@ -12,9 +12,11 @@ go_library(
     importpath = "github.com/sentioxyz/arbiter-core/dataplane/dastore",
     visibility = ["//visibility:public"],
     deps = [
+        "//transport",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/replay",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials",
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//metadata",
     ],
@@ -24,6 +26,7 @@ go_test(
     name = "dastore_test",
     srcs = [
         "client_test.go",
+        "client_tls_test.go",
         "fetch_test.go",
         "hash_silent_test.go",
         "lifecycle_test.go",
@@ -34,6 +37,8 @@ go_test(
     deps = [
         "//authority",
         "//dataplane/dastore/dastoretest",
+        "//transport",
+        "//transport/transporttest",
         "@com_github_sentioxyz_arbiter_proto//gen/pb",
         "@housegate//pkg/replay",
         "@org_golang_google_protobuf//reflect/protoreflect",
