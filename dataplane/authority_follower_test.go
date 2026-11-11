@@ -242,3 +242,54 @@ func TestNewAuthorityFollowerValidates(t *testing.T) {
 		}
 	}
 }
+
+// TestAuthorityFollowerAdoptsOperationsAuthority (arbiter#173 Slice 2): the
+// update that sets the operations set moves promotion authorization to it
+// alone on demand, and a governance revocation removes a key; the set
+// survives a restart.
+func TestAuthorityFollowerAdoptsOperationsAuthority(t *testing.T) {
+	ctx := context.Background()
+	g, o1, o2 := followSigner(t), followSigner(t), followSigner(t)
+	ops := func(by *authority.Signer, epoch uint64, set ...*authority.Signer) *pb.UpdateConsensusParamsCmd {
+		t.Helper()
+		u := arbiter.ConsensusParamsUpdate{
+			NetworkID: followNetwork, GenesisSnapshotID: followGenesis, ExpectedEpoch: epoch,
+			PreviousParamsDigest: "0xprev", MaxWriters: 1, AuthorityAddresses: []string{g.Address()},
+		}
+		for _, s := range set {
+			u.OperationsAuthorityAddresses = append(u.OperationsAuthorityAddresses, s.Address())
+		}
+		jws, err := by.SignConsensusParamsUpdateAt(u, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &pb.UpdateConsensusParamsCmd{Update: wire.ConsensusParamsUpdateToPB(u), AuthorityJws: jws}
+	}
+	h := &fakeHistory{}
+	dir := t.TempDir()
+	f := newFollower(t, dir, 0, g, h)
+	if got := f.OperationalAddresses(); len(got) != 1 || got[0] != strings.ToLower(g.Address()) {
+		t.Fatalf("before the set: %v", got)
+	}
+	h.updates = append(h.updates, ops(g, 0, o1, o2))
+	if _, err := f.AuthorizePromotion(ctx, promotion(), signedPromotion(t, o1, 1)); err != nil {
+		t.Fatalf("operations key after activation: %v", err)
+	}
+	if _, err := f.AuthorizePromotion(ctx, promotion(), signedPromotion(t, g, 1)); err == nil {
+		t.Fatal("governance key signed a promotion after activation")
+	}
+	h.updates = append(h.updates, ops(g, 1, o1))
+	if _, err := f.AuthorizePromotion(ctx, promotion(), signedPromotion(t, o2, 2)); err == nil {
+		t.Fatal("revoked operations key accepted")
+	}
+	if got := f.OperationalAddresses(); len(got) != 1 || got[0] != strings.ToLower(o1.Address()) {
+		t.Fatalf("after revocation: %v", got)
+	}
+	restarted := newFollower(t, dir, 0, g, h)
+	if _, err := restarted.AuthorizePromotion(ctx, promotion(), signedPromotion(t, o1, 2)); err != nil {
+		t.Fatalf("after restart: %v", err)
+	}
+	if _, err := restarted.AuthorizePromotion(ctx, promotion(), signedPromotion(t, o2, 2)); err == nil {
+		t.Fatal("revoked key accepted after restart")
+	}
+}

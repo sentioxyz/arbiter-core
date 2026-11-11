@@ -138,6 +138,15 @@ func (f *AuthorityFollower) Current() (epoch uint64, addresses []string, fork st
 	return f.chain.Epoch, append([]string(nil), f.chain.Addresses...), f.forked
 }
 
+// OperationalAddresses returns the set the followed chain verifies
+// operational commands against: the committed operations authority set once
+// set, the authority set before (arbiter#173 Slice 2).
+func (f *AuthorityFollower) OperationalAddresses() []string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.chain.OperationalAddresses()
+}
+
 // Refresh fetches the history from the anchor epoch and extends the chain.
 // A fork is persisted and returned as authority.ErrAuthorityFork; an answer
 // behind the chain is logged and ignored; ErrAuthorityHistoryUnimplemented

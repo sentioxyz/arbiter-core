@@ -88,6 +88,9 @@ func TestConsensusUpdateBindsEveryField(t *testing.T) {
 		"part-claim uniqueness": func(c *arbiter.ConsensusParamsUpdate) {
 			c.TracksEnabled, c.PartClaimUniqueness = true, true
 		},
+		"operations authority set": func(c *arbiter.ConsensusParamsUpdate) {
+			c.OperationsAuthorityAddresses = []string{"0xcccccccccccccccccccccccccccccccccccccccc"}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mutated := cmd

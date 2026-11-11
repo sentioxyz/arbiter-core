@@ -333,6 +333,22 @@ type ConsensusParamsUpdate struct {
 	// every update carries it and it is never lowered. The raise-only and
 	// carry rules are the FSM's.
 	CustodyFrontier bool `json:"custody_frontier,omitempty"`
+	// OperationsAuthorityAddresses is the operations authority set
+	// (arbiter#173 Slice 2): the addresses that sign operational commands,
+	// which the leader signs automatically with its one online key
+	// (promotion, cleanup, member lagging, verifier reselection, payload-store
+	// ReleasePins). Absent (nil), and omitted from the canonical form so every
+	// earlier digest is unchanged, until one governance-signed update sets it;
+	// operational commands verify against AuthorityAddresses until then. Once
+	// committed, operational commands verify only against it and governance
+	// commands only against AuthorityAddresses. authority.NormalizeConsensusParamsUpdate
+	// normalizes it like AuthorityAddresses and refuses an address that is
+	// also in the update's AuthorityAddresses, so an online key never counts
+	// toward the governance threshold; the one-way carry rule (once set, every
+	// update carries a non-empty set) and the never-at-genesis rule are the
+	// FSM's (and the SNode follower's). To stop all operational signing,
+	// governance sets an address whose key nobody holds.
+	OperationsAuthorityAddresses []string `json:"operations_authority_addresses,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed

@@ -64,6 +64,15 @@ type Config struct {
 	// threshold's activation must name it. It may be non-zero only with
 	// FollowConsensusAuthority and must not exceed len(AuthorityAddresses).
 	AuthorityTrustThreshold uint32
+	// AuthorityTrustOperationsAddresses is the committed operations authority
+	// set in force at AuthorityTrustEpoch (arbiter#173 Slice 2): empty when
+	// the anchor epoch is before the set was first committed, which is always
+	// the case at epoch 0. Once set, promotions and cleanups verify only
+	// against it, so an anchor moved past its activation must name it. It may
+	// be non-empty only with FollowConsensusAuthority and must be disjoint
+	// from AuthorityAddresses. A static allowlist (no following) lists the
+	// operations set in AuthorityAddresses instead.
+	AuthorityTrustOperationsAddresses []string
 	// FollowConsensusAuthority makes the SNode follow the committed authority
 	// set as a light client instead of a static allowlist: it verifies the
 	// arbiter's signed consensus history (GetConsensusHistory) from the
@@ -179,6 +188,9 @@ func (c *Config) validate() error {
 	}
 	if c.AuthorityTrustThreshold != 0 && !c.FollowConsensusAuthority {
 		errs = append(errs, errors.New("authority trust threshold requires follow_consensus_authority: a static allowlist has no threshold"))
+	}
+	if len(c.AuthorityTrustOperationsAddresses) != 0 && !c.FollowConsensusAuthority {
+		errs = append(errs, errors.New("authority trust operations addresses require follow_consensus_authority: a static allowlist lists the operations set as its authority addresses"))
 	}
 	if int(c.AuthorityTrustThreshold) > len(c.AuthorityAddresses) {
 		errs = append(errs, fmt.Errorf("authority trust threshold %d exceeds the %d authority addresses", c.AuthorityTrustThreshold, len(c.AuthorityAddresses)))

@@ -63,3 +63,24 @@ func TestConsensusParamsUpdateCarriesCustodyFrontier(t *testing.T) {
 	}
 	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
 }
+
+// TestConsensusParamsUpdateCarriesOperationsAuthority (arbiter#173 Slice 2):
+// the converters copy the operations set both ways; an empty set stays nil
+// and off the wire.
+func TestConsensusParamsUpdateCarriesOperationsAuthority(t *testing.T) {
+	u := legacyGoldenUpdate()
+	if m := ConsensusParamsUpdateToPB(u); m.GetOperationsAuthorityAddresses() != nil {
+		t.Fatal("an update without the set carried one")
+	}
+	u.OperationsAuthorityAddresses = []string{}
+	if m := ConsensusParamsUpdateToPB(u); m.GetOperationsAuthorityAddresses() != nil || ConsensusParamsUpdateFromPB(m).OperationsAuthorityAddresses != nil {
+		t.Fatal("an empty set must stay nil")
+	}
+	u.OperationsAuthorityAddresses = []string{"0xcccccccccccccccccccccccccccccccccccccccc"}
+	m := ConsensusParamsUpdateToPB(u)
+	if !reflect.DeepEqual(m.GetOperationsAuthorityAddresses(), u.OperationsAuthorityAddresses) ||
+		!reflect.DeepEqual(ConsensusParamsUpdateFromPB(m).OperationsAuthorityAddresses, u.OperationsAuthorityAddresses) {
+		t.Fatalf("set not carried: %v", m)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}
