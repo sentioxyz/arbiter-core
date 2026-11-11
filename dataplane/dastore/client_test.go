@@ -35,7 +35,7 @@ func TestClient_ClosePreventsReconnect(t *testing.T) {
 		!strings.Contains(err.Error(), "closed") {
 		t.Fatalf("put after close must fail without reconnecting, got %v", err)
 	}
-	if err := client.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_SEQUENCED, "1"); err == nil ||
+	if err := client.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_SEQUENCED, "1", ""); err == nil ||
 		!strings.Contains(err.Error(), "closed") {
 		t.Fatalf("release after close must fail without reconnecting, got %v", err)
 	}

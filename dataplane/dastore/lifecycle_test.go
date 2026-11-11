@@ -22,13 +22,13 @@ func TestPin_UnionsAndRelease(t *testing.T) {
 	if got := s.Pins()[key]; len(got) != 1 || got[0] != ref {
 		t.Fatalf("pin bookkeeping: %v", s.Pins())
 	}
-	if err := c.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_REPLAY, "7"); err != nil {
+	if err := c.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_REPLAY, "7", ""); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if _, ok := s.Pins()[key]; ok {
 		t.Fatal("release must drop the whole pin")
 	}
-	if err := c.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_REPLAY, "404"); err != nil {
+	if err := c.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_REPLAY, "404", ""); err != nil {
 		t.Fatalf("idempotent release: %v", err)
 	}
 }
@@ -95,13 +95,25 @@ func TestPin_ResponseRefMismatchFailsClosed(t *testing.T) {
 	}
 }
 
-func TestRelease_LeavesAuthorityJWSEmpty(t *testing.T) {
+func TestRelease_EmptyAuthorityJWSStaysEmpty(t *testing.T) {
 	s := dastoretest.New(t)
 	c := newClient(t, s)
-	if err := c.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_AUDIT, "1"); err != nil {
+	if err := c.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_AUDIT, "1", ""); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if jws := s.LastReleaseJWS(); jws != "" {
-		t.Fatalf("authority_jws must stay empty in v1, got %q", jws)
+		t.Fatalf("an unsigned release must send an empty authority_jws, got %q", jws)
+	}
+}
+
+func TestRelease_SendsAuthorityJWS(t *testing.T) {
+	s := dastoretest.New(t)
+	c := newClient(t, s)
+	const token = "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJKV1QifQ.e30.c2ln"
+	if err := c.Release(context.Background(), pb.PinPurpose_PIN_PURPOSE_REPLAY, "9", token); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if jws := s.LastReleaseJWS(); jws != token {
+		t.Fatalf("authority_jws = %q, want %q", jws, token)
 	}
 }
