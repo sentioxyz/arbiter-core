@@ -31,7 +31,7 @@ const TokenSetSeparator = "~"
 func (v *Validator) verifyThreshold(token string, one func(component string) (string, error)) ([]string, error) {
 	if v.Threshold <= 1 {
 		if strings.Contains(token, TokenSetSeparator) {
-			return nil, fmt.Errorf("authority token: a multi-signature token is not accepted at authority threshold 1")
+			return nil, tokenErrorf(ErrMalformedToken, "authority token: a multi-signature token is not accepted at authority threshold 1")
 		}
 		signer, err := one(token)
 		if err != nil {
@@ -40,7 +40,7 @@ func (v *Validator) verifyThreshold(token string, one func(component string) (st
 		return []string{signer}, nil
 	}
 	if len(v.AllowedAddresses) == 0 {
-		return nil, fmt.Errorf("authority allowlist is empty: refusing to authorize any command")
+		return nil, tokenErrorf(ErrSignerNotAllowed, "authority allowlist is empty: refusing to authorize any command")
 	}
 	if int(v.Threshold) > len(v.AllowedAddresses) {
 		return nil, fmt.Errorf("authority threshold %d exceeds the %d allowlisted addresses", v.Threshold, len(v.AllowedAddresses))
@@ -49,22 +49,22 @@ func (v *Validator) verifyThreshold(token string, one func(component string) (st
 	// Bound the work before recovering anything: distinct allowlisted signers
 	// can never outnumber the allowlist.
 	if len(components) > len(v.AllowedAddresses) {
-		return nil, fmt.Errorf("authority token: %d signatures exceed the %d allowlisted addresses", len(components), len(v.AllowedAddresses))
+		return nil, tokenErrorf(ErrMalformedToken, "authority token: %d signatures exceed the %d allowlisted addresses", len(components), len(v.AllowedAddresses))
 	}
 	if len(components) < int(v.Threshold) {
-		return nil, fmt.Errorf("authority token: %d signatures, authority threshold requires %d", len(components), v.Threshold)
+		return nil, tokenErrorf(ErrThresholdNotMet, "authority token: %d signatures, authority threshold requires %d", len(components), v.Threshold)
 	}
 	signers := make([]string, 0, len(components))
 	for i, component := range components {
 		if component == "" {
-			return nil, fmt.Errorf("authority token: signature %d is empty", i)
+			return nil, tokenErrorf(ErrMalformedToken, "authority token: signature %d is empty", i)
 		}
 		signer, err := one(component)
 		if err != nil {
 			return nil, fmt.Errorf("authority token signature %d: %w", i, err)
 		}
 		if i > 0 && signer <= signers[i-1] {
-			return nil, fmt.Errorf("authority token: signers must be distinct and in strictly ascending order (%s after %s)", signer, signers[i-1])
+			return nil, tokenErrorf(ErrMalformedToken, "authority token: signers must be distinct and in strictly ascending order (%s after %s)", signer, signers[i-1])
 		}
 		signers = append(signers, signer)
 	}
