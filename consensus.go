@@ -312,6 +312,17 @@ type ConsensusParamsUpdate struct {
 	// carries it and it is never lowered. The raise-only and carry rules are
 	// the FSM's.
 	PromotionAckDeltaSnapshot bool `json:"promotion_ack_delta_snapshot,omitempty"`
+	// SnapshotQueryTracks opens the snapshot-query lane on a network with
+	// tracks: the query belongs to the owner track of its target table, only
+	// that track's admission is fenced, and the control tokens are purpose
+	// housegate-snapshot-query-control-v2, which signs target_table_id. Once
+	// committed, the arbiter writes snapshot v24. False, and omitted from the
+	// canonical form so every earlier digest is unchanged, until one
+	// authority-signed update sets it; it needs TracksEnabled and
+	// PromotionAckDeltaSnapshot in the same update, and afterwards every
+	// update carries it and it is never lowered. The raise-only, carry and
+	// "after the tracks activation" rules are the FSM's.
+	SnapshotQueryTracks bool `json:"snapshot_query_tracks,omitempty"`
 }
 
 // EvictNodeCommand is the canonical signing form of an authority-signed
