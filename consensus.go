@@ -329,9 +329,10 @@ type ConsensusParamsUpdate struct {
 	// instead of re-asserting every block's holds. Once committed, the
 	// arbiter writes snapshot v25. False, and omitted from the canonical form
 	// so every earlier digest is unchanged, until one authority-signed update
-	// sets it; it needs SnapshotQueryTracks in the same update, and afterwards
-	// every update carries it and it is never lowered. The raise-only and
-	// carry rules are the FSM's.
+	// sets it; it needs PromotionAckDeltaSnapshot in the same update (not
+	// SnapshotQueryTracks: the snapshot-query lane is independent, and a
+	// network may set either first), and afterwards every update carries it
+	// and it is never lowered. The raise-only and carry rules are the FSM's.
 	CustodyFrontier bool `json:"custody_frontier,omitempty"`
 	// OperationsAuthorityAddresses is the operations authority set
 	// (arbiter#173 Slice 2): the addresses that sign operational commands,

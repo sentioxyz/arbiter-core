@@ -93,8 +93,12 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if cmd.SnapshotQueryTracks && (!cmd.TracksEnabled || !cmd.PromotionAckDeltaSnapshot) {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: snapshot_query_tracks requires tracks_enabled and promotion_ack_delta_snapshot in the same update")
 	}
-	if cmd.CustodyFrontier && !cmd.SnapshotQueryTracks {
-		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: custody_frontier requires snapshot_query_tracks in the same update")
+	// custody_frontier does not need snapshot_query_tracks: the two are
+	// unrelated, and the arbiter's v25 container carries no v24 field while
+	// the lane is unset. It builds on the v23 container, so it needs
+	// promotion_ack_delta_snapshot (and through it the whole delta chain).
+	if cmd.CustodyFrontier && !cmd.PromotionAckDeltaSnapshot {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: custody_frontier requires promotion_ack_delta_snapshot in the same update")
 	}
 	// authority_change_delay_l2_blocks and pending_authority_change
 	// (arbiter#173 Slice 3): static rules; the activation, carry and
