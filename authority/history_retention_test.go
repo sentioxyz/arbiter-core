@@ -14,6 +14,11 @@ func TestNormalizeConsensusParamsUpdateHistoryRetainBlocks(t *testing.T) {
 	if err != nil || got.HistoryRetainBlocks != 64 {
 		t.Fatalf("parameter with its prerequisite: %v, parameter %d", err, got.HistoryRetainBlocks)
 	}
+	noTracks := u
+	noTracks.SnapshotQueryTracks = false
+	if got, err := NormalizeConsensusParamsUpdate(noTracks); err != nil || got.HistoryRetainBlocks != 64 {
+		t.Fatalf("parameter without snapshot_query_tracks: %v, parameter %d", err, got.HistoryRetainBlocks)
+	}
 	const want = "consensus params update: history_retain_blocks requires custody_frontier in the same update"
 	noCustody := u
 	noCustody.CustodyFrontier = false
