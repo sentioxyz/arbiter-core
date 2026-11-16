@@ -36,6 +36,8 @@ func TestTracksCanonicalForms(t *testing.T) {
 			update + `,"tracks_enabled":true,"manifest_delta_snapshot":true,"promotion_ack_delta_snapshot":true,"snapshot_query_tracks":true}`},
 		"custody frontier update": {ConsensusParamsUpdate{NetworkID: "n", TracksEnabled: true, ManifestDeltaSnapshot: true, PromotionAckDeltaSnapshot: true, SnapshotQueryTracks: true, CustodyFrontier: true},
 			update + `,"tracks_enabled":true,"manifest_delta_snapshot":true,"promotion_ack_delta_snapshot":true,"snapshot_query_tracks":true,"custody_frontier":true}`},
+		"custody audit on quorum update": {ConsensusParamsUpdate{NetworkID: "n", CustodyFrontier: true, CustodyAuditOnQuorum: true},
+			update + `,"custody_frontier":true,"custody_audit_on_quorum":true}`},
 		"operations authority update": {ConsensusParamsUpdate{NetworkID: "n", CustodyFrontier: true, OperationsAuthorityAddresses: []string{"0x0c"}},
 			update + `,"custody_frontier":true,"operations_authority_addresses":["0x0c"]}`},
 		"empty operations authority update": {ConsensusParamsUpdate{NetworkID: "n", OperationsAuthorityAddresses: []string{}}, update + `}`},

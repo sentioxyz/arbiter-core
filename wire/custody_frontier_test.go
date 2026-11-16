@@ -84,3 +84,18 @@ func TestConsensusParamsUpdateCarriesOperationsAuthority(t *testing.T) {
 	}
 	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
 }
+
+// TestConsensusParamsUpdateCarriesCustodyAuditOnQuorum: the converters copy
+// the switch both ways; false stays off the wire.
+func TestConsensusParamsUpdateCarriesCustodyAuditOnQuorum(t *testing.T) {
+	u := legacyGoldenUpdate()
+	if ConsensusParamsUpdateToPB(u).GetCustodyAuditOnQuorum() {
+		t.Fatal("an update without the switch set it")
+	}
+	u.CustodyFrontier, u.CustodyAuditOnQuorum = true, true
+	m := ConsensusParamsUpdateToPB(u)
+	if !m.GetCustodyAuditOnQuorum() || !ConsensusParamsUpdateFromPB(m).CustodyAuditOnQuorum {
+		t.Fatalf("switch not carried: %v", m)
+	}
+	mustRoundTrip(t, Command{UpdateConsensusParams: &UpdateConsensusParams{Update: u, AuthorityJWS: "h.p.s"}})
+}

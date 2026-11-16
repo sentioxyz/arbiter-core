@@ -42,6 +42,7 @@ func ConsensusParamsUpdateFromPB(m *pb.ConsensusParamsUpdate) arbiter.ConsensusP
 		PendingAuthorityChange:        PendingAuthorityChangeFromPB(m.GetPendingAuthorityChange()),
 		AccountBudget:                 AccountBudgetParamsFromPB(m.GetAccountBudget()),
 		PendingVoterChange:            PendingVoterChangeFromPB(m.GetPendingVoterChange()),
+		CustodyAuditOnQuorum:          m.GetCustodyAuditOnQuorum(),
 	}
 }
 
@@ -80,6 +81,7 @@ func ConsensusParamsUpdateToPB(v arbiter.ConsensusParamsUpdate) *pb.ConsensusPar
 		PendingAuthorityChange:        PendingAuthorityChangeToPB(v.PendingAuthorityChange),
 		AccountBudget:                 AccountBudgetParamsToPB(v.AccountBudget),
 		PendingVoterChange:            PendingVoterChangeToPB(v.PendingVoterChange),
+		CustodyAuditOnQuorum:          v.CustodyAuditOnQuorum,
 	}
 }
 

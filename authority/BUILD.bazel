@@ -52,6 +52,7 @@ go_test(
         "consensus_test.go",
         "context_exact_test.go",
         "context_test.go",
+        "custody_audit_on_quorum_test.go",
         "custody_frontier_test.go",
         "da_archive_put_test.go",
         "da_put_test.go",

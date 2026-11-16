@@ -156,6 +156,9 @@ func NormalizeConsensusParamsUpdate(cmd arbiter.ConsensusParamsUpdate) (arbiter.
 	if cmd.HistoryRetainBlocks != 0 && !cmd.CustodyFrontier {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: history_retain_blocks requires custody_frontier in the same update")
 	}
+	if cmd.CustodyAuditOnQuorum && !cmd.CustodyFrontier {
+		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: custody_audit_on_quorum requires custody_frontier in the same update")
+	}
 	if !tableadmission.ValidRulesVersionParam(cmd.TableAdmissionRulesVersion) {
 		return arbiter.ConsensusParamsUpdate{}, fmt.Errorf("consensus params update: table_admission_rules_version %d is not 0 (rules v1) or a known version above 1 (at most %d)", cmd.TableAdmissionRulesVersion, tableadmission.LatestRulesVersion)
 	}

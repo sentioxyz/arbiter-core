@@ -401,6 +401,17 @@ type ConsensusParamsUpdate struct {
 	// that adds nothing and lowers nothing or has no NotBeforeL2Block; the
 	// propose / execute / cancel, carry and genesis rules are the FSM's.
 	PendingVoterChange *PendingVoterChange `json:"pending_voter_change,omitempty"`
+	// CustodyAuditOnQuorum lets a safe, unrejected block whose three-way
+	// quorum has latched reach the AUDIT custody stage
+	// (wire.RecordCustodyProgress) without every verifier of its set having
+	// recorded its byte-side scan: after the latch nothing replays the block,
+	// so its REPLAY hold has no use left. False, and omitted from the
+	// canonical form so every earlier digest is unchanged, until one
+	// authority-signed update sets it; it needs CustodyFrontier in the same
+	// update, and afterwards every update carries it and it is never lowered.
+	// The AUDIT rule, the raise-only and carry rules and the all-voters gate
+	// are the arbiter's.
+	CustodyAuditOnQuorum bool `json:"custody_audit_on_quorum,omitempty"`
 }
 
 // AccountBudgetParams bounds the signed statements admitted to the shared
