@@ -608,7 +608,7 @@ func waitLoaded(t *testing.T, conn clickhouse.Conn, db, table string) {
 // measured: every server runs a ClickHouse whose version has the expected
 // prefix, all the same one, and the log names the image, so a green run on
 // upstream 26.3.37.3 is never mistaken for one on the deployed
-// 26.3-lts-decimal512 image.
+// storage-integrity image, nor on upstream 26.8.37.168.
 func TestMechanics_ServerIsTheDeployedImage(t *testing.T) {
 	env := requireMechanics(t)
 	type server struct {

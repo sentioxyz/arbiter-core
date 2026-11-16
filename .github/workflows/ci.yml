@@ -169,8 +169,8 @@ jobs:
         include:
           - ch_image: clickhouse/clickhouse-server:26.3.37.3
             ch_version: "26.3.37.3"
-          - ch_image: clickhouse/clickhouse-server:26.8.36.3
-            ch_version: "26.8.36.3"
+          - ch_image: clickhouse/clickhouse-server:26.8.37.168
+            ch_version: "26.8.37.168"
     env:
       ARBITER_CI_LANE: ch${{ matrix.ch_version }}
     steps:
@@ -197,8 +197,8 @@ jobs:
         include:
           - ch_image: clickhouse/clickhouse-server:26.3.37.3
             ch_version: "26.3.37.3"
-          - ch_image: clickhouse/clickhouse-server:26.8.36.3
-            ch_version: "26.8.36.3"
+          - ch_image: clickhouse/clickhouse-server:26.8.37.168
+            ch_version: "26.8.37.168"
     env:
       ARBITER_CI_LANE: ch${{ matrix.ch_version }}
     steps:
