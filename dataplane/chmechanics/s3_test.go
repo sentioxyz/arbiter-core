@@ -271,10 +271,12 @@ func grantUser(t *testing.T, env mechanicsEnv, user string, grants []string) cli
 // backup key must be allowed to delete (plan S3-C1 clarification K24) and
 // pins SI_BACKUP_GRANTS and SI_RESTORE_GRANTS: the backup job's
 // objstore.Backuper, as si_backup holding exactly SI_BACKUP_GRANTS, backs
-// up hg_safe with mech-nodelete and with mech-lockdelete, and the second
-// must complete; the test logs exactly one line "M13 backup delete right:
-// none" (the first completed too) or "M13 backup delete right: lock" (it
-// failed removing its own .lock and nothing else). The index si_backup
+// up hg_safe with mech-nodelete and with mech-lockdelete, and both must
+// complete (the first through the Backuper's acceptance of its refused
+// .lock delete, D3 of the si-backup R2 design); the test logs exactly one
+// line "M13 backup delete right: none" (the first removed its .lock too) or
+// "M13 backup delete right: lock" (its .lock stayed, the server refused the
+// delete). The index si_backup
 // wrote lists the table and its parts. objstore.Drill and
 // objstore.RestoreAndGate, as si_restore holding exactly SI_RESTORE_GRANTS,
 // restore with mech-readonly and drop the part written after the manifest.
@@ -329,19 +331,19 @@ func TestMechanics_S3BackupWithAKeyThatCannotDelete(t *testing.T) {
 	if errLockDelete != nil {
 		t.Fatalf("BACKUP as si_backup with mech-lockdelete, which may delete only its own .lock, failed: %v; K24: the plan stops until the user decides", errLockDelete)
 	}
-	right := "none"
+	// The Backuper accepts a BACKUP that failed only at removing its own
+	// .lock once its .backup exists (D3 of the si-backup R2 design), so the
+	// right is measured on the objects: a server that refused the delete
+	// left the .lock behind.
 	if errNoDelete != nil {
-		msg := errNoDelete.Error()
-		if !strings.Contains(msg, "/.lock") || !strings.Contains(strings.ToLower(msg), "access denied") {
-			t.Fatalf("BACKUP with mech-nodelete failed for another reason than removing its .lock: %v", errNoDelete)
-		}
-		t.Logf("BACKUP with mech-nodelete: %v", errNoDelete)
-		// The failed backup removed nothing: its .backup and .lock stay.
-		dir := s3.bucket.BackupURL(ownerNoDelete, objstore.BackupName(at, objstore.BackupFull))
-		for _, name := range []string{".backup", ".lock"} {
-			if n := countObjects(t, env.A, dir+name, s3.readOnly); n != 1 {
-				t.Fatalf("the failed mech-nodelete backup holds %d %s object(s), want 1: a key that cannot delete removed it", n, name)
-			}
+		t.Fatalf("BACKUP with mech-nodelete failed for another reason than removing its .lock, or its refused .lock delete was not accepted: %v", errNoDelete)
+	}
+	right := "none"
+	dir := s3.bucket.BackupURL(ownerNoDelete, objstore.BackupName(at, objstore.BackupFull))
+	if countObjects(t, env.A, dir+".lock", s3.readOnly) == 1 {
+		// The accepted backup removed nothing: its .backup and .lock stay.
+		if n := countObjects(t, env.A, dir+".backup", s3.readOnly); n != 1 {
+			t.Fatalf("the accepted mech-nodelete backup holds %d .backup object(s), want 1", n)
 		}
 		right = "lock"
 	}
