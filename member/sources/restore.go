@@ -180,7 +180,7 @@ func (r *RestoreSource) Fetch(ctx context.Context, need Need, schema payloadexec
 	if err != nil {
 		return scrubKey(failure(res, fmt.Sprintf("read the backup indexes of indexer %d", r.owner), err), creds)
 	}
-	backup, ok := r.newestListing(indexes, need)
+	backup, base, ok := r.newestListing(indexes, need)
 	if !ok {
 		res.Outcome = OutcomeMissed
 		return res
@@ -198,7 +198,7 @@ func (r *RestoreSource) Fetch(ctx context.Context, need Need, schema payloadexec
 	if err != nil {
 		return scrubKey(failure(res, "open the restore endpoint", err), creds)
 	}
-	restore := objstore.RestoreSQLAt(endpoint, r.owner, backup, need.Table, clause,
+	restore := objstore.RestoreSQLAt(endpoint, r.owner, backup, base, need.Table, clause,
 		objstore.Scratch{Database: staged.Database, Table: staged.Table})
 	err = r.conn.Exec(ctx, restore)
 	if dropErr := closeEndpoint(); dropErr != nil {
@@ -229,8 +229,9 @@ func (r *RestoreSource) Fetch(ctx context.Context, need Need, schema payloadexec
 
 // newestListing is the newest backup of the owner whose index lists a part of
 // need's physical table with need's hash_of_all_files. Backup names start
-// with their UTC start time, and objstore.ReadIndexes sorts by name.
-func (r *RestoreSource) newestListing(indexes []objstore.BackupIndex, need Need) (string, bool) {
+// with their UTC start time, and objstore.ReadIndexes sorts by name. It
+// returns the backup's name and its index Base.
+func (r *RestoreSource) newestListing(indexes []objstore.BackupIndex, need Need) (string, string, bool) {
 	for i := len(indexes) - 1; i >= 0; i-- {
 		idx := indexes[i]
 		if idx.OwnerIndexerID != r.owner {
@@ -242,12 +243,12 @@ func (r *RestoreSource) newestListing(indexes []objstore.BackupIndex, need Need)
 			}
 			for _, part := range t.Parts {
 				if part.PhysHash == need.PartPhysHash {
-					return idx.Name, true
+					return idx.Name, idx.Base, true
 				}
 			}
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 func (r *RestoreSource) restoredPart(ctx context.Context, staged Scratch, physHash string) (string, uint64, bool, error) {

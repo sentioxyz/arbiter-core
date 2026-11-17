@@ -60,9 +60,35 @@ func NextBackup(latest *BackupIndex, maxChainLinks uint32) (BackupKind, string, 
 	return BackupIncremental, latest.Name, latest.ChainLength + 1
 }
 
+// NextDifferentialBackup is NextBackup for credentials with a session
+// token: every incremental backup is based on its chain's full backup, not
+// on the previous link, because a backup taken through a temporary named
+// collection records its base under that run's collection, and a RESTORE
+// can override only one level of base (RestoreSQLAt). The chain length and
+// the rule that starts a new full backup are NextBackup's. The full backup
+// is latest itself or latest's Base, which must name a full backup among
+// indexes; otherwise (a chain of a static key pair's incremental links) the
+// next backup is full.
+func NextDifferentialBackup(latest *BackupIndex, indexes []BackupIndex, maxChainLinks uint32) (BackupKind, string, uint32) {
+	kind, _, chain := NextBackup(latest, maxChainLinks)
+	if kind == BackupFull {
+		return BackupFull, "", 1
+	}
+	if latest.Kind == BackupFull {
+		return BackupIncremental, latest.Name, chain
+	}
+	for _, idx := range indexes {
+		if idx.Name == latest.Base && idx.Kind == BackupFull && latest.Base != "" {
+			return BackupIncremental, idx.Name, chain
+		}
+	}
+	return BackupFull, "", 1
+}
+
 // Run takes the next backup and writes its index: the latest published
 // manifest and the owner's entry in it, the owner's indexes, the kind
-// (NextBackup), a refusal of a name that exists already, hg_safe's tables and
+// (NextBackup, or NextDifferentialBackup with a session token), a refusal
+// of a name that exists already, hg_safe's tables and
 // their active parts, the BACKUP and, once it finished, the index object. It
 // returns the index it wrote.
 //
@@ -114,6 +140,9 @@ func (b *Backuper) Run(ctx context.Context) (BackupIndex, error) {
 		latest = &indexes[len(indexes)-1]
 	}
 	kind, base, chain := NextBackup(latest, links)
+	if b.Credentials.SessionToken != "" {
+		kind, base, chain = NextDifferentialBackup(latest, indexes, links)
+	}
 	name := BackupName(started, kind)
 	if latest != nil && name <= latest.Name {
 		if name == latest.Name {

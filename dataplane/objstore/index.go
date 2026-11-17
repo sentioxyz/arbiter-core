@@ -24,7 +24,11 @@ type BackupIndex struct {
 	OwnerIndexerID uint64     `json:"owner_indexer_id"`
 	Name           string     `json:"name"`
 	Kind           BackupKind `json:"kind"`
-	// Base names the backup an incremental backup is based on.
+	// Base names the backup an incremental backup is based on: the
+	// previous link of its chain for a backup taken with a static key pair,
+	// the chain's full backup for one taken with a session token (a
+	// differential backup, NextDifferentialBackup), so that a restore finds
+	// its only base from this index alone.
 	Base        string `json:"base,omitempty"`
 	ChainLength uint32 `json:"chain_length"`
 	// StartedAt and FinishedAt are RFC 3339 UTC.

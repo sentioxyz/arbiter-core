@@ -134,3 +134,31 @@ func TestRestoreWithoutCredentialsIsUnchanged(t *testing.T) {
 		t.Fatalf("String = %s", got)
 	}
 }
+
+// TestRestoreOfADifferentialPassesItsFullAsBase: with a session token, the
+// RESTORE of a backup whose index names a Base passes that full backup as
+// base_backup through the same collection, taken from that index alone.
+func TestRestoreOfADifferentialPassesItsFullAsBase(t *testing.T) {
+	// Given: only the differential's index is listed; its Base is the full.
+	index := `{"format":"si-backup-index-v1","owner_indexer_id":7,"name":"20261016T000000Z-incr","kind":"incr","base":"20261015T000000Z-full","chain_length":2,` +
+		`"tables":[{"physical_table":"dex__swaps","incarnation_seq":0,"parts":[{"name":"p_1_1_0","partition_id":"p_2026","phys_hash":"4adff322bb8fd41ea3d90f10b04424fb","rows":3}]}]}`
+	conn := &fakeConn{rows: func(query string, _ []any) ([][]any, error) {
+		if strings.HasPrefix(query, "SELECT _file, * FROM s3(") {
+			return [][]any{{"20261016T000000Z-incr.index.json", index}}, nil
+		}
+		return nil, nil
+	}}
+	cfg := RestoreConfig{Credentials: func(context.Context, time.Duration) (RestoreCredentials, error) {
+		return RestoreCredentials{BucketURL: "http://si-minio:9000/si-replica", Credentials: objstore.Credentials{AccessKeyID: "k", SecretAccessKey: "s", SessionToken: "t"}}, nil
+	}}
+
+	// When
+	NewRestore(conn, cfg, 7).Fetch(context.Background(), credentialsNeed(), pullSchema(), Scratch{Database: "hg_rstage", Table: "member-a_0011aabb_5"})
+
+	// Then
+	restores := conn.matching("exec RESTORE ")
+	if len(restores) != 1 || !strings.Contains(restores[0], "'owner-7/20261016T000000Z-incr/') SETTINGS base_backup = S3(si_backup_") ||
+		!strings.HasSuffix(restores[0], ", 'owner-7/20261015T000000Z-full/')") {
+		t.Fatalf("RESTORE = %q, want the differential with its full as base_backup", restores)
+	}
+}

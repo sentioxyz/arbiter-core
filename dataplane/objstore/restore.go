@@ -18,9 +18,13 @@ import (
 
 // BackupRef names one backup and the key that reads it.
 type BackupRef struct {
-	Bucket      Bucket
-	Owner       uint64
-	Name        string
+	Bucket Bucket
+	Owner  uint64
+	Name   string
+	// Base is the backup's index Base, empty for a full backup. A RESTORE
+	// with a session token passes it as base_backup (RestoreSQLAt); a static
+	// key pair does not use it.
+	Base        string
 	Credentials Credentials
 }
 
@@ -182,7 +186,7 @@ func restoreAsync(ctx context.Context, conn clickhouse.Conn, in GateInput, claus
 		return err
 	}
 	defer closeLogged(closeEndpoint, slog.Default(), "owner", in.Backup.Owner, "backup", in.Backup.Name)
-	restore := RestoreSQLAt(endpoint, in.Backup.Owner, in.Backup.Name, in.PhysicalTable, clause, in.Scratch)
+	restore := RestoreSQLAt(endpoint, in.Backup.Owner, in.Backup.Name, in.Backup.Base, in.PhysicalTable, clause, in.Scratch)
 	return runAsync(ctx, conn, restore, in.Backup.Credentials, "RESTORED")
 }
 

@@ -49,7 +49,9 @@ func TestStatementsWithASessionTokenUseTheFiveArgumentS3AndANamedCollection(t *t
 		{BackupSQLAt(e, 2, "20261116T031700Z-full", ""), `BACKUP DATABASE hg_safe TO S3(si_backup_1794882072_0123456789abcdef, 'owner-2/20261116T031700Z-full/')`},
 		{BackupSQLAt(e, 2, "20261117T031700Z-incr", "20261116T031700Z-full"), `BACKUP DATABASE hg_safe TO S3(si_backup_1794882072_0123456789abcdef, 'owner-2/20261117T031700Z-incr/')` +
 			` SETTINGS base_backup = S3(si_backup_1794882072_0123456789abcdef, 'owner-2/20261116T031700Z-full/')`},
-		{RestoreSQLAt(e, 2, "20261116T031700Z-full", "db__u", "", sch), "RESTORE TABLE hg_safe.`db__u` AS `hg_rstage`.`s1` FROM S3(si_backup_1794882072_0123456789abcdef, 'owner-2/20261116T031700Z-full/')"},
+		{RestoreSQLAt(e, 2, "20261116T031700Z-full", "", "db__u", "", sch), "RESTORE TABLE hg_safe.`db__u` AS `hg_rstage`.`s1` FROM S3(si_backup_1794882072_0123456789abcdef, 'owner-2/20261116T031700Z-full/')"},
+		{RestoreSQLAt(e, 2, "20261118T031700Z-incr", "20261116T031700Z-full", "db__u", "PARTITIONS 'a'", sch), "RESTORE TABLE hg_safe.`db__u` AS `hg_rstage`.`s1` PARTITIONS 'a' FROM S3(si_backup_1794882072_0123456789abcdef, 'owner-2/20261118T031700Z-incr/')" +
+			" SETTINGS base_backup = S3(si_backup_1794882072_0123456789abcdef, 'owner-2/20261116T031700Z-full/')"},
 		{createCollectionSQL(e.collection, b, c), `CREATE NAMED COLLECTION si_backup_1794882072_0123456789abcdef AS url = 'http://arbiter-core-minio:9000/si-mechanics/', access_key_id = 'k', secret_access_key = 's', session_token = 't\'k'`},
 		{dropCollectionSQL(e.collection), `DROP NAMED COLLECTION IF EXISTS si_backup_1794882072_0123456789abcdef`},
 	} {
@@ -70,7 +72,7 @@ func TestStatementsWithoutASessionTokenAreUnchanged(t *testing.T) {
 	if got, want := BackupSQLAt(e, 1, "20261016T031700Z-incr", "20261015T031700Z-full"), BackupSQL(b, 1, "20261016T031700Z-incr", "20261015T031700Z-full", c); got != want {
 		t.Errorf("BackupSQLAt of a static endpoint:\n got %s\nwant %s", got, want)
 	}
-	if got, want := RestoreSQLAt(e, 1, "20261015T031700Z-full", "db__u", "", sch), RestoreSQL(b, 1, "20261015T031700Z-full", "db__u", "", sch, c); got != want {
+	if got, want := RestoreSQLAt(e, 1, "20261015T031700Z-full", "20261014T031700Z-full", "db__u", "", sch), RestoreSQL(b, 1, "20261015T031700Z-full", "db__u", "", sch, c); got != want {
 		t.Errorf("RestoreSQLAt of a static endpoint:\n got %s\nwant %s", got, want)
 	}
 	if want := `SELECT countIf(_file = '.backup') FROM s3('http://arbiter-core-minio:9000/si-mechanics/owner-1/20261015T031700Z-full/*', 'k', 's', 'One')`; backupDescriptorSQL(b, 1, "20261015T031700Z-full", c) != want {
@@ -192,6 +194,113 @@ func TestLockDeleteRefusedAcceptsOnlyTheBackupsOwnLock(t *testing.T) {
 	}
 	if got := lockKey(2, "20261116T031700Z-full"); got != "owner-2/20261116T031700Z-full/.lock" {
 		t.Errorf("lockKey = %s", got)
+	}
+}
+
+func TestNextDifferentialBackupAlwaysBasesOnTheChainsFull(t *testing.T) {
+	// Given: a four-link chain, run nine times.
+	var indexes []BackupIndex
+	at := s3T0
+
+	// When
+	for i := 0; i < 9; i++ {
+		var latest *BackupIndex
+		if len(indexes) > 0 {
+			latest = &indexes[len(indexes)-1]
+		}
+		kind, base, chain := NextDifferentialBackup(latest, indexes, 4)
+		indexes = append(indexes, BackupIndex{Name: BackupName(at, kind), Kind: kind, Base: base, ChainLength: chain})
+		at = at.Add(time.Hour)
+	}
+
+	// Then: full, three differentials on it, full, three on it, full.
+	kinds := ""
+	for i, idx := range indexes {
+		kinds += string(idx.Kind) + " "
+		if idx.Kind == BackupFull {
+			if idx.Base != "" || idx.ChainLength != 1 {
+				t.Errorf("full %d: %+v", i, idx)
+			}
+			continue
+		}
+		var base *BackupIndex
+		for j := range indexes[:i] {
+			if indexes[j].Name == idx.Base {
+				base = &indexes[j]
+			}
+		}
+		if base == nil || base.Kind != BackupFull {
+			t.Errorf("backup %d is based on %q, which is not a full backup", i, idx.Base)
+		}
+	}
+	if kinds != "full incr incr incr full incr incr incr full " {
+		t.Errorf("kinds: %s", kinds)
+	}
+	if got := indexes[3].ChainLength; got != 4 {
+		t.Errorf("chain length of the third differential: %d", got)
+	}
+	// A static key pair's incremental chain continued with a token: its
+	// latest Base is an incremental backup, so a new full starts.
+	static := []BackupIndex{{Name: "a", Kind: BackupFull, ChainLength: 1}, {Name: "b", Kind: BackupIncremental, Base: "a", ChainLength: 2}, {Name: "c", Kind: BackupIncremental, Base: "b", ChainLength: 3}}
+	if kind, base, chain := NextDifferentialBackup(&static[2], static, 7); kind != BackupFull || base != "" || chain != 1 {
+		t.Errorf("after a static chain: %s %q %d", kind, base, chain)
+	}
+	if kind, base, chain := NextDifferentialBackup(&static[1], static, 7); kind != BackupIncremental || base != "a" || chain != 3 {
+		t.Errorf("after one static link on a full: %s %q %d", kind, base, chain)
+	}
+	if kind, _, _ := NextDifferentialBackup(&BackupIndex{Name: "x", Kind: BackupIncremental, Base: "gone", ChainLength: 2}, nil, 7); kind != BackupFull {
+		t.Errorf("a Base that names no index starts a full backup, got %s", kind)
+	}
+}
+
+func TestBackuperWithASessionTokenBasesOnTheFull(t *testing.T) {
+	// Given: a full and one differential on it; the next run's BACKUP.
+	at := s3T0.Add(48 * time.Hour)
+	full := BackupIndex{Format: BackupIndexFormat, NetworkID: "current", OwnerIndexerID: 1, Name: BackupName(s3T0, BackupFull), Kind: BackupFull, ChainLength: 1}
+	diff := full
+	diff.Name, diff.Kind, diff.Base, diff.ChainLength = BackupName(s3T0.Add(time.Hour), BackupIncremental), BackupIncremental, full.Name, 2
+	for _, tc := range []struct {
+		name  string
+		creds Credentials
+		want  string
+	}{
+		{"session token", tokenCredentials(), "'owner-1/" + full.Name + "/')"},
+		{"static key pair", Credentials{AccessKeyID: "k", SecretAccessKey: "s"}, "/owner-1/" + diff.Name + "/', 'k', 's')"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &scriptConn{t: t, indexes: []BackupIndex{full, diff}}
+			b := Backuper{
+				Conn: conn, Manifests: newFakeManifests(testManifest(t, "")), Bucket: testBucket(t), Owner: 1, NetworkID: "current",
+				Credentials: tc.creds, Now: func() time.Time { return at },
+			}
+
+			// When
+			idx, err := b.Run(context.Background())
+
+			// Then
+			if err != nil {
+				t.Fatal(err)
+			}
+			var backup string
+			for _, s := range conn.statements {
+				if strings.HasPrefix(s, "BACKUP ") {
+					backup = s
+				}
+			}
+			if !strings.Contains(backup, " SETTINGS base_backup = ") {
+				t.Fatalf("no base: %q", backup)
+			}
+			settings := backup[strings.Index(backup, "SETTINGS base_backup = "):]
+			if !strings.Contains(settings, tc.want) {
+				t.Errorf("BACKUP %s\nwant its base_backup to end in %s", backup, tc.want)
+			}
+			if idx.Kind != BackupIncremental || idx.ChainLength != 3 {
+				t.Errorf("index %+v", idx)
+			}
+			if tc.creds.SessionToken != "" && idx.Base != full.Name {
+				t.Errorf("a differential's Base names its full: %q", idx.Base)
+			}
+		})
 	}
 }
 
@@ -398,6 +507,7 @@ type scriptConn struct {
 	backupError string
 	descriptors uint64
 	onPoll      func()
+	indexes     []BackupIndex
 }
 
 func (c *scriptConn) record(ctx context.Context, query string) {
@@ -424,7 +534,7 @@ func (c *scriptConn) Query(ctx context.Context, query string, _ ...any) (driver.
 	c.record(ctx, query)
 	switch {
 	case strings.HasPrefix(query, "SELECT _file, * FROM s3("):
-		return &indexRows{}, nil
+		return &indexRows{indexes: c.indexes}, nil
 	case strings.HasPrefix(query, "SELECT name, comment, partition_key FROM system.tables"):
 		return &stringRows{}, nil
 	case strings.HasPrefix(query, "SELECT name FROM system.named_collections"):

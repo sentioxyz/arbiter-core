@@ -82,10 +82,12 @@ func dropCollectionSQL(name string) string {
 //
 // An incremental BACKUP through a collection records its base in its
 // .backup as S3(<collection>, '<base path>'), and ClickHouse resolves that
-// name again when it restores the incremental backup. Once the collection
-// is dropped, RESTORE of that incremental backup fails with "There is no
-// named collection" (measured on 26.8.37.168), so with a session token only
-// full backups restore today. Before 26.8 the backup engine does not send a
+// name again when it restores the incremental backup, after the run dropped
+// it. Hence a session-token chain is differential (NextDifferentialBackup):
+// each incremental backup is based on the chain's full backup, which has no
+// base, and RestoreSQLAt passes that full as base_backup through the
+// restore's own collection, the one level the setting overrides (measured
+// on 26.8.37.168). Before 26.8 the backup engine does not send a
 // collection's session_token at all.
 func OpenEndpoint(ctx context.Context, conn clickhouse.Conn, b Bucket, c Credentials) (Endpoint, func() error, error) {
 	return openEndpoint(ctx, conn, b, c, time.Now())

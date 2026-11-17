@@ -104,16 +104,27 @@ func PartitionClause(sch payloadexec.TableSchema, partitionID string) (string, e
 // the whole table), with the static key pair of c. Credentials with a session
 // token need RestoreSQLAt with an OpenEndpoint endpoint.
 func RestoreSQL(b Bucket, owner uint64, name, physicalTable, partitionClause string, s Scratch, c Credentials) string {
-	return RestoreSQLAt(staticEndpoint(b, c), owner, name, physicalTable, partitionClause, s)
+	return RestoreSQLAt(staticEndpoint(b, c), owner, name, "", physicalTable, partitionClause, s)
 }
 
-// RestoreSQLAt is RestoreSQL through e.
-func RestoreSQLAt(e Endpoint, owner uint64, name, physicalTable, partitionClause string, s Scratch) string {
+// RestoreSQLAt is RestoreSQL through e. base is the backup's index Base: for
+// an endpoint over a named collection and a non-empty base it adds SETTINGS
+// base_backup = S3(<collection>, '<base path>'), because a backup taken
+// through a collection records its base under that run's collection name,
+// which no longer exists (a session-token chain is differential, so base is
+// its full backup and the one level the setting overrides is all there
+// is). A static endpoint ignores base: ClickHouse reopens the recorded base
+// with the restore's own key, and the statement is unchanged.
+func RestoreSQLAt(e Endpoint, owner uint64, name, base, physicalTable, partitionClause string, s Scratch) string {
 	sql := "RESTORE TABLE " + SafeDatabase + "." + ident(physicalTable) + " AS " + s.Qualified()
 	if partitionClause != "" {
 		sql += " " + partitionClause
 	}
-	return sql + " FROM " + e.Backup(owner, name)
+	sql += " FROM " + e.Backup(owner, name)
+	if e.collection != "" && base != "" {
+		sql += " SETTINGS base_backup = " + e.Backup(owner, base)
+	}
+	return sql
 }
 
 // indexWriteSQL writes one index object; its JSON is the query parameter

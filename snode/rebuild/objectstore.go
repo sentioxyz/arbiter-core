@@ -59,6 +59,7 @@ type indexStore struct {
 }
 
 func newIndexStore(ref objstore.BackupRef, idx objstore.BackupIndex) *indexStore {
+	ref.Base = idx.Base
 	s := &indexStore{ref: ref, parts: map[string]map[string][]BackupPart{}}
 	for _, table := range idx.Tables {
 		byPartition := s.parts[table.PhysicalTable]
@@ -99,7 +100,7 @@ func (s *indexStore) RestorePartitions(ctx context.Context, conn clickhouse.Conn
 			slog.Warn("rebuild: could not drop a temporary named collection", "backup", s.ref.Name, "error", err.Error())
 		}
 	}()
-	sql := objstore.RestoreSQLAt(endpoint, s.ref.Owner, s.ref.Name, physical, clause, objstore.Scratch{Database: promoteDatabase, Table: scratch})
+	sql := objstore.RestoreSQLAt(endpoint, s.ref.Owner, s.ref.Name, s.ref.Base, physical, clause, objstore.Scratch{Database: promoteDatabase, Table: scratch})
 	if err := conn.Exec(ctx, sql); err != nil {
 		return fmt.Errorf("rebuild: restore %s partitions %v of backup %s into %s.%s: %s",
 			tableID, partitionIDs, s.ref.Name, promoteDatabase, scratch, redactSecret(err.Error(), s.ref.Credentials))
