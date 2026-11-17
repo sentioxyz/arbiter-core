@@ -153,7 +153,7 @@ func (d *Drill) Run(ctx context.Context) (DrillVerdict, error) {
 	for _, t := range s.Tables {
 		listed[ddl.CHTableName(t.TableID)] = t
 	}
-	ref := BackupRef{Bucket: d.Bucket, Owner: d.Owner, Name: idx.Name, Credentials: d.Credentials}
+	ref := BackupRef{Bucket: d.Bucket, Owner: d.Owner, Name: idx.Name, Base: idx.Base, Credentials: d.Credentials}
 	verdict := DrillVerdict{Format: DrillVerdictFormat, OwnerIndexerID: d.Owner, Backup: idx.Name, SnapshotID: s.SnapshotID, Entry: entry, Tables: []DrillTable{}}
 	backedUp := append([]BackupIndexTable(nil), idx.Tables...)
 	sort.Slice(backedUp, func(i, j int) bool { return backedUp[i].PhysicalTable < backedUp[j].PhysicalTable })

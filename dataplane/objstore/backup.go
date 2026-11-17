@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -32,6 +33,9 @@ type Backuper struct {
 	MaxChainLinks uint32
 	// Now is time.Now when nil.
 	Now func() time.Time
+	// Logger receives the warning of an accepted refused .lock delete;
+	// slog.Default() when nil.
+	Logger *slog.Logger
 }
 
 // maxChainLinks is the configured chain length.
@@ -56,11 +60,43 @@ func NextBackup(latest *BackupIndex, maxChainLinks uint32) (BackupKind, string, 
 	return BackupIncremental, latest.Name, latest.ChainLength + 1
 }
 
+// NextDifferentialBackup is NextBackup for credentials with a session
+// token: every incremental backup is based on its chain's full backup, not
+// on the previous link, because a backup taken through a temporary named
+// collection records its base under that run's collection, and a RESTORE
+// can override only one level of base (RestoreSQLAt). The chain length and
+// the rule that starts a new full backup are NextBackup's. The full backup
+// is latest itself or latest's Base, which must name a full backup among
+// indexes; otherwise (a chain of a static key pair's incremental links) the
+// next backup is full.
+func NextDifferentialBackup(latest *BackupIndex, indexes []BackupIndex, maxChainLinks uint32) (BackupKind, string, uint32) {
+	kind, _, chain := NextBackup(latest, maxChainLinks)
+	if kind == BackupFull {
+		return BackupFull, "", 1
+	}
+	if latest.Kind == BackupFull {
+		return BackupIncremental, latest.Name, chain
+	}
+	for _, idx := range indexes {
+		if idx.Name == latest.Base && idx.Kind == BackupFull && latest.Base != "" {
+			return BackupIncremental, idx.Name, chain
+		}
+	}
+	return BackupFull, "", 1
+}
+
 // Run takes the next backup and writes its index: the latest published
 // manifest and the owner's entry in it, the owner's indexes, the kind
-// (NextBackup), a refusal of a name that exists already, hg_safe's tables and
+// (NextBackup, or NextDifferentialBackup with a session token), a refusal
+// of a name that exists already, hg_safe's tables and
 // their active parts, the BACKUP and, once it finished, the index object. It
 // returns the index it wrote.
+//
+// A BACKUP whose only failure is the refused delete of its own .lock (a
+// bucket lock, or a key without DeleteObject) is written: when its .backup
+// exists, Run logs a warning and writes the index (D3 of the si-backup R2
+// design). Every other failed BACKUP stops the run, and nothing a failed
+// BACKUP left is deleted.
 func (b *Backuper) Run(ctx context.Context) (BackupIndex, error) {
 	if b.Conn == nil || b.Manifests == nil {
 		return BackupIndex{}, errors.New("objstore: a Backuper needs a ClickHouse connection and a manifest source")
@@ -104,6 +140,9 @@ func (b *Backuper) Run(ctx context.Context) (BackupIndex, error) {
 		latest = &indexes[len(indexes)-1]
 	}
 	kind, base, chain := NextBackup(latest, links)
+	if b.Credentials.SessionToken != "" {
+		kind, base, chain = NextDifferentialBackup(latest, indexes, links)
+	}
 	name := BackupName(started, kind)
 	if latest != nil && name <= latest.Name {
 		if name == latest.Name {
@@ -125,8 +164,8 @@ func (b *Backuper) Run(ctx context.Context) (BackupIndex, error) {
 	if err != nil {
 		return BackupIndex{}, err
 	}
-	if err := runAsync(ctx, b.Conn, BackupSQL(b.Bucket, b.Owner, name, base, b.Credentials), b.Credentials, "BACKUP_CREATED"); err != nil {
-		return BackupIndex{}, fmt.Errorf("objstore: backup %s of indexer %d: %w", name, b.Owner, err)
+	if err := b.backup(ctx, name, base); err != nil {
+		return BackupIndex{}, err
 	}
 	idx := BackupIndex{
 		Format:         BackupIndexFormat,
@@ -146,6 +185,41 @@ func (b *Backuper) Run(ctx context.Context) (BackupIndex, error) {
 		return BackupIndex{}, err
 	}
 	return idx, nil
+}
+
+// backup runs the BACKUP of name, on base when set, through an endpoint of
+// the run's credentials, and accepts its refused .lock delete only when the
+// backup's .backup exists.
+func (b *Backuper) backup(ctx context.Context, name, base string) error {
+	logger := b.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	endpoint, closeEndpoint, err := OpenEndpoint(ctx, b.Conn, b.Bucket, b.Credentials)
+	if err != nil {
+		return fmt.Errorf("objstore: backup %s of indexer %d: %w", name, b.Owner, err)
+	}
+	// A collection that cannot be dropped does not undo the backup;
+	// DropStaleCollections removes it later.
+	defer closeLogged(closeEndpoint, logger, "owner", b.Owner, "backup", name)
+	backupErr := runAsync(ctx, b.Conn, BackupSQLAt(endpoint, b.Owner, name, base), b.Credentials, "BACKUP_CREATED")
+	if backupErr == nil {
+		return nil
+	}
+	failed := fmt.Errorf("objstore: backup %s of indexer %d: %w", name, b.Owner, backupErr)
+	if !lockDeleteRefused(backupErr, lockKey(b.Owner, name)) {
+		return failed
+	}
+	written, err := backupWritten(ctx, b.Conn, b.Bucket, b.Owner, name, b.Credentials)
+	if err != nil {
+		return errors.Join(failed, err)
+	}
+	if !written {
+		return fmt.Errorf("%w; its .backup does not exist, so the refused .lock delete is not accepted", failed)
+	}
+	logger.Warn("objstore: BACKUP failed only at removing its own .lock and its .backup exists; accepting the backup",
+		"owner", b.Owner, "backup", name, "lock", lockKey(b.Owner, name), "error", backupErr.Error())
+	return nil
 }
 
 // safeTables lists hg_safe's tables (system.tables) and their active parts

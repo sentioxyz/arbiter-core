@@ -3,6 +3,7 @@ package objstore
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
@@ -17,9 +18,13 @@ import (
 
 // BackupRef names one backup and the key that reads it.
 type BackupRef struct {
-	Bucket      Bucket
-	Owner       uint64
-	Name        string
+	Bucket Bucket
+	Owner  uint64
+	Name   string
+	// Base is the backup's index Base, empty for a full backup. A RESTORE
+	// with a session token passes it as base_backup (RestoreSQLAt); a static
+	// key pair does not use it.
+	Base        string
 	Credentials Credentials
 }
 
@@ -126,8 +131,7 @@ func RestoreAndGate(ctx context.Context, conn clickhouse.Conn, in GateInput) (Ga
 	if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+ident(in.Scratch.Database)); err != nil {
 		return GateResult{}, fmt.Errorf("objstore: create database %s: %w", in.Scratch.Database, err)
 	}
-	restore := RestoreSQL(in.Backup.Bucket, in.Backup.Owner, in.Backup.Name, in.PhysicalTable, clause, in.Scratch, in.Backup.Credentials)
-	if err := runAsync(ctx, conn, restore, in.Backup.Credentials, "RESTORED"); err != nil {
+	if err := restoreAsync(ctx, conn, in, clause); err != nil {
 		res.Reason = DrillRestoreFailed
 		return res, fmt.Errorf("objstore: restore %s partition %s of backup %s of indexer %d into %s: %w",
 			in.TableID, in.PartitionID, in.Backup.Name, in.Backup.Owner, in.Scratch.Qualified(), err)
@@ -172,6 +176,18 @@ func RestoreAndGate(ctx context.Context, conn clickhouse.Conn, in GateInput) (Ga
 	}
 	res.Complete, res.Reason = true, DrillVerified
 	return res, nil
+}
+
+// restoreAsync runs the RESTORE of in through an endpoint of its backup's
+// credentials, which it closes on every exit path.
+func restoreAsync(ctx context.Context, conn clickhouse.Conn, in GateInput, clause string) error {
+	endpoint, closeEndpoint, err := OpenEndpoint(ctx, conn, in.Backup.Bucket, in.Backup.Credentials)
+	if err != nil {
+		return err
+	}
+	defer closeLogged(closeEndpoint, slog.Default(), "owner", in.Backup.Owner, "backup", in.Backup.Name)
+	restore := RestoreSQLAt(endpoint, in.Backup.Owner, in.Backup.Name, in.Backup.Base, in.PhysicalTable, clause, in.Scratch)
+	return runAsync(ctx, conn, restore, in.Backup.Credentials, "RESTORED")
 }
 
 // dropScratch drops a scratch table that is no longer needed.

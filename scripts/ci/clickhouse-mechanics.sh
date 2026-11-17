@@ -12,10 +12,12 @@
 # disk and the default user's access-management settings. A pinned MinIO on
 # the same network (alias arbiter-core-minio) is the S3 endpoint of M12-M14
 # and of the objstore tests: one bucket and three keys, one that may not
-# delete, one that may delete only */.lock and one that may only read. Then
+# delete, one that may delete only */.lock and one that may only read, and
+# a temporary credential (STS, with a session token) of each. Then
 # runs the suite, prints the delete right M13 measured and, against node B,
 # the SNode's owner-audit restart test, then the objstore TestS3_ tests,
-# greps both servers' logs for the three S3 secrets, and removes the
+# greps both servers' logs for the three S3 secrets and the temporary
+# credentials' secrets and session tokens, and removes the
 # containers and the network. Every TestMechanics_ function, the restart test
 # and every TestS3_ function must report PASS; a skipped test fails the run.
 #
@@ -243,6 +245,32 @@ add_s3_user "${s3_nodelete_key}" "${s3_nodelete_secret}" si-backup-nodelete
 add_s3_user "${s3_lockdelete_key}" "${s3_lockdelete_secret}" si-backup-lockdelete
 add_s3_user "${s3_readonly_key}" "${s3_readonly_secret}" si-restore-readonly
 
+# Temporary credentials (STS AssumeRole) of three of those users, for the
+# objstore session-token test: their parent's rights plus a session token,
+# like the si-backup broker's R2 credentials. Exported as
+# CH_S3_STS_<NAME>_{ACCESS_KEY,SECRET_KEY,SESSION_TOKEN}.
+sts_secrets=()
+mint_sts() {
+  local response value field
+  response="$(docker exec "${minio}" curl -sf -X POST --aws-sigv4 "aws:amz:us-east-1:sts" --user "$1:$2" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data "Action=AssumeRole&Version=2011-06-15&DurationSeconds=43200" http://127.0.0.1:9000/ | tr -d '\r\n')"
+  for field in AccessKeyId:ACCESS_KEY SecretAccessKey:SECRET_KEY SessionToken:SESSION_TOKEN; do
+    value="$(printf '%s' "${response}" | sed -nE "s/.*<${field%%:*}>([^<]+)<\/${field%%:*}>.*/\1/p")"
+    if [ -z "${value}" ]; then
+      echo "MinIO AssumeRole for $1 returned no ${field%%:*}" >&2
+      exit 1
+    fi
+    export "CH_S3_STS_$3_${field##*:}=${value}"
+    if [ "${field##*:}" != ACCESS_KEY ]; then
+      sts_secrets+=("${value}")
+    fi
+  done
+}
+mint_sts "${s3_lockdelete_key}" "${s3_lockdelete_secret}" LOCKDELETE
+mint_sts "${s3_nodelete_key}" "${s3_nodelete_secret}" NODELETE
+mint_sts "${s3_readonly_key}" "${s3_readonly_secret}" READONLY
+
 export ARBITER_CH_INTEGRATION=1 ARBITER_CH_KEEPER=1 ARBITER_CH_REPLICA=1 ARBITER_CH_MECHANICS=1 ARBITER_CH_RESTART=1
 export CH_ADDR="127.0.0.1:${port_a}"
 export CH_REPLICA_ADDR="127.0.0.1:${port_b}"
@@ -268,6 +296,9 @@ env_flags=(
   --test_env=CH_S3_NODELETE_ACCESS_KEY --test_env=CH_S3_NODELETE_SECRET_KEY
   --test_env=CH_S3_LOCKDELETE_ACCESS_KEY --test_env=CH_S3_LOCKDELETE_SECRET_KEY
   --test_env=CH_S3_READONLY_ACCESS_KEY --test_env=CH_S3_READONLY_SECRET_KEY
+  --test_env=CH_S3_STS_LOCKDELETE_ACCESS_KEY --test_env=CH_S3_STS_LOCKDELETE_SECRET_KEY --test_env=CH_S3_STS_LOCKDELETE_SESSION_TOKEN
+  --test_env=CH_S3_STS_NODELETE_ACCESS_KEY --test_env=CH_S3_STS_NODELETE_SECRET_KEY --test_env=CH_S3_STS_NODELETE_SESSION_TOKEN
+  --test_env=CH_S3_STS_READONLY_ACCESS_KEY --test_env=CH_S3_STS_READONLY_SECRET_KEY --test_env=CH_S3_STS_READONLY_SESSION_TOKEN
   --test_env=ARBITER_CH_INTERSERVER --test_env=CH_ISCRED_ADDR --test_env=CH_ISPLAIN_ADDR
 )
 
@@ -399,7 +430,7 @@ fi
 # M14's server-log half: no S3 secret may reach a server log. ClickHouse
 # writes its log to files in the container; the grep proves something only if
 # it read the query lines (executeQuery).
-printf '%s\n' "${s3_nodelete_secret}" "${s3_lockdelete_secret}" "${s3_readonly_secret}" > "${tmp_dir}/secrets"
+printf '%s\n' "${s3_nodelete_secret}" "${s3_lockdelete_secret}" "${s3_readonly_secret}" "${sts_secrets[@]}" > "${tmp_dir}/secrets"
 for container in "${ch_a}" "${ch_b}"; do
   server_log="${tmp_dir}/${container}.log"
   docker logs "${container}" > "${server_log}" 2>&1

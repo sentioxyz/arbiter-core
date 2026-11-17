@@ -183,6 +183,47 @@ func TestIndexStoreRestoreRedactsTheSecretFromItsError(t *testing.T) {
 	}
 }
 
+// okConn records every Exec and answers nil.
+type okConn struct {
+	clickhouse.Conn
+	statements []string
+}
+
+func (c *okConn) Exec(_ context.Context, query string, _ ...any) error {
+	c.statements = append(c.statements, query)
+	return nil
+}
+
+// TestIndexStoreRestoresADifferentialWithItsFullAsBase: with a session token
+// the store restores through a temporary named collection and passes the
+// index's Base, the chain's full backup, as base_backup; the collection is
+// dropped afterwards.
+func TestIndexStoreRestoresADifferentialWithItsFullAsBase(t *testing.T) {
+	bucket, err := objstore.ParseBucket("https://acct.r2.cloudflarestorage.com/si-backups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds := objstore.Credentials{AccessKeyID: "k", SecretAccessKey: "s", SessionToken: "t"}
+	idx := objstore.BackupIndex{Name: "20261016T120000Z-incr", Kind: objstore.BackupIncremental, Base: "20261015T120000Z-full"}
+	s := newIndexStore(objstore.BackupRef{Bucket: bucket, Owner: 2, Name: idx.Name, Credentials: creds}, idx)
+	conn := &okConn{}
+
+	if err := s.RestorePartitions(context.Background(), conn, "db.t", []string{"p_a"}, "db__t__rebuild_1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(conn.statements) != 3 || !strings.HasPrefix(conn.statements[0], "CREATE NAMED COLLECTION si_backup_") ||
+		!strings.HasPrefix(conn.statements[2], "DROP NAMED COLLECTION IF EXISTS si_backup_") {
+		t.Fatalf("statements = %q", conn.statements)
+	}
+	restore := conn.statements[1]
+	if !strings.HasPrefix(restore, "RESTORE TABLE hg_safe.`db__t` AS `hg_promote`.`db__t__rebuild_1` PARTITIONS 'a' FROM S3(si_backup_") ||
+		!strings.Contains(restore, ", 'owner-2/20261016T120000Z-incr/') SETTINGS base_backup = S3(si_backup_") ||
+		!strings.HasSuffix(restore, ", 'owner-2/20261015T120000Z-full/')") {
+		t.Fatalf("RESTORE = %s", restore)
+	}
+}
+
 type failedScratchRows struct {
 	driver.Rows
 	read    bool

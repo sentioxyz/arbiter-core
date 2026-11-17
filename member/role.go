@@ -390,7 +390,9 @@ func (r *Role) build(store *manifestfeed.Store, bootNonce string) (*parts, error
 			list = append(list, sources.NewPeerUnsafePull(r.d.Conn, name))
 		}
 		if r.cfg.Restore != nil {
-			list = append(list, sources.NewRestore(r.d.Conn, *r.cfg.Restore, p.IndexerID))
+			restore := sources.NewRestore(r.d.Conn, *r.cfg.Restore, p.IndexerID)
+			restore.FetchTimeout = r.cfg.FetchTimeout
+			list = append(list, restore)
 		}
 		byOwner[p.IndexerID] = list
 		pulls[p.IndexerID] = sources.NewOwnerUnsafePull(r.d.Conn, p.Collection, p.UnsafeDatabase)

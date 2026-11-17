@@ -8,10 +8,12 @@
 // Every object-store access is a ClickHouse statement that names the bucket
 // with S3(...) or s3(...) (plan S3-C1 clarification K23): this package is the
 // only code that renders them, and it holds no Go S3 or GCS client. The key
-// pair travels inside those statements, which ClickHouse masks in
-// system.query_log, system.processes, system.backups and its server log
-// (mechanics M14); an error of such a statement is redacted here before it
-// leaves the package, so no error carries the secret either.
+// pair, and a temporary credential's session token, travel inside those
+// statements, which ClickHouse masks in system.query_log, system.processes,
+// system.backups and its server log (mechanics M14); BACKUP and RESTORE with
+// a session token go through a temporary named collection (OpenEndpoint).
+// An error of such a statement is redacted here before it leaves the
+// package, so no error carries the secret or the token either.
 package objstore
 
 import (
@@ -51,7 +53,9 @@ const (
 	BackupIncremental BackupKind = "incr"
 )
 
-// Bucket is one bucket of an S3-compatible endpoint: GCS's XML API
+// Bucket is one bucket of an S3-compatible endpoint: Cloudflare R2
+// (https://<account>.r2.cloudflarestorage.com/<bucket>, path-style, signed
+// with ClickHouse's default region, which R2 takes as auto), GCS's XML API
 // (https://storage.googleapis.com/<bucket>) or MinIO
 // (http://<host>:9000/<bucket>).
 type Bucket struct {
