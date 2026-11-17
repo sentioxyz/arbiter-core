@@ -35,6 +35,7 @@ go_test(
         "remote_pull_ch_test.go",
         "remote_pull_test.go",
         "restore_ch_test.go",
+        "restore_credentials_test.go",
         "restore_test.go",
         "source_test.go",
     ],
