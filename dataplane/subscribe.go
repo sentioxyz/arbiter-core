@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"time"
 
 	pb "github.com/sentioxyz/arbiter-proto/gen/pb"
 	"google.golang.org/grpc"
@@ -21,11 +20,12 @@ func runSubscription[T any](
 	open func(context.Context, *grpc.ClientConn) (recvStream[T], error),
 	deliver func(T) error,
 ) error {
-	backoff := c.cfg.RetryBackoffMin
+	pacer := newRetryPacer(c.cfg)
 	preferred := ""
 	for {
 		delivered := false
 		followHint := false
+		limited := false
 		for _, id := range c.candidateOrder(preferred) {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -44,6 +44,11 @@ func runSubscription[T any](
 					}
 					continue
 				}
+				if perPeerLimited(err) {
+					preferred = id
+					limited = true
+					break
+				}
 				if !retryableStatus(status.Code(err)) {
 					return err
 				}
@@ -61,13 +66,18 @@ func runSubscription[T any](
 							preferred = hint
 							followHint = true
 						}
+					} else if perPeerLimited(err) {
+						// A server-streaming open is refused on the first
+						// Recv: wait, then ask the same peer again.
+						preferred = id
+						limited = true
 					} else if !errors.Is(err, io.EOF) && !retryableStatus(status.Code(err)) {
 						return err
 					}
 					break
 				}
 				delivered = true
-				backoff = c.cfg.RetryBackoffMin
+				pacer.reset()
 				// A handler error does not end the stream: the arbiter re-dispatches
 				// unrecorded work. Handlers own WARN-level reporting of their
 				// failures (the verifier logs rejected evidence submissions, the
@@ -80,23 +90,27 @@ func runSubscription[T any](
 					return err
 				}
 			}
-			if followHint {
+			if followHint || limited {
 				break
 			}
 		}
-		if followHint {
+		if limited {
+			if err := pacer.wait(ctx); err != nil {
+				return err
+			}
 			continue
 		}
-		if !delivered {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 2
-			if backoff > c.cfg.RetryBackoffMax {
-				backoff = c.cfg.RetryBackoffMax
-			}
+		// A hint is followed at once only once per round: two followers that
+		// name each other during an election must not spin the loop. A stream
+		// that delivered before it ended reconnects at once.
+		if followHint && pacer.hop() {
+			continue
+		}
+		if delivered && !followHint {
+			continue
+		}
+		if err := pacer.wait(ctx); err != nil {
+			return err
 		}
 	}
 }

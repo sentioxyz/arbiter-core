@@ -27,11 +27,18 @@ type fakeGateway struct {
 	promotionHellos    []*pb.SNodeHello
 	err                error
 	block              bool
+	// errFirst calls return firstErr before anything is sent.
+	errFirst int
+	firstErr error
 }
 
 func (g *fakeGateway) SubscribeVerifierDispatch(_ *pb.VerifierHello, stream grpc.ServerStreamingServer[pb.VerifierDispatch]) error {
 	g.mu.Lock()
 	g.verifierCalls++
+	if g.verifierCalls <= g.errFirst {
+		g.mu.Unlock()
+		return g.firstErr
+	}
 	msgs := append([]*pb.VerifierDispatch(nil), g.verifierDispatches...)
 	err := g.err
 	block := g.block
