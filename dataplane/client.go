@@ -192,7 +192,7 @@ func (c *Client) candidateOrder(preferred string) []string {
 }
 
 func (c *Client) WithLeaderRetry(ctx context.Context, fn func(ctx context.Context, conn *grpc.ClientConn) error) error {
-	backoff := c.cfg.RetryBackoffMin
+	pacer := newRetryPacer(c.cfg)
 	preferred := ""
 	for {
 		followHint := false
@@ -219,22 +219,23 @@ func (c *Client) WithLeaderRetry(ctx context.Context, fn func(ctx context.Contex
 				}
 				continue
 			}
+			if perPeerLimited(err) {
+				// The peer is up and refused this client for now: wait,
+				// then ask it again first.
+				preferred = id
+				break
+			}
 			if !retryableStatus(status.Code(err)) {
 				return err
 			}
 		}
-		if followHint {
-			backoff = c.cfg.RetryBackoffMin
+		// A hint is followed at once only once per round: two followers that
+		// name each other during an election must not spin the loop.
+		if followHint && pacer.hop() {
 			continue
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > c.cfg.RetryBackoffMax {
-			backoff = c.cfg.RetryBackoffMax
+		if err := pacer.wait(ctx); err != nil {
+			return err
 		}
 	}
 }
