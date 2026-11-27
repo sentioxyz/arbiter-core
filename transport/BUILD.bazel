@@ -20,6 +20,7 @@ go_library(
 go_test(
     name = "transport_test",
     srcs = [
+        "demux_source_test.go",
         "demux_test.go",
         "identity_test.go",
     ],

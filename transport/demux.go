@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -30,8 +31,11 @@ const (
 	RefusedFirstByte = "first_byte"
 	RefusedHandshake = "handshake"
 	RefusedPlaintext = "plaintext"
-	RefusedPending   = "pending_cap"
-	RefusedPerIP     = "per_ip_cap"
+	// RefusedPlaintextSource is a plaintext connection in ModeDual from a
+	// source outside ListenerOptions.PlaintextSources.
+	RefusedPlaintextSource = "plaintext_source"
+	RefusedPending         = "pending_cap"
+	RefusedPerIP           = "per_ip_cap"
 )
 
 // Connection kinds reported through ListenerOptions.OnAccepted.
@@ -57,9 +61,73 @@ type ListenerOptions struct {
 	// MaxConnsPerIP bounds open connections per source IP, counted from
 	// accept to close; zero is unlimited.
 	MaxConnsPerIP int
+	// PlaintextSources are the source ranges a ModeDual listener accepts
+	// plaintext from; a plaintext connection from anywhere else is closed
+	// (RefusedPlaintextSource). TLS connections are not affected, and neither
+	// is ModeOff. Nil selects DefaultPlaintextSources (loopback and private
+	// ranges); 0.0.0.0/0 and ::/0 accept plaintext from every source.
+	PlaintextSources []netip.Prefix
 	// OnAccepted and OnRefused observe each connection's outcome.
 	OnAccepted func(kind string)
 	OnRefused  func(reason string)
+}
+
+// DefaultPlaintextSources returns the ranges a ModeDual listener accepts
+// plaintext from when ListenerOptions.PlaintextSources is nil: loopback
+// (127.0.0.0/8, ::1/128) and the private ranges (10.0.0.0/8, 172.16.0.0/12,
+// 192.168.0.0/16, fc00::/7). A dual port therefore keeps serving same-host
+// and in-cluster plaintext clients while refusing plaintext from the public
+// internet.
+func DefaultPlaintextSources() []netip.Prefix {
+	return []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"),
+		netip.MustParsePrefix("::1/128"),
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("172.16.0.0/12"),
+		netip.MustParsePrefix("192.168.0.0/16"),
+		netip.MustParsePrefix("fc00::/7"),
+	}
+}
+
+// ParsePlaintextSources parses CIDR prefixes (a bare address is one host)
+// for ListenerOptions.PlaintextSources. An empty list returns nil, which
+// selects DefaultPlaintextSources.
+func ParsePlaintextSources(values []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, v := range values {
+		p, err := netip.ParsePrefix(v)
+		if err != nil {
+			a, aerr := netip.ParseAddr(v)
+			if aerr != nil {
+				return nil, fmt.Errorf("transport: plaintext source %q: not a CIDR prefix or an address", v)
+			}
+			p = netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen())
+		}
+		if p.Addr().Is4In6() {
+			return nil, fmt.Errorf("transport: plaintext source %q: write an IPv4-mapped prefix as IPv4", v)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
+}
+
+// plaintextSourceAllowed reports whether a plaintext connection from addr may
+// be served. An address that does not parse is refused.
+func plaintextSourceAllowed(sources []netip.Prefix, addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	ap, err := netip.ParseAddrPort(addr.String())
+	if err != nil {
+		return false
+	}
+	ip := ap.Addr().Unmap().WithZone("")
+	for _, p := range sources {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // Conn is a connection delivered by a Listener.
@@ -122,8 +190,9 @@ type listener struct {
 // NewListener wraps inner. In ModeOff it delivers plaintext connections as
 // they come (only MaxConnsPerIP applies). Otherwise each connection is
 // classified off the accept loop: a first byte of 0x16 starts a TLS handshake;
-// any other byte is a plaintext connection, delivered in ModeDual and closed
-// in ModeTLS and ModeMTLS. Connections are delivered as *Conn.
+// any other byte is a plaintext connection, delivered in ModeDual when its
+// source is in PlaintextSources and closed otherwise, and closed in ModeTLS
+// and ModeMTLS. Connections are delivered as *Conn.
 func NewListener(inner net.Listener, opts ListenerOptions) (net.Listener, error) {
 	if opts.Mode == "" {
 		opts.Mode = ModeOff
@@ -142,6 +211,9 @@ func NewListener(inner net.Listener, opts ListenerOptions) (net.Listener, error)
 	}
 	if opts.MaxPending <= 0 {
 		opts.MaxPending = DefaultMaxPending
+	}
+	if opts.PlaintextSources == nil {
+		opts.PlaintextSources = DefaultPlaintextSources()
 	}
 	l := &listener{
 		inner:   inner,
@@ -299,6 +371,9 @@ func (l *listener) classify(c net.Conn) (*Conn, string, string) {
 	if first[0] != tlsHandshakeRecord {
 		if !l.opts.Mode.AcceptsPlaintext() {
 			return nil, "", RefusedPlaintext
+		}
+		if !plaintextSourceAllowed(l.opts.PlaintextSources, c.RemoteAddr()) {
+			return nil, "", RefusedPlaintextSource
 		}
 		if err := c.SetReadDeadline(time.Time{}); err != nil {
 			return nil, "", RefusedFirstByte
